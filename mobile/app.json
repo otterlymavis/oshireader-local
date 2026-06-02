@@ -29,7 +29,9 @@
           "savePhotosPermission": "Allow Otterpia to save images to your photo library.",
           "isAccessMediaLocationEnabled": false
         }
-      ]
+      ],
+      "expo-font",
+      "expo-sqlite"
     ],
     "extra": {
       "eas": {

@@ -38,7 +38,12 @@ function parseYouTubeDate(seg: string): string {
 
 export async function scrapeYouTube(keyword: string, mode: string): Promise<FeedItem[]> {
   // Use YouTube Data API if the user has configured a key
-  const apiKey = (await AsyncStorage.getItem('@otterpia/yt_key'))?.trim() ?? ''
+  let apiKey = ''
+  try {
+    apiKey = (await AsyncStorage.getItem('@otterpia/yt_key'))?.trim() ?? ''
+  } catch {
+    apiKey = ''
+  }
   if (apiKey) {
     try {
       const items = await fetchYouTube(keyword, mode, apiKey)
