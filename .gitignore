@@ -19,6 +19,3 @@ mobile/tmp_*.json
 .env
 .claude/
 settings.local.json
-AGENT.md
-CLAUDE.md
-GEMINI.md
