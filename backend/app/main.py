@@ -53,6 +53,33 @@ async def trigger_poll() -> dict:
     return {"status": "poll started"}
 
 
+@app.get("/api/admin/test-fetch")
+async def test_fetch() -> dict:
+    import httpx, feedparser
+    from urllib.parse import quote
+    results = {}
+    kw = "星野源"
+    enc = quote(f"{kw} site:mdpr.jp")
+    url = f"https://news.google.com/rss/search?q={enc}&hl=ja&gl=JP&ceid=JP%3Aja"
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(url)
+            results["gnews_status"] = resp.status_code
+            if resp.is_success:
+                feed = feedparser.parse(resp.content)
+                results["gnews_entries"] = len(feed.entries)
+    except Exception as e:
+        results["gnews_error"] = str(e)
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get("https://togetter.com/search", params={"q": kw})
+            results["togetter_status"] = resp.status_code
+            results["togetter_body_len"] = len(resp.text)
+    except Exception as e:
+        results["togetter_error"] = str(e)
+    return results
+
+
 @app.get("/api/admin/stats")
 def get_stats(db: Session = Depends(get_db)) -> dict:
     items_total = db.query(func.count(SourceItem.id)).scalar()
