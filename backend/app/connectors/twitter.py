@@ -18,10 +18,7 @@ class TwitterConnector(BaseConnector):
         if not self.bearer_token:
             return []
 
-        query = keyword
-        if mode == "media_only":
-            query += " has:media"
-
+        query = f"{keyword} has:media" if mode == "media_only" else keyword
         params = {
             "query": query,
             "max_results": 25,
@@ -49,8 +46,8 @@ class TwitterConnector(BaseConnector):
 
             thumb = None
             for key in tweet.get("attachments", {}).get("media_keys", []):
-                m = media_map.get(key, {})
-                thumb = m.get("preview_image_url") or m.get("url")
+                media = media_map.get(key, {})
+                thumb = media.get("preview_image_url") or media.get("url")
                 if thumb:
                     break
 
@@ -58,7 +55,7 @@ class TwitterConnector(BaseConnector):
                 SourceItemCreate(
                     platform=self.PLATFORM,
                     item_id=tweet_id,
-                    url=f"https://x.com/{username}/status/{tweet_id}",
+                    url=f"https://x.com/{username}/status/{tweet_id}" if username else f"https://x.com/i/status/{tweet_id}",
                     published_at=created,
                     media_type="video" if thumb else "text",
                     author=f"@{username}" if username else None,

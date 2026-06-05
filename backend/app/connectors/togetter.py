@@ -38,32 +38,56 @@ class TogetterConnector(BaseConnector):
         soup = BeautifulSoup(resp.text, "lxml")
         items: list[SourceItemCreate] = []
 
-        for a in soup.select("a[href^='https://togetter.com/li/']")[:25]:
+        seen_ids: set[str] = set()
+        for a in soup.select("a[href^='https://togetter.com/li/']"):
+            if len(items) >= 25:
+                break
             url = a.get("href", "")
             togetter_id = url.rstrip("/").split("/")[-1]
-            if not togetter_id:
+            if not togetter_id or togetter_id in seen_ids:
                 continue
+            seen_ids.add(togetter_id)
 
-            title = a.get_text(strip=True)
+            # The <li> is the outermost article container; <time datetime> lives there
+            li_parent = a.find_parent("li")
+            container = li_parent or a.find_parent(["div", "article"])
+
+            # Title is on the h3 inside the li, not always on this <a>
+            title = ""
+            if li_parent:
+                h3 = li_parent.find("h3")
+                if h3:
+                    title = h3.get_text(strip=True)
+            if not title:
+                title = a.get_text(strip=True)
             if not title:
                 continue
 
-            # Try to find an image inside the same container
-            parent = a.find_parent(["li", "div", "article"])
             thumb = None
-            if parent:
-                img = parent.select_one("img[src]")
+            published = datetime.now(timezone.utc)
+
+            if container:
+                img = container.select_one("img[src]")
                 if img:
                     src = img.get("src", "")
                     if src.startswith("http"):
                         thumb = src
+
+                time_el = container.select_one("time[datetime]")
+                if time_el:
+                    dt_str = (time_el.get("datetime") or "").strip()
+                    try:
+                        parsed = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+                        published = parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+                    except (ValueError, AttributeError):
+                        pass
 
             items.append(
                 SourceItemCreate(
                     platform=self.PLATFORM,
                     item_id=togetter_id,
                     url=url,
-                    published_at=datetime.now(timezone.utc),
+                    published_at=published,
                     media_type="article",
                     title=title,
                     thumbnail_url=thumb,

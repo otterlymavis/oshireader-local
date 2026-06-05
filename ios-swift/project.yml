@@ -1,0 +1,140 @@
+name: OshiReader
+options:
+  bundleIdPrefix: com.otterlymavis
+configs:
+  Debug: debug
+  Staging: release
+  Release: release
+targets:
+  OshiReader:
+    type: application
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: OshiReader
+    settings:
+      base:
+        INFOPLIST_FILE: OshiReader/Info.plist
+        PRODUCT_BUNDLE_IDENTIFIER: com.otterpia.oshireader.plus
+        PRODUCT_NAME: OshiReader
+        DEVELOPMENT_TEAM: D8H3TBWH7P
+        CODE_SIGN_IDENTITY: "Apple Development"
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_ENTITLEMENTS: OshiReader/OshiReader.entitlements
+        MARKETING_VERSION: 1.0.0
+        CURRENT_PROJECT_VERSION: 1
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        SWIFT_VERSION: "5.9"
+        GENERATE_INFOPLIST_FILE: NO
+        TARGETED_DEVICE_FAMILY: "1,2"
+        OSHIREADER_API_BASE_URL: https://oshireader.onrender.com
+        OSHIREADER_ENVIRONMENT: Production
+      configs:
+        Debug:
+          OSHIREADER_API_BASE_URL: http://127.0.0.1:8000
+          OSHIREADER_ENVIRONMENT: Local
+        Staging:
+          OSHIREADER_API_BASE_URL: https://oshireader.onrender.com
+          OSHIREADER_ENVIRONMENT: Staging
+        Release:
+          OSHIREADER_API_BASE_URL: https://oshireader.onrender.com
+          OSHIREADER_ENVIRONMENT: Production
+  OshiReaderTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: OshiReaderTests
+    dependencies:
+      - target: OshiReader
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        DEVELOPMENT_TEAM: D8H3TBWH7P
+        CODE_SIGN_IDENTITY: "Apple Development"
+        CODE_SIGN_STYLE: Automatic
+  OshiReaderUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: OshiReaderUITests
+    dependencies:
+      - target: OshiReader
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.otterlymavis.OshiReaderUITests
+        DEVELOPMENT_TEAM: D8H3TBWH7P
+        CODE_SIGN_IDENTITY: "Apple Development"
+        CODE_SIGN_STYLE: Automatic
+
+schemes:
+  OshiReader:
+    build:
+      targets:
+        OshiReader: [run, test, profile, analyze]
+    test:
+      targets:
+        - OshiReaderTests
+        - OshiReaderUITests
+      config: Debug
+    run:
+      config: Debug
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release
+  OshiReader Local:
+    build:
+      targets:
+        OshiReader: [run, test, profile, analyze]
+    test:
+      targets:
+        - OshiReaderTests
+        - OshiReaderUITests
+      config: Debug
+    run:
+      config: Debug
+    profile:
+      config: Debug
+    analyze:
+      config: Debug
+    archive:
+      config: Debug
+  OshiReader Staging:
+    build:
+      targets:
+        OshiReader: [run, test, profile, analyze]
+    test:
+      targets:
+        - OshiReaderTests
+        - OshiReaderUITests
+      config: Staging
+    run:
+      config: Staging
+    profile:
+      config: Staging
+    analyze:
+      config: Staging
+    archive:
+      config: Staging
+  OshiReader Production:
+    build:
+      targets:
+        OshiReader: [run, test, profile, analyze]
+    test:
+      targets:
+        - OshiReaderTests
+        - OshiReaderUITests
+      config: Release
+    run:
+      config: Release
+    profile:
+      config: Release
+    analyze:
+      config: Release
+    archive:
+      config: Release

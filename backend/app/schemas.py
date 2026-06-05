@@ -1,5 +1,7 @@
+from __future__ import annotations
+
 from datetime import datetime
-from typing import Literal
+from typing import Literal, Optional
 
 from pydantic import BaseModel
 
@@ -7,25 +9,28 @@ from pydantic import BaseModel
 class WatchTermCreate(BaseModel):
     keyword: str
     aliases: list[str] = []
-    language_hint: str | None = None
+    language_hint: Optional[str] = None
     collection_mode: Literal["all_info", "media_only"] = "all_info"
+    notify_on_new: bool = False
 
 
 class WatchTermUpdate(BaseModel):
-    keyword: str | None = None
-    aliases: list[str] | None = None
-    language_hint: str | None = None
-    collection_mode: Literal["all_info", "media_only"] | None = None
-    is_active: bool | None = None
+    keyword: Optional[str] = None
+    aliases: Optional[list[str]] = None
+    language_hint: Optional[str] = None
+    collection_mode: Optional[Literal["all_info", "media_only"]] = None
+    is_active: Optional[bool] = None
+    notify_on_new: Optional[bool] = None
 
 
 class WatchTermOut(BaseModel):
     id: int
     keyword: str
     aliases: list[str]
-    language_hint: str | None
+    language_hint: Optional[str]
     collection_mode: str
     is_active: bool
+    notify_on_new: bool
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -36,26 +41,41 @@ class SourceItemOut(BaseModel):
     platform: str
     url: str
     published_at: datetime
-    author: str | None
-    title: str | None
-    content_text: str | None
-    media_type: str | None
-    thumbnail_url: str | None
+    author: Optional[str]
+    title: Optional[str]
+    content_text: Optional[str]
+    media_type: Optional[str]
+    thumbnail_url: Optional[str]
 
     model_config = {"from_attributes": True}
 
 
 class CredentialUpsert(BaseModel):
-    bearer_token: str | None = None
-    api_key: str | None = None
-    api_secret: str | None = None
+    bearer_token: Optional[str] = None
+    api_key: Optional[str] = None
+    api_secret: Optional[str] = None
 
 
 class CredentialOut(BaseModel):
     platform: str
     has_bearer_token: bool
     has_api_key: bool
-    updated_at: datetime | None
+    updated_at: Optional[datetime]
+
+    model_config = {"from_attributes": True}
+
+
+class APNSDeviceTokenUpsert(BaseModel):
+    token: str
+    environment: Literal["sandbox", "production"] = "sandbox"
+    device_id: Optional[str] = None
+
+
+class APNSDeviceTokenOut(BaseModel):
+    token: str
+    environment: str
+    device_id: Optional[str]
+    last_seen_at: Optional[datetime]
 
     model_config = {"from_attributes": True}
 
