@@ -120,6 +120,7 @@ async def _poll_once_unlocked() -> None:
                                         raw_payload=raw.raw_payload,
                                     )
                                 )
+                                db.flush()  # ensure SourceItem is in DB before Match FK references it
                             match_exists = (
                                 db.query(Match)
                                 .filter_by(watch_term_id=term.id, source_item_id=raw.composite_id)
