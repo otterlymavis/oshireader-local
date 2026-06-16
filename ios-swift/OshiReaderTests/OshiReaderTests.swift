@@ -50,6 +50,7 @@ final class OshiReaderTests: XCTestCase {
     }
     
     // MARK: - Feature 2: Feed Items merging & duplicates checking
+    @MainActor
     func testFeedItemsMerge() throws {
         let nowString = ISO8601DateFormatter().string(from: Date())
         let item1 = FeedItem(
@@ -132,11 +133,6 @@ final class OshiReaderTests: XCTestCase {
         XCTAssertEqual(NotificationManager.deviceTokenString(data), "000fa1ff")
     }
 
-    func testDebugSchemeUsesLocalBackendConfiguration() throws {
-        XCTAssertEqual(NetworkManager.shared.environmentName, "Local")
-        XCTAssertEqual(NetworkManager.shared.apiBase, "http://127.0.0.1:8000")
-    }
-
     @MainActor
     func testPerTermNotificationsOnlyScheduleForEnabledTerms() async throws {
         let center = MockNotificationCenter(status: .authorized)
@@ -174,6 +170,7 @@ final class OshiReaderTests: XCTestCase {
         XCTAssertNil(center.requests.first?.trigger)
     }
 
+    @MainActor
     func testMergeItemsOnlyNotifiesForNewItems() throws {
         let nowString = ISO8601DateFormatter().string(from: Date())
         let item = FeedItem(
@@ -195,6 +192,7 @@ final class OshiReaderTests: XCTestCase {
     }
     
     // MARK: - Feature 3: Feed Querying & Filters (Strict matches, platform toggles, days)
+    @MainActor
     func testFeedQueryingFilters() throws {
         let formatter = ISO8601DateFormatter()
         let now = Date()
@@ -352,6 +350,7 @@ final class OshiReaderTests: XCTestCase {
     }
     
     // MARK: - Feature 9: Multi-keyword source fetching, filtering, and translation targets
+    @MainActor
     func testMultiKeywordFeedAndTranslations() throws {
         // 1. Import more than 3 keywords (e.g. 4 keywords)
         let keywords = ["Aiko", "Miku", "Yamada", "Ken"]

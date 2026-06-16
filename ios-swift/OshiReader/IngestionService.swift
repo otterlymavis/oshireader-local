@@ -205,7 +205,15 @@ final class IngestionService {
             for raw in rows {
                 guard let contentId = raw["contentId"] as? String else { continue }
                 let published = (raw["startTime"] as? String).flatMap(parseISO8601Date).map(isoString) ?? nowISO()
-                let author = (raw["userId"].map { "\($0)" } ?? (raw["channelId"].map { "\($0)" }))
+                // userId/channelId may be a number, a string, or JSON null — stringify
+                // only real values so we never emit "<null>".
+                let author = [raw["userId"], raw["channelId"]]
+                    .compactMap { v -> String? in
+                        guard let v, !(v is NSNull) else { return nil }
+                        let s = "\(v)"
+                        return s.isEmpty ? nil : s
+                    }
+                    .first
                 items.append(FeedItem(
                     id: "niconico:\(contentId)",
                     platform: "niconico",
