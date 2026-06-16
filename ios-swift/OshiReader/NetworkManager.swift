@@ -688,6 +688,14 @@ class RSSParserDelegate: NSObject, XMLParserDelegate {
             currentThumbnailUrl = nil
         }
         if currentItem != nil {
+            // Atom feeds (e.g. natalie) carry the URL in <link href="…"> rather than
+            // as element text. Prefer rel="alternate" (or an unspecified rel).
+            if elementName == "link", currentLink.isEmpty, let href = attributeDict["href"] {
+                let rel = attributeDict["rel"]
+                if rel == nil || rel == "alternate" {
+                    currentLink = href
+                }
+            }
             if elementName == "media:thumbnail" || elementName == "media:content" {
                 if let url = attributeDict["url"], currentThumbnailUrl == nil {
                     currentThumbnailUrl = url
@@ -713,7 +721,7 @@ class RSSParserDelegate: NSObject, XMLParserDelegate {
             currentLink += cleaned
         case "description", "summary":
             currentDescription += string
-        case "pubDate", "published", "dc:date":
+        case "pubDate", "published", "updated", "dc:date":
             currentPubDate += cleaned
         default:
             break

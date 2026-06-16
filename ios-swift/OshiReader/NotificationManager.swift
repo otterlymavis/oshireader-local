@@ -100,17 +100,11 @@ final class NotificationManager: ObservableObject {
     }
 
     func handleRegisteredDeviceToken(_ deviceToken: Data) async {
-        let token = Self.deviceTokenString(deviceToken)
-        do {
-            try await NetworkManager.shared.registerAPNSDeviceToken(token)
-            await MainActor.run {
-                remoteRegistrationStatus = "Registered"
-            }
-        } catch {
-            await MainActor.run {
-                remoteRegistrationStatus = "Registration failed"
-            }
-        }
+        // Remote/APNs push has been removed — the app is fully local and delivers
+        // new-item alerts via local notifications (see notifyForNewItems). We keep
+        // this hook so AppDelegate compiles, but no token is sent anywhere.
+        _ = Self.deviceTokenString(deviceToken)
+        remoteRegistrationStatus = "Local notifications only"
     }
 
     func notifyForNewItems(_ items: [FeedItem], terms: [WatchTerm]) async {

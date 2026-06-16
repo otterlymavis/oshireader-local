@@ -204,7 +204,7 @@ struct FeedView: View {
                                         selectedPlatform = isSelected ? nil : platformId
                                         if !isSelected && !hasItems(for: platformId) {
                                             Task {
-                                                await fetchBackendPlatform(platformId)
+                                                await ingestPlatform(platformId)
                                             }
                                         }
                                     }) {
@@ -422,13 +422,8 @@ struct FeedView: View {
             guard !hasLoadedOnce else { return }
             hasLoadedOnce = true
             Task {
-                // Push local terms to backend (handles post-DB-reset state)
-                await NetworkManager.shared.syncWatchTermsToBackend(localTerms: db.terms)
-                // Pull backend terms that aren't local yet (fresh install / multi-device)
-                let pulledNew = await NetworkManager.shared.syncTermsFromBackend()
-                // Refresh feed when: no cached items and we have terms (either pre-existing
-                // or just pulled from the backend)
-                if db.feedItems.isEmpty, (!db.terms.isEmpty || pulledNew) {
+                // First launch with terms but no cached items → pull an initial feed.
+                if db.feedItems.isEmpty, !db.terms.isEmpty {
                     await refreshFeed()
                 }
             }
@@ -446,89 +441,46 @@ struct FeedView: View {
     private func refreshFeed() async {
         guard !isRefreshing else { return }
         isRefreshing = true
-        // 0. Bidirectional term sync
-        await NetworkManager.shared.syncWatchTermsToBackend(localTerms: db.terms)
-        await NetworkManager.shared.syncTermsFromBackend()
+        defer { isRefreshing = false }
 
-        // 1. Determine what to fetch.
-        //    First load (empty cache): fetch 90 days of history.
-        //    Subsequent refreshes: ask only for items newer than the latest we have,
-        //    so the backend never re-sends articles we already cached.
-        // When user has "All Time" selected, bypass the since-optimisation and
-        // fetch the full history so they actually see old items.
-        let wantsFullHistory = daysFilter == 0
-        let latestSince: String? = {
-            guard !wantsFullHistory else { return nil }
-            guard !db.feedItems.isEmpty else { return nil }
-            // Use fetched_at (reliable grab time) not published_at — bad-date items
-            // with published_at=now() would otherwise block older legit content.
-            guard let maxDate = db.feedItems.compactMap({ parseISO8601Date($0.fetched_at) }).max() else { return nil }
-            let fmt = ISO8601DateFormatter()
-            fmt.formatOptions = [.withInternetDateTime]
-            return fmt.string(from: maxDate)
-        }()
-        let fetchDays = wantsFullHistory ? 0 : (db.feedItems.isEmpty ? 90 : 30)
+        // Skip live network during UI tests (fixtures are seeded in LocalDB).
+        if ProcessInfo.processInfo.arguments.contains("--uitesting") { return }
 
-        let freshItems: [FeedItem]
-        if let since = latestSince {
-            freshItems = (try? await NetworkManager.shared.fetchFeed(limit: 200, since: since)) ?? []
-        } else {
-            freshItems = (try? await NetworkManager.shared.fetchFeed(limit: 120, days: fetchDays)) ?? []
-        }
-        if !freshItems.isEmpty {
-            _ = await db.mergeItems(newItems: freshItems)
-        }
-
-        // 2. Fetch each subscribed platform in parallel (also uses since when available)
-        let platformsToFetch = Array(Set(db.subscribedPlatforms.filter { $0 != "custom" }))
-        await withTaskGroup(of: Void.self) { group in
-            for platform in platformsToFetch {
-                group.addTask { await self.fetchBackendPlatform(platform, since: latestSince) }
+        // Fetch every subscribed source for each active watch term, entirely
+        // on-device. LocalDB.mergeItems handles dedup, the 600-item cap, and
+        // new-item notifications; the days/keyword/platform filtering happens at
+        // query time in LocalDB.queryFeed.
+        let activeTerms = db.terms.filter { $0.is_active }
+        let subscribed = Set(db.subscribedPlatforms.filter { $0 != "custom" })
+        await withTaskGroup(of: [FeedItem].self) { group in
+            for term in activeTerms {
+                group.addTask { await IngestionService.shared.ingest(term: term, platforms: subscribed) }
+            }
+            for await items in group where !items.isEmpty {
+                _ = await db.mergeItems(newItems: items)
             }
         }
 
-        // 3. Local fallback scrapers — only when backend returned nothing (offline/spin-down)
-        if freshItems.isEmpty {
-            let activeTerms = db.terms.filter { $0.is_active }
-            await withTaskGroup(of: [FeedItem].self) { group in
-                for term in activeTerms {
-                    group.addTask { await NetworkManager.shared.scrapeLocalFallbacks(keyword: term.keyword) }
-                }
-                for await items in group where !items.isEmpty {
-                    _ = await db.mergeItems(newItems: items)
-                }
-            }
-        }
-
-        // 4. Refresh custom URL cards
+        // Refresh custom URL cards.
         let customItems = await NetworkManager.shared.scrapeCustomUrls(db.customUrls)
         if !customItems.isEmpty {
             _ = await db.mergeItems(newItems: customItems)
         }
-
-        isRefreshing = false
     }
 
-    private func fetchBackendPlatform(_ platformId: String, since: String? = nil) async {
-        let backendPlatforms = backendPlatformKeys(for: platformId)
-        for backendPlatform in backendPlatforms {
-            if let items = try? await NetworkManager.shared.fetchFeed(platform: backendPlatform, limit: 60, since: since),
-               !items.isEmpty {
+    /// On-demand ingest of a single source (used when a platform chip is tapped
+    /// and we have no cached items for it yet).
+    private func ingestPlatform(_ platformId: String) async {
+        if ProcessInfo.processInfo.arguments.contains("--uitesting") { return }
+        let activeTerms = db.terms.filter { $0.is_active }
+        let single: Set<String> = [platformId]
+        await withTaskGroup(of: [FeedItem].self) { group in
+            for term in activeTerms {
+                group.addTask { await IngestionService.shared.ingest(term: term, platforms: single) }
+            }
+            for await items in group where !items.isEmpty {
                 _ = await db.mergeItems(newItems: items)
             }
-        }
-    }
-
-    private func backendPlatformKeys(for platformId: String) -> [String] {
-        switch platformId {
-        case "news":
-            return ["news", "news:mdpr", "news:yahoo_ent"]
-        case "mdpr":
-            return ["mdpr", "news:mdpr"]
-        case "yahoonews":
-            return ["yahoonews", "news:yahoo_ent"]
-        default:
-            return [platformId]
         }
     }
 

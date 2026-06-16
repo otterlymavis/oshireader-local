@@ -13,8 +13,9 @@ struct SettingsView: View {
     @State private var newCollectionMode = "all_info"
     @State private var addingAliasForId: String? = nil
     @State private var newAliasText = ""
-    @AppStorage("youtube_api_key") private var youtubeApiKey = ""
-    @AppStorage("twitter_bearer_token") private var twitterBearerToken = ""
+    // API keys live in the Keychain now that ingestion runs on-device.
+    @State private var youtubeApiKey = KeychainHelper.read(.youtubeApiKey) ?? ""
+    @State private var twitterBearerToken = KeychainHelper.read(.twitterBearerToken) ?? ""
     @AppStorage("auto_translate_reader") private var autoTranslateReader = false
     
     let allPlatforms = [
@@ -81,7 +82,6 @@ struct SettingsView: View {
                                                     Button {
                                                         let updated = term.aliases.filter { $0 != alias }
                                                         db.updateTerm(id: term.id, aliases: updated)
-                                                        Task { _ = try? await NetworkManager.shared.updateWatchTerm(id: term.id, aliases: updated) }
                                                     } label: {
                                                         Image(systemName: "xmark")
                                                             .font(.system(size: 8, weight: .bold))
@@ -106,7 +106,6 @@ struct SettingsView: View {
                                                         if !trimmed.isEmpty && !term.aliases.contains(trimmed) {
                                                             let updated = term.aliases + [trimmed]
                                                             db.updateTerm(id: term.id, aliases: updated)
-                                                            Task { _ = try? await NetworkManager.shared.updateWatchTerm(id: term.id, aliases: updated) }
                                                         }
                                                         newAliasText = ""
                                                         addingAliasForId = nil
@@ -143,9 +142,6 @@ struct SettingsView: View {
                             Button {
                                 let next = term.collection_mode == "all_info" ? "media_only" : "all_info"
                                 db.updateTerm(id: term.id, collectionMode: next)
-                                Task {
-                                    _ = try? await NetworkManager.shared.updateWatchTerm(id: term.id, collectionMode: next)
-                                }
                             } label: {
                                 Text(term.collection_mode == "media_only" ? "📹" : "📄")
                                     .font(.caption)
@@ -163,9 +159,6 @@ struct SettingsView: View {
                             Button(action: {
                                 let next = !term.notify_on_new
                                 db.updateTerm(id: term.id, notifyOnNew: next)
-                                Task {
-                                    _ = try? await NetworkManager.shared.updateWatchTerm(id: term.id, notifyOnNew: next)
-                                }
                             }) {
                                 Image(systemName: term.notify_on_new ? "bell.fill" : "bell.slash")
                                     .foregroundColor(term.notify_on_new ? theme.colors.primary : theme.colors.textMuted)
@@ -179,10 +172,6 @@ struct SettingsView: View {
                                 get: { term.is_active },
                                 set: { next in
                                     db.updateTerm(id: term.id, isActive: next)
-                                    // Async updates backend too
-                                    Task {
-                                        _ = try? await NetworkManager.shared.updateWatchTerm(id: term.id, isActive: next)
-                                    }
                                 }
                             ))
                             .tint(theme.colors.primary)
@@ -195,9 +184,6 @@ struct SettingsView: View {
                             let term = db.terms[index]
                             if addingAliasForId == term.id { addingAliasForId = nil }
                             db.deleteTerm(id: term.id)
-                            Task {
-                                _ = try? await NetworkManager.shared.deleteWatchTerm(id: term.id)
-                            }
                         }
                     }
                     
@@ -281,23 +267,15 @@ struct SettingsView: View {
                     SecureField("YouTube API Key", text: $youtubeApiKey)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
-                        .onSubmit {
-                            Task { try? await NetworkManager.shared.updateCredential(platform: "youtube", apiKey: youtubeApiKey.trimmingCharacters(in: .whitespacesAndNewlines)) }
-                        }
-                        .onDisappear {
-                            Task { try? await NetworkManager.shared.updateCredential(platform: "youtube", apiKey: youtubeApiKey.trimmingCharacters(in: .whitespacesAndNewlines)) }
-                        }
+                        .onSubmit { KeychainHelper.save(.youtubeApiKey, youtubeApiKey) }
+                        .onDisappear { KeychainHelper.save(.youtubeApiKey, youtubeApiKey) }
                         .accessibilityIdentifier("settings.youtubeApiKeyField")
 
                     SecureField("X Bearer Token", text: $twitterBearerToken)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
-                        .onSubmit {
-                            Task { try? await NetworkManager.shared.updateCredential(platform: "twitter", bearerToken: twitterBearerToken.trimmingCharacters(in: .whitespacesAndNewlines)) }
-                        }
-                        .onDisappear {
-                            Task { try? await NetworkManager.shared.updateCredential(platform: "twitter", bearerToken: twitterBearerToken.trimmingCharacters(in: .whitespacesAndNewlines)) }
-                        }
+                        .onSubmit { KeychainHelper.save(.twitterBearerToken, twitterBearerToken) }
+                        .onDisappear { KeychainHelper.save(.twitterBearerToken, twitterBearerToken) }
                         .accessibilityIdentifier("settings.twitterBearerTokenField")
                 }
                 
@@ -414,14 +392,8 @@ struct SettingsView: View {
                                 showingAddKeywordAlert = false
                                 return
                             }
-                            let savedTerm = db.saveTerm(keyword: trimmed, collectionMode: newCollectionMode)
+                            _ = db.saveTerm(keyword: trimmed, collectionMode: newCollectionMode)
 
-                            Task {
-                                if let serverTerm = try? await NetworkManager.shared.createWatchTerm(keyword: savedTerm.keyword, collectionMode: savedTerm.collection_mode) {
-                                    db.replaceTerm(localId: savedTerm.id, with: serverTerm)
-                                }
-                            }
-                            
                             newKeyword = ""
                             showingAddKeywordAlert = false
                         }

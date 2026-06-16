@@ -1,13 +1,15 @@
 # OshiReader (Otterpia)
 
-OshiReader is a native SwiftUI iOS app backed by a FastAPI ingestion service. It tracks favorite creators, idols, and topics across supported sources, stores matched feed items in the backend, and presents them in the Swift app.
+OshiReader is a native SwiftUI iOS app that tracks favorite creators, idols, and topics across supported Japanese media sources and presents matched items in a feed.
+
+> **Local-only:** the iOS app now performs **all ingestion on-device** (see `ios-swift/OshiReader/IngestionService.swift`) and stores everything locally. It requires no server at runtime. The `backend/` FastAPI service below is **dormant** — kept for reference/rollback but no longer used by the app.
 
 ## Project Structure
 
 ```text
 oshireader/
-├── backend/            # FastAPI service and ingestion scheduler
-└── ios-swift/          # Native iOS SwiftUI application
+├── backend/            # FastAPI service and ingestion scheduler (DORMANT — not used by the app)
+└── ios-swift/          # Native iOS SwiftUI application (runs ingestion on-device)
 ```
 
 ## Backend
