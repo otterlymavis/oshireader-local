@@ -392,7 +392,16 @@ struct SettingsView: View {
                                 showingAddKeywordAlert = false
                                 return
                             }
-                            _ = db.saveTerm(keyword: trimmed, collectionMode: newCollectionMode)
+                            let savedTerm = db.saveTerm(keyword: trimmed, collectionMode: newCollectionMode)
+
+                            // Fetch the new keyword right away rather than waiting
+                            // for the next feed refresh.
+                            Task {
+                                if ProcessInfo.processInfo.arguments.contains("--uitesting") { return }
+                                let subscribed = Set(db.subscribedPlatforms.filter { $0 != "custom" })
+                                let items = await IngestionService.shared.ingest(term: savedTerm, platforms: subscribed)
+                                if !items.isEmpty { _ = await db.mergeItems(newItems: items) }
+                            }
 
                             newKeyword = ""
                             showingAddKeywordAlert = false
