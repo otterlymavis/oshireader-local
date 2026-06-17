@@ -27,18 +27,6 @@ targets:
         SWIFT_VERSION: "5.9"
         GENERATE_INFOPLIST_FILE: NO
         TARGETED_DEVICE_FAMILY: "1,2"
-        OSHIREADER_API_BASE_URL: https://oshireader.onrender.com
-        OSHIREADER_ENVIRONMENT: Production
-      configs:
-        Debug:
-          OSHIREADER_API_BASE_URL: http://127.0.0.1:8000
-          OSHIREADER_ENVIRONMENT: Local
-        Staging:
-          OSHIREADER_API_BASE_URL: https://oshireader.onrender.com
-          OSHIREADER_ENVIRONMENT: Staging
-        Release:
-          OSHIREADER_API_BASE_URL: https://oshireader.onrender.com
-          OSHIREADER_ENVIRONMENT: Production
   OshiReaderTests:
     type: bundle.unit-test
     platform: iOS

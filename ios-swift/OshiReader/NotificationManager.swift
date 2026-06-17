@@ -19,7 +19,6 @@ final class NotificationManager: ObservableObject {
     static let shared = NotificationManager()
 
     @Published private(set) var authorizationStatus: UNAuthorizationStatus = .notDetermined
-    @Published private(set) var remoteRegistrationStatus: String = "Not registered"
 
     private let center: NotificationCenterClient
 
@@ -60,7 +59,6 @@ final class NotificationManager: ObservableObject {
         do {
             let granted = try await center.requestAuthorization(options: [.alert, .badge, .sound])
             await refreshAuthorizationStatus()
-            await registerForRemoteNotificationsIfAllowed()
             return granted
         } catch {
             await refreshAuthorizationStatus()
@@ -87,24 +85,10 @@ final class NotificationManager: ObservableObject {
         try await center.add(request)
     }
 
-    func registerForRemoteNotificationsIfAllowed() async {
-        await refreshAuthorizationStatus()
-        guard canScheduleNotifications else { return }
-        await MainActor.run {
-            UIApplication.shared.registerForRemoteNotifications()
-        }
-    }
-
+    // Remote/APNs push has been removed — the app is fully local and delivers
+    // new-item alerts via local notifications (see notifyForNewItems).
     nonisolated static func deviceTokenString(_ data: Data) -> String {
         data.map { String(format: "%02x", $0) }.joined()
-    }
-
-    func handleRegisteredDeviceToken(_ deviceToken: Data) async {
-        // Remote/APNs push has been removed — the app is fully local and delivers
-        // new-item alerts via local notifications (see notifyForNewItems). We keep
-        // this hook so AppDelegate compiles, but no token is sent anywhere.
-        _ = Self.deviceTokenString(deviceToken)
-        remoteRegistrationStatus = "Local notifications only"
     }
 
     func notifyForNewItems(_ items: [FeedItem], terms: [WatchTerm]) async {

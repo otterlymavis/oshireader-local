@@ -263,7 +263,10 @@ struct SettingsView: View {
                         .accessibilityIdentifier("settings.autoTranslateToggle")
                 }
 
-                Section(header: Text(i18n.t("credentialsSection"))) {
+                Section(
+                    header: Text(i18n.t("credentialsSection")),
+                    footer: Text("Stored only on this device (Keychain). YouTube and X results require your own key/token; without them those sources are skipped.")
+                ) {
                     SecureField("YouTube API Key", text: $youtubeApiKey)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
