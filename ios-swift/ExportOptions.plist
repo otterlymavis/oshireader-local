@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- App Store / TestFlight export. Used with `xcodebuild -exportArchive`. -->
+    <key>method</key>
+    <string>app-store-connect</string>
+    <key>teamID</key>
+    <string>D8H3TBWH7P</string>
+    <key>signingStyle</key>
+    <string>automatic</string>
+    <key>uploadSymbols</key>
+    <true/>
+    <!-- Set to "upload" to push straight to App Store Connect, or "export" to
+         just produce a .ipa you upload via Transporter / Xcode Organizer. -->
+    <key>destination</key>
+    <string>export</string>
+</dict>
+</plist>

@@ -61,7 +61,7 @@ schemes:
   OshiReader:
     build:
       targets:
-        OshiReader: [run, test, profile, analyze]
+        OshiReader: [run, test, profile, analyze, archive]
     test:
       targets:
         - OshiReaderTests
@@ -78,7 +78,7 @@ schemes:
   OshiReader Local:
     build:
       targets:
-        OshiReader: [run, test, profile, analyze]
+        OshiReader: [run, test, profile, analyze, archive]
     test:
       targets:
         - OshiReaderTests
@@ -95,7 +95,7 @@ schemes:
   OshiReader Staging:
     build:
       targets:
-        OshiReader: [run, test, profile, analyze]
+        OshiReader: [run, test, profile, analyze, archive]
     test:
       targets:
         - OshiReaderTests
@@ -112,7 +112,7 @@ schemes:
   OshiReader Production:
     build:
       targets:
-        OshiReader: [run, test, profile, analyze]
+        OshiReader: [run, test, profile, analyze, archive]
     test:
       targets:
         - OshiReaderTests
