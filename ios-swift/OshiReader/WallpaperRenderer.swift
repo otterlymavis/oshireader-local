@@ -10,8 +10,12 @@ enum WallpaperRenderer {
     private static let canvasSize: CGFloat = 300
     private static let baseSize: Double = 90
 
+    /// Filename (not absolute path) under Documents. Storing the bare name keeps
+    /// it valid across launches/updates, since the container path can change.
+    static let fileName = "oshi_wallpaper.png"
+
     @MainActor
-    static func render(layers: [AvatarLayer]) async -> URL? {
+    static func render(layers: [AvatarLayer]) async -> String? {
         // Download each layer's image up front — ImageRenderer can't resolve
         // AsyncImage, so layers must already be UIImages at render time.
         var loaded: [(layer: AvatarLayer, image: UIImage)] = []
@@ -28,19 +32,20 @@ enum WallpaperRenderer {
         guard let uiImage = renderer.uiImage, let png = uiImage.pngData() else { return nil }
 
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        // Unique filename so the new wallpaper isn't served from an image cache
-        // keyed on a reused URL; clear any previous renders.
-        for existing in (try? FileManager.default.contentsOfDirectory(at: docs, includingPropertiesForKeys: nil)) ?? []
-        where existing.lastPathComponent.hasPrefix("wallpaper_") {
-            try? FileManager.default.removeItem(at: existing)
-        }
-        let url = docs.appendingPathComponent("wallpaper_\(UUID().uuidString).png")
+        let url = docs.appendingPathComponent(fileName)
         do {
             try png.write(to: url, options: .atomic)
-            return url
+            return fileName
         } catch {
             return nil
         }
+    }
+
+    /// Resolve a stored wallpaper spec (remote URL or bare local filename) to a
+    /// loadable local file URL, rebuilding the Documents path at call time.
+    static func localURL(for fileName: String) -> URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent(fileName)
     }
 
     /// Static, gesture-free mirror of the editor's layer layout.
@@ -65,6 +70,37 @@ enum WallpaperRenderer {
                 }
             }
             .frame(width: canvasSize, height: canvasSize)
+        }
+    }
+}
+
+/// Faint full-bleed background behind the feed. Accepts either a remote URL or a
+/// bare local filename (the rendered "My Oshi" composition). Local files are
+/// decoded once per spec change rather than on every view update.
+struct WallpaperBackground: View {
+    let spec: String
+    @State private var localImage: UIImage?
+
+    var body: some View {
+        Group {
+            if spec.hasPrefix("http"), let url = URL(string: spec) {
+                AsyncImage(url: url) { image in
+                    image.resizable().aspectRatio(contentMode: .fit)
+                } placeholder: {
+                    EmptyView()
+                }
+            } else if let localImage {
+                Image(uiImage: localImage).resizable().aspectRatio(contentMode: .fit)
+            } else {
+                EmptyView()
+            }
+        }
+        .opacity(0.22)
+        .ignoresSafeArea()
+        .task(id: spec) {
+            guard !spec.hasPrefix("http") else { localImage = nil; return }
+            let path = WallpaperRenderer.localURL(for: spec).path
+            localImage = UIImage(contentsOfFile: path)
         }
     }
 }

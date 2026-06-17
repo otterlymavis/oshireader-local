@@ -408,7 +408,7 @@ class LocalDB: ObservableObject {
             if let contents = try? FileManager.default.contentsOfDirectory(
                 at: docsDir, includingPropertiesForKeys: nil
             ) {
-                for cacheUrl in contents where cacheUrl.lastPathComponent.hasPrefix("cache_") || cacheUrl.lastPathComponent.hasPrefix("wallpaper_") {
+                for cacheUrl in contents where cacheUrl.lastPathComponent.hasPrefix("cache_") || cacheUrl.lastPathComponent.hasPrefix("oshi_wallpaper") {
                     try? FileManager.default.removeItem(at: cacheUrl)
                 }
             }

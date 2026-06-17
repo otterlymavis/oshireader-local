@@ -70,26 +70,10 @@ struct FeedView: View {
         ZStack {
             theme.colors.bg.ignoresSafeArea()
             
-            // Custom Wallpaper (from localDB) — handles both remote URLs and the
-            // locally-rendered composition file written by WallpaperRenderer.
-            if let wallpaperUrl = db.wallpaper, let url = URL(string: wallpaperUrl) {
-                Group {
-                    if url.isFileURL, let img = UIImage(contentsOfFile: url.path) {
-                        Image(uiImage: img)
-                            .resizable()
-                            .aspectRatio(contentMode: .fit)
-                    } else {
-                        AsyncImage(url: url) { image in
-                            image
-                                .resizable()
-                                .aspectRatio(contentMode: .fit)
-                        } placeholder: {
-                            EmptyView()
-                        }
-                    }
-                }
-                .opacity(0.22)
-                .ignoresSafeArea()
+            // Custom Wallpaper (from localDB) — remote URL or a locally-rendered
+            // "My Oshi" composition file (stored by bare filename, see WallpaperRenderer).
+            if let wallpaper = db.wallpaper {
+                WallpaperBackground(spec: wallpaper)
             }
             
             if horizontalSizeClass == .regular {
