@@ -452,14 +452,7 @@ struct FeedView: View {
         // query time in LocalDB.queryFeed.
         let activeTerms = db.terms.filter { $0.is_active }
         let subscribed = Set(db.subscribedPlatforms.filter { $0 != "custom" })
-        await withTaskGroup(of: [FeedItem].self) { group in
-            for term in activeTerms {
-                group.addTask { await IngestionService.shared.ingest(term: term, platforms: subscribed) }
-            }
-            for await items in group where !items.isEmpty {
-                _ = await db.mergeItems(newItems: items)
-            }
-        }
+        await ingestTerms(activeTerms, platforms: subscribed)
 
         // Refresh custom URL cards.
         let customItems = await NetworkManager.shared.scrapeCustomUrls(db.customUrls)
@@ -472,14 +465,27 @@ struct FeedView: View {
     /// and we have no cached items for it yet).
     private func ingestPlatform(_ platformId: String) async {
         if ProcessInfo.processInfo.arguments.contains("--uitesting") { return }
-        let activeTerms = db.terms.filter { $0.is_active }
-        let single: Set<String> = [platformId]
+        await ingestTerms(db.terms.filter { $0.is_active }, platforms: [platformId])
+    }
+
+    /// Ingest a set of terms, capping how many run at once so a large watch
+    /// list doesn't fire hundreds of simultaneous requests (each term already
+    /// fans out across ~12 sources). Results merge as they arrive.
+    private func ingestTerms(_ terms: [WatchTerm], platforms: Set<String>) async {
+        guard !terms.isEmpty, !platforms.isEmpty else { return }
+        let maxConcurrentTerms = 3
         await withTaskGroup(of: [FeedItem].self) { group in
-            for term in activeTerms {
-                group.addTask { await IngestionService.shared.ingest(term: term, platforms: single) }
+            var iterator = terms.makeIterator()
+            var running = 0
+            while running < maxConcurrentTerms, let term = iterator.next() {
+                group.addTask { await IngestionService.shared.ingest(term: term, platforms: platforms) }
+                running += 1
             }
-            for await items in group where !items.isEmpty {
-                _ = await db.mergeItems(newItems: items)
+            for await items in group {
+                if !items.isEmpty { _ = await db.mergeItems(newItems: items) }
+                if let term = iterator.next() {
+                    group.addTask { await IngestionService.shared.ingest(term: term, platforms: platforms) }
+                }
             }
         }
     }
