@@ -15,7 +15,7 @@ targets:
     settings:
       base:
         INFOPLIST_FILE: OshiReader/Info.plist
-        PRODUCT_BUNDLE_IDENTIFIER: com.otterpia.oshireader.plus
+        PRODUCT_BUNDLE_IDENTIFIER: com.otterpia.oshireader
         PRODUCT_NAME: OshiReader
         DEVELOPMENT_TEAM: D8H3TBWH7P
         CODE_SIGN_IDENTITY: "Apple Development"
