@@ -27,6 +27,8 @@ targets:
         SWIFT_VERSION: "5.9"
         GENERATE_INFOPLIST_FILE: NO
         TARGETED_DEVICE_FAMILY: "1,2"
+        # Always emit a dSYM so any archive can be uploaded for crash symbolication.
+        DEBUG_INFORMATION_FORMAT: dwarf-with-dsym
   OshiReaderTests:
     type: bundle.unit-test
     platform: iOS
