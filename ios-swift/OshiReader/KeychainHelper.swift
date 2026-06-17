@@ -8,7 +8,6 @@ enum KeychainHelper {
     private static let service = "com.otterpia.oshireader.credentials"
 
     enum Key: String {
-        case youtubeApiKey = "youtube_api_key"
         case twitterBearerToken = "twitter_bearer_token"
     }
 

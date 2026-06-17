@@ -13,8 +13,7 @@ struct SettingsView: View {
     @State private var newCollectionMode = "all_info"
     @State private var addingAliasForId: String? = nil
     @State private var newAliasText = ""
-    // API keys live in the Keychain now that ingestion runs on-device.
-    @State private var youtubeApiKey = KeychainHelper.read(.youtubeApiKey) ?? ""
+    // API token lives in the Keychain now that ingestion runs on-device.
     @State private var twitterBearerToken = KeychainHelper.read(.twitterBearerToken) ?? ""
     @AppStorage("auto_translate_reader") private var autoTranslateReader = false
     
@@ -265,15 +264,8 @@ struct SettingsView: View {
 
                 Section(
                     header: Text(i18n.t("credentialsSection")),
-                    footer: Text("Stored only on this device (Keychain). YouTube and X results require your own key/token; without them those sources are skipped.")
+                    footer: Text("Stored only on this device (Keychain). X results require your own bearer token; without it that source is skipped.")
                 ) {
-                    SecureField("YouTube API Key", text: $youtubeApiKey)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .onSubmit { KeychainHelper.save(.youtubeApiKey, youtubeApiKey) }
-                        .onDisappear { KeychainHelper.save(.youtubeApiKey, youtubeApiKey) }
-                        .accessibilityIdentifier("settings.youtubeApiKeyField")
-
                     SecureField("X Bearer Token", text: $twitterBearerToken)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()

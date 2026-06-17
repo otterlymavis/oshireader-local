@@ -390,58 +390,10 @@ final class IngestionService {
         return out
     }
 
-    // MARK: - YouTube (Data API when a key is stored, HTML scrape otherwise)
+    // MARK: - YouTube (keyless HTML scrape of the search page)
 
     private func fetchYouTube(keyword: String) async -> [FeedItem] {
-        if let key = KeychainHelper.read(.youtubeApiKey) {
-            let api = await fetchYouTubeAPI(keyword: keyword, key: key)
-            if !api.isEmpty { return api }
-        }
-        return await fetchYouTubeScrape(keyword: keyword)
-    }
-
-    private func fetchYouTubeAPI(keyword: String, key: String) async -> [FeedItem] {
-        let cutoff = Date().addingTimeInterval(-90 * 86400)
-        let cutoffFmt = ISO8601DateFormatter()
-        cutoffFmt.formatOptions = [.withInternetDateTime]
-        var comps = URLComponents(string: "https://www.googleapis.com/youtube/v3/search")!
-        comps.queryItems = [
-            URLQueryItem(name: "part", value: "snippet"),
-            URLQueryItem(name: "q", value: keyword),
-            URLQueryItem(name: "type", value: "video"),
-            URLQueryItem(name: "order", value: "date"),
-            URLQueryItem(name: "publishedAfter", value: cutoffFmt.string(from: cutoff)),
-            URLQueryItem(name: "maxResults", value: "25"),
-            URLQueryItem(name: "key", value: key),
-        ]
-        guard let url = comps.url,
-              let (data, resp) = await httpGET(url, timeout: 10),
-              resp.statusCode == 200,
-              let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-              let rows = json["items"] as? [[String: Any]] else {
-            return []
-        }
-        var items = [FeedItem]()
-        for raw in rows {
-            guard let vid = (raw["id"] as? [String: Any])?["videoId"] as? String else { continue }
-            let snippet = raw["snippet"] as? [String: Any] ?? [:]
-            let published = (snippet["publishedAt"] as? String).flatMap(parseISO8601Date).map(isoString) ?? nowISO()
-            let thumb = (((snippet["thumbnails"] as? [String: Any])?["medium"] as? [String: Any])?["url"]) as? String
-            items.append(FeedItem(
-                id: "youtube:\(vid)",
-                platform: "youtube",
-                url: "https://www.youtube.com/watch?v=\(vid)",
-                title: snippet["title"] as? String,
-                content_text: snippet["description"] as? String,
-                author: snippet["channelTitle"] as? String,
-                thumbnail_url: thumb,
-                media_type: "video",
-                published_at: published,
-                watch_term_keyword: keyword,
-                fetched_at: nowISO()
-            ))
-        }
-        return items
+        await fetchYouTubeScrape(keyword: keyword)
     }
 
     private func fetchYouTubeScrape(keyword: String) async -> [FeedItem] {
