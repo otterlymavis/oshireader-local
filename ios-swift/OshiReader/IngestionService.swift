@@ -12,6 +12,9 @@ final class IngestionService {
 
     private let browserUA = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
 
+    /// Caps concurrent news.google.com requests across all in-flight terms.
+    private static let googleNewsLimiter = RequestLimiter(limit: 3)
+
     // MARK: - Orchestration
 
     /// Fetch every subscribed source for one watch term. Network errors in any
@@ -28,14 +31,16 @@ final class IngestionService {
             }
 
             add("news")        { await self.fetchCuratedNews(keyword: keyword, mediaOnly: mediaOnly) }
-            add("5ch")         { await self.fetchGoogleNews(keyword: keyword, query: "\(keyword) site:5ch.net OR site:2ch.sc", platform: "5ch", mediaType: "text", mediaOnly: mediaOnly) }
+            add("5ch")         { await self.fetchGoogleNews(keyword: keyword, query: "\(keyword) site:5ch.net", platform: "5ch", mediaType: "text", mediaOnly: mediaOnly) }
             add("girlschannel") { await self.fetchGoogleNews(keyword: keyword, query: "\(keyword) site:girlschannel.net", platform: "girlschannel", mediaType: "text", mediaOnly: mediaOnly) }
             add("mdpr")        { await self.fetchGoogleNews(keyword: keyword, query: "\(keyword) site:mdpr.jp", platform: "mdpr", mediaType: "article", mediaOnly: mediaOnly, titlePatterns: [#"\s*[-|]\s*モデルプレス\s*$"#]) }
             add("oricon")      { await self.fetchGoogleNews(keyword: keyword, query: "\(keyword) site:oricon.co.jp", platform: "oricon", mediaType: "article", mediaOnly: mediaOnly, author: "ORICON NEWS", limit: 20, titlePatterns: [#"\s*[-|]\s*(ORICON NEWS|オリコンニュース|オリコン)\s*$"#]) }
             add("yahoonews")   { await self.fetchYahooNews(keyword: keyword, mediaOnly: mediaOnly) }
             add("niconico")    { await self.fetchNiconico(keyword: keyword) }
             add("note")        { await self.fetchNote(keyword: keyword, mediaOnly: mediaOnly) }
-            add("togetter")    { await self.fetchTogetter(keyword: keyword, mediaOnly: mediaOnly) }
+            // Togetter via Google News so items carry real publish dates (the
+            // search-page scrape doesn't expose reliable dates).
+            add("togetter")    { await self.fetchGoogleNews(keyword: keyword, query: "\(keyword) site:togetter.com", platform: "togetter", mediaType: "article", mediaOnly: mediaOnly) }
             add("tver")        { await self.fetchTVer(keyword: keyword) }
             add("youtube")     { await self.fetchYouTube(keyword: keyword) }
             add("twitter")     { await self.fetchTwitter(keyword: keyword, mediaOnly: mediaOnly) }
@@ -110,7 +115,11 @@ final class IngestionService {
     ) async -> [FeedItem] {
         if mediaOnly { return [] }
         guard let url = googleNewsURL(query) else { return [] }
+        // Many sources funnel through news.google.com; throttle so we don't get
+        // rate-limited (which previously made sources like 5ch return nothing).
+        await Self.googleNewsLimiter.acquire()
         let entries = await parseRSS(url)
+        await Self.googleNewsLimiter.release()
 
         var seen = Set<String>()
         var items = [FeedItem]()
@@ -138,52 +147,13 @@ final class IngestionService {
         return items
     }
 
-    // MARK: - Yahoo News (RSS first, r.jina.ai markdown fallback)
+    // MARK: - Yahoo News (Google News RSS — carries real publish dates)
 
     private func fetchYahooNews(keyword: String, mediaOnly: Bool) async -> [FeedItem] {
         if mediaOnly { return [] }
-        let rss = await fetchGoogleNews(keyword: keyword, query: "\(keyword) site:news.yahoo.co.jp", platform: "yahoonews", mediaType: "article", mediaOnly: false)
-        if !rss.isEmpty { return rss }
-
-        // Fallback: r.jina.ai proxy returns the Yahoo search page as markdown.
-        guard let encoded = keyword.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
-              let url = URL(string: "https://r.jina.ai/https://news.yahoo.co.jp/search?p=\(encoded)"),
-              let (data, _) = await httpGET(url, timeout: 15),
-              let text = String(data: data, encoding: .utf8) else {
-            return []
-        }
-        let pattern = #"\d+\.\s+\[(.+?)\]\((https://news\.yahoo\.co\.jp/articles/([A-Za-z0-9]+))\)"#
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.dotMatchesLineSeparators]) else { return [] }
-        var seen = Set<String>()
-        var items = [FeedItem]()
-        for m in regex.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
-            if items.count >= 25 { break }
-            guard let tR = Range(m.range(at: 1), in: text),
-                  let uR = Range(m.range(at: 2), in: text),
-                  let iR = Range(m.range(at: 3), in: text) else { continue }
-            let itemId = String(text[iR])
-            if !seen.insert(itemId).inserted { continue }
-            var title = String(text[tR])
-            title = title.replacingOccurrences(of: #"!\[[^\]]*\]\([^)]+\)"#, with: "", options: .regularExpression)
-            title = title.replacingOccurrences(of: "_", with: "")
-            title = title.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if title.isEmpty { continue }
-            items.append(FeedItem(
-                id: "yahoonews:\(itemId)",
-                platform: "yahoonews",
-                url: String(text[uR]),
-                title: title,
-                content_text: nil,
-                author: nil,
-                thumbnail_url: nil,
-                media_type: "article",
-                published_at: nowISO(),
-                watch_term_keyword: keyword,
-                fetched_at: nowISO()
-            ))
-        }
-        return items
+        // The old r.jina.ai markdown fallback couldn't supply real dates, so it's
+        // dropped in favour of the dated RSS path.
+        return await fetchGoogleNews(keyword: keyword, query: "\(keyword) site:news.yahoo.co.jp", platform: "yahoonews", mediaType: "article", mediaOnly: false)
     }
 
     // MARK: - NicoNico (snapshot search JSON API, Google News fallback)
@@ -301,47 +271,6 @@ final class IngestionService {
         }
     }
 
-    // MARK: - Togetter (HTML scrape, Google News fallback)
-
-    private func fetchTogetter(keyword: String, mediaOnly: Bool) async -> [FeedItem] {
-        if mediaOnly { return [] }
-        if let encoded = keyword.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
-           let url = URL(string: "https://togetter.com/search?q=\(encoded)"),
-           let (data, _) = await httpGET(url, headers: ["User-Agent": browserUA, "Accept-Language": "ja,en;q=0.9"], timeout: 15),
-           let html = String(data: data, encoding: .utf8) {
-            let pattern = #"<a[^>]+href=\"(https://togetter\.com/li/(\d+))\"[^>]*>(.*?)</a>"#
-            if let regex = try? NSRegularExpression(pattern: pattern, options: [.dotMatchesLineSeparators]) {
-                var seen = Set<String>()
-                var items = [FeedItem]()
-                for m in regex.matches(in: html, range: NSRange(html.startIndex..., in: html)) {
-                    if items.count >= 25 { break }
-                    guard let uR = Range(m.range(at: 1), in: html),
-                          let idR = Range(m.range(at: 2), in: html),
-                          let tR = Range(m.range(at: 3), in: html) else { continue }
-                    let togetterId = String(html[idR])
-                    if !seen.insert(togetterId).inserted { continue }
-                    guard let title = cleanDisplayText(String(html[tR])), !title.isEmpty else { continue }
-                    items.append(FeedItem(
-                        id: "togetter:\(togetterId)",
-                        platform: "togetter",
-                        url: String(html[uR]),
-                        title: title,
-                        content_text: nil,
-                        author: nil,
-                        thumbnail_url: nil,
-                        media_type: "article",
-                        published_at: nowISO(),
-                        watch_term_keyword: keyword,
-                        fetched_at: nowISO()
-                    ))
-                }
-                if !items.isEmpty { return items }
-            }
-        }
-        // Fallback: Google News filtered to togetter.com
-        return await fetchGoogleNews(keyword: keyword, query: "\(keyword) site:togetter.com", platform: "togetter", mediaType: "article", mediaOnly: false)
-    }
-
     // MARK: - TVer (public platform API: create token, then keyword search)
 
     private func fetchTVer(keyword: String) async -> [FeedItem] {
@@ -449,7 +378,55 @@ final class IngestionService {
                 return isoString(d)
             }
         }
+        // TVer almost always exposes only a Japanese broadcast label rather than a
+        // timestamp: "2025年放送", "6月5日(金)放送分", "5月29日(金) 18:29".
+        if let label = content["broadcastDateLabel"] as? String, !label.isEmpty,
+           let d = parseBroadcastLabel(label) {
+            return isoString(d)
+        }
         return nil
+    }
+
+    private func parseBroadcastLabel(_ label: String) -> Date? {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "UTC")!
+        let now = Date()
+
+        // Year only: "2021年放送" → mid-year placeholder.
+        if let g = regexGroups(label, #"^(\d{4})年"#), let year = Int(g[0]) {
+            return cal.date(from: DateComponents(year: year, month: 6, day: 1))
+        }
+        // Month/day with optional time: "6月5日(金)放送分", "5月29日(金) 18:29".
+        if let g = regexGroups(label, #"(\d+)月(\d+)日"#), let month = Int(g[0]), let day = Int(g[1]) {
+            var hour = 0, minute = 0
+            if let t = regexGroups(label, #"(\d+):(\d+)"#), let h = Int(t[0]), let m = Int(t[1]) {
+                hour = h; minute = m
+            }
+            let year = cal.component(.year, from: now)
+            var comps = DateComponents(year: year, month: month, day: day, hour: hour, minute: minute)
+            guard var dt = cal.date(from: comps) else { return nil }
+            // No year in the label — if the date lands more than a week in the
+            // future, it must be from last year.
+            if dt > now.addingTimeInterval(7 * 86400) {
+                comps.year = year - 1
+                dt = cal.date(from: comps) ?? dt
+            }
+            return dt
+        }
+        return nil
+    }
+
+    /// Return the capture groups (1...) of the first match, or nil if no match.
+    private func regexGroups(_ s: String, _ pattern: String) -> [String]? {
+        guard let re = try? NSRegularExpression(pattern: pattern),
+              let m = re.firstMatch(in: s, range: NSRange(s.startIndex..., in: s)),
+              m.numberOfRanges > 1 else { return nil }
+        var out = [String]()
+        for i in 1..<m.numberOfRanges {
+            guard let r = Range(m.range(at: i), in: s) else { return nil }
+            out.append(String(s[r]))
+        }
+        return out
     }
 
     // MARK: - YouTube (Data API when a key is stored, HTML scrape otherwise)
@@ -646,7 +623,11 @@ final class IngestionService {
     }
 
     private func parseRSS(_ url: URL, headers: [String: String] = [:]) async -> [RssItem] {
-        guard let (data, _) = await httpGET(url, headers: headers, timeout: 12) else { return [] }
+        // Send a browser User-Agent — news.google.com and note.com throttle/deny
+        // the default URLSession agent, which made some sources return nothing.
+        var allHeaders = ["User-Agent": browserUA, "Accept-Language": "ja,en;q=0.9"]
+        allHeaders.merge(headers) { _, override in override }
+        guard let (data, _) = await httpGET(url, headers: allHeaders, timeout: 12) else { return [] }
         let parser = XMLParser(data: data)
         let delegate = RSSParserDelegate()
         parser.delegate = delegate
@@ -697,4 +678,31 @@ final class IngestionService {
     }
 
     private func nowISO() -> String { isoString(Date()) }
+}
+
+/// A simple async concurrency gate: at most `limit` holders at once, the rest
+/// suspend until a slot frees up.
+actor RequestLimiter {
+    private let limit: Int
+    private var active = 0
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    init(limit: Int) { self.limit = limit }
+
+    func acquire() async {
+        if active < limit {
+            active += 1
+            return
+        }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func release() {
+        if let next = waiters.first {
+            waiters.removeFirst()
+            next.resume()   // hand the slot directly to a waiter
+        } else {
+            active -= 1
+        }
+    }
 }
