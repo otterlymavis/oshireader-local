@@ -480,8 +480,10 @@ struct AvatarEditorView: View {
     }
     
     private func applyAsWallpaper() async {
-        if let topLayer = layers.sorted(by: { $0.zIndex < $1.zIndex }).last {
-            db.setWallpaper(url: topLayer.imageUrl)
+        guard !layers.isEmpty else { return }
+        // Flatten the whole composition to an image (not just the top sticker).
+        if let url = await WallpaperRenderer.render(layers: layers) {
+            db.setWallpaper(url: url.absoluteString)
         }
     }
     
