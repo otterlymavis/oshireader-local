@@ -25,20 +25,26 @@ enum WallpaperRenderer {
                   let image = UIImage(data: data) else { continue }
             loaded.append((layer, image))
         }
-        guard !loaded.isEmpty else { return nil }
+        guard let png = compose(loaded)?.pngData() else { return nil }
 
-        let renderer = ImageRenderer(content: WallpaperCanvas(layers: loaded))
-        renderer.scale = 3
-        guard let uiImage = renderer.uiImage, let png = uiImage.pngData() else { return nil }
-
-        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        let url = docs.appendingPathComponent(fileName)
+        let url = localURL(for: fileName)
         do {
             try png.write(to: url, options: .atomic)
             return fileName
         } catch {
             return nil
         }
+    }
+
+    /// Flatten already-loaded layers into a single image. Network-free so it can
+    /// be unit-tested. Returns nil when there's nothing to draw.
+    @MainActor
+    static func compose(_ layers: [(layer: AvatarLayer, image: UIImage)]) -> UIImage? {
+        guard !layers.isEmpty else { return nil }
+        let sorted = layers.sorted { $0.layer.zIndex < $1.layer.zIndex }
+        let renderer = ImageRenderer(content: WallpaperCanvas(layers: sorted))
+        renderer.scale = 3
+        return renderer.uiImage
     }
 
     /// Resolve a stored wallpaper spec (remote URL or bare local filename) to a

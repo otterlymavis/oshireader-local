@@ -204,51 +204,12 @@ final class IngestionService {
         return await fetchGoogleNews(keyword: keyword, query: "\(keyword) site:nicovideo.jp", platform: "niconico", mediaType: "video", mediaOnly: false)
     }
 
-    // MARK: - note.com (search JSON API, hashtag RSS fallback)
+    // MARK: - note.com (hashtag RSS)
 
     private func fetchNote(keyword: String, mediaOnly: Bool) async -> [FeedItem] {
         if mediaOnly { return [] }
-        var comps = URLComponents(string: "https://note.com/api/v2/searches")!
-        comps.queryItems = [
-            URLQueryItem(name: "context", value: "note"),
-            URLQueryItem(name: "q", value: keyword),
-            URLQueryItem(name: "size", value: "25"),
-            URLQueryItem(name: "start", value: "0"),
-        ]
-        if let url = comps.url,
-           let (data, _) = await httpGET(url, headers: ["Accept": "application/json"], timeout: 12),
-           let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-           let dataObj = json["data"] as? [String: Any] {
-            let notesObj = dataObj["notes"]
-            let notes = (notesObj as? [String: Any])?["contents"] as? [[String: Any]]
-                ?? (notesObj as? [[String: Any]])
-                ?? []
-            var items = [FeedItem]()
-            for note in notes.prefix(25) {
-                let noteKey = (note["key"] as? String) ?? (note["id"].map { "\($0)" } ?? "")
-                if noteKey.isEmpty { continue }
-                let user = note["user"] as? [String: Any] ?? [:]
-                let urlname = user["urlname"] as? String ?? ""
-                let noteUrl = (note["noteUrl"] as? String)
-                    ?? (urlname.isEmpty ? "https://note.com/n/\(noteKey)" : "https://note.com/\(urlname)/n/\(noteKey)")
-                let published = ((note["publishAt"] ?? note["publish_at"]) as? String).flatMap(parseISO8601Date).map(isoString) ?? nowISO()
-                items.append(FeedItem(
-                    id: "note:\(noteKey)",
-                    platform: "note",
-                    url: noteUrl,
-                    title: (note["name"] as? String) ?? (note["title"] as? String),
-                    content_text: note["body"] as? String,
-                    author: (user["name"] as? String) ?? (urlname.isEmpty ? nil : urlname),
-                    thumbnail_url: note["eyecatch"] as? String,
-                    media_type: "article",
-                    published_at: published,
-                    watch_term_keyword: keyword,
-                    fetched_at: nowISO()
-                ))
-            }
-            if !items.isEmpty { return items }
-        }
-        // Fallback: hashtag RSS
+        // note.com's old /api/v2/searches endpoint now 404s, so we use the
+        // hashtag RSS feed (notes tagged with the keyword) directly.
         guard let encoded = keyword.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
               let url = URL(string: "https://note.com/hashtag/\(encoded)/rss") else { return [] }
         let entries = await parseRSS(url)

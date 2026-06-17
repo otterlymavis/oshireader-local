@@ -1,5 +1,6 @@
 import XCTest
 import SwiftUI
+import UIKit
 import UserNotifications
 @testable import OshiReader
 
@@ -131,6 +132,25 @@ final class OshiReaderTests: XCTestCase {
     func testAPNSDeviceTokenStringUsesLowercaseHex() throws {
         let data = Data([0x00, 0x0f, 0xa1, 0xff])
         XCTAssertEqual(NotificationManager.deviceTokenString(data), "000fa1ff")
+    }
+
+    @MainActor
+    func testWallpaperRendererFlattensComposition() throws {
+        // Solid-color stand-in for a downloaded sticker (no network).
+        let sz = CGSize(width: 40, height: 40)
+        let sticker = UIGraphicsImageRenderer(size: sz).image { ctx in
+            UIColor.systemPink.setFill()
+            ctx.fill(CGRect(origin: .zero, size: sz))
+        }
+        let layer = AvatarLayer(imageUrl: "stub", x: 100, y: 100, scale: 1.0, zIndex: 1)
+
+        let composed = WallpaperRenderer.compose([(layer, sticker)])
+        XCTAssertNotNil(composed, "compose should flatten layers into an image")
+        XCTAssertGreaterThan(composed?.size.width ?? 0, 0)
+        XCTAssertNotNil(composed?.pngData(), "composed image should encode to PNG")
+
+        // No layers → nothing to draw.
+        XCTAssertNil(WallpaperRenderer.compose([]))
     }
 
     @MainActor
