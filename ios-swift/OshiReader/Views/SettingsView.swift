@@ -412,7 +412,6 @@ struct SettingsView: View {
                     
                     Spacer()
                 }
-                .accessibilityIdentifier("settings.addKeywordSheet")
                 .padding()
                 .background(theme.colors.bg)
                 .presentationDetents([.medium])

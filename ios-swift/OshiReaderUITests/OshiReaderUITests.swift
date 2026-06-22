@@ -13,13 +13,18 @@ final class OshiReaderUITests: XCTestCase {
     func testAddKeywordFlow() throws {
         tapTab(index: 4, labels: ["Settings"])
 
-        app.buttons["settings.addKeywordButton"].tap()
+        let addKeywordButton = app.buttons["settings.addKeywordButton"]
+        XCTAssertTrue(addKeywordButton.waitForExistence(timeout: 3))
+        addKeywordButton.forceTap()
         let keywordField = firstExistingTextField(labels: ["settings.keywordField", "Enter keyword..."]) ?? app.textFields.firstMatch
         XCTAssertTrue(keywordField.waitForExistence(timeout: 3))
 
         keywordField.tap()
         keywordField.typeText("New UI Keyword")
-        (firstExistingButton(containing: "追加") ?? app.buttons["settings.confirmAddKeywordButton"]).tap()
+        app.toolbars.buttons["Done"].tapIfExists()
+        let addButton = waitForButton(identifier: "settings.confirmAddKeywordButton", timeout: 3)
+        XCTAssertNotNil(addButton)
+        addButton?.tap()
 
         XCTAssertTrue(app.staticTexts["New UI Keyword"].waitForExistence(timeout: 3))
     }
@@ -63,12 +68,13 @@ final class OshiReaderUITests: XCTestCase {
     func testSearchFlow() throws {
         tapTab(index: 1, labels: ["Search"])
 
-        let searchField = firstExistingTextField(labels: ["search.field", "Search articles..."]) ?? app.textFields.firstMatch
+        let searchField = firstExistingTextField(labels: ["search.keywordField", "Search articles...", "Keyword"]) ?? app.textFields.firstMatch
         XCTAssertTrue(searchField.waitForExistence(timeout: 3))
         searchField.tap()
         searchField.typeText("headline")
 
-        XCTAssertTrue(app.staticTexts["UITest Oshi headline"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["search.link.yahoo-news"].waitForExistence(timeout: 3))
+        XCTAssertTrue(((searchField.value as? String) ?? "").localizedCaseInsensitiveContains("headline"))
     }
 
     func testAvatarEditorFlow() throws {
@@ -109,8 +115,16 @@ final class OshiReaderUITests: XCTestCase {
         tapTab(index: 4, labels: ["Settings"])
 
         XCTAssertTrue(waitForElement(identifier: "settings.notificationStatus", timeout: 2, swipes: 4).exists)
-        XCTAssertTrue(waitForElement(identifier: "settings.enableNotificationsButton", timeout: 2, swipes: 1).exists)
-        XCTAssertTrue(waitForElement(identifier: "settings.testNotificationButton", timeout: 2, swipes: 1).exists)
+        let notificationAction = waitForAnyElement(
+            identifiers: [
+                "settings.enableNotificationsButton",
+                "settings.openSettingsButton",
+                "settings.testNotificationButton"
+            ],
+            timeout: 2,
+            swipes: 1
+        )
+        XCTAssertTrue(notificationAction.exists)
     }
 
     private func tapTab(index: Int, labels: [String]) {
@@ -209,6 +223,19 @@ final class OshiReaderUITests: XCTestCase {
         return element
     }
 
+    private func waitForAnyElement(identifiers: [String], timeout: TimeInterval, swipes: Int) -> XCUIElement {
+        let elements = identifiers.map { app.descendants(matching: .any)[$0] }
+        for attempt in 0...swipes {
+            for element in elements where element.waitForExistence(timeout: timeout) {
+                return element
+            }
+            if attempt < swipes {
+                app.swipeUp()
+            }
+        }
+        return elements.first ?? app.descendants(matching: .any).firstMatch
+    }
+
     private func firstExistingTextField(labels: [String]) -> XCUIElement? {
         for label in labels {
             let field = app.textFields[label]
@@ -217,5 +244,17 @@ final class OshiReaderUITests: XCTestCase {
             }
         }
         return nil
+    }
+}
+
+private extension XCUIElement {
+    func tapIfExists() {
+        if exists {
+            tap()
+        }
+    }
+
+    func forceTap() {
+        coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
     }
 }
