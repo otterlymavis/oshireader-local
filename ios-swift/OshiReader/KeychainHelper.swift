@@ -2,8 +2,7 @@ import Foundation
 import Security
 
 /// Minimal Keychain wrapper for storing on-device API credentials
-/// (YouTube Data API key, X/Twitter bearer token). Replaces the old
-/// backend `/api/credentials` endpoint now that ingestion runs locally.
+/// (YouTube Data API key, X/Twitter bearer token).
 enum KeychainHelper {
     private static let service = "com.otterpia.oshireader.credentials"
 

@@ -1,9 +1,8 @@
 import Foundation
 
-/// On-device replacement for the former FastAPI ingestion backend.
+/// On-device ingestion for public RSS feeds, JSON APIs, and pages.
 ///
-/// Each `fetch*` method mirrors one Python connector in `backend/app/connectors`,
-/// reading the same public RSS feeds / JSON APIs / pages directly from the phone.
+/// Each `fetch*` method reads directly from the phone.
 /// `ingest(term:platforms:)` fans them out for a single watch term and returns
 /// flat `FeedItem`s ready for `LocalDB.mergeItems`.
 final class IngestionService {
@@ -55,9 +54,7 @@ final class IngestionService {
     //
     // Discovery is a keyword-targeted Google News search (reliable, relevant),
     // augmented by a couple of general entertainment feeds filtered client-side.
-    // (The backend's sponichi/hochi feeds are dead at the source; natalie + NHK
-    // still work. "news" items are also keyword-filtered at display time in
-    // LocalDB.queryFeed.)
+    // "news" items are also keyword-filtered at display time in LocalDB.queryFeed.
     private static let curatedFeeds = [
         "https://natalie.mu/music/feed/news",
         "https://natalie.mu/tv/feed/news",

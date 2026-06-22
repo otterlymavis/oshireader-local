@@ -6,7 +6,7 @@ func parseISO8601Date(_ value: String) -> Date? {
     if let date = iso.date(from: value) { return date }
     iso.formatOptions = [.withInternetDateTime]
     if let date = iso.date(from: value) { return date }
-    // Naive datetime (no timezone) from older backend rows — treat as UTC
+    // Naive datetime without a timezone is treated as UTC.
     let df = DateFormatter()
     df.locale = Locale(identifier: "en_US_POSIX")
     df.timeZone = TimeZone(identifier: "UTC")
@@ -104,31 +104,6 @@ struct FeedItem: Codable, Hashable, Identifiable {
     let published_at: String
     let watch_term_keyword: String
     let fetched_at: String
-}
-
-// MARK: - Backend Nested FeedItem
-struct BackendFeedItem: Codable {
-    let match_id: Int
-    let watch_term_id: Int
-    let watch_term_keyword: String
-    let item: SourceItem
-    let matched_at: String
-    
-    func toFeedItem() -> FeedItem {
-        return FeedItem(
-            id: item.id,
-            platform: item.platform,
-            url: item.url,
-            title: item.title,
-            content_text: item.content_text,
-            author: item.author,
-            thumbnail_url: item.thumbnail_url,
-            media_type: item.media_type ?? "article",
-            published_at: item.published_at,
-            watch_term_keyword: watch_term_keyword,
-            fetched_at: matched_at
-        )
-    }
 }
 
 // MARK: - SavedPage

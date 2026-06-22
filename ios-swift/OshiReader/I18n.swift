@@ -237,12 +237,6 @@ class I18nManager: ObservableObject {
             "zh-TW": "關鍵字（例：偶像名稱）",
             "zh-CN": "关键字（例：偶像名字）"
         ],
-        "backendUrl": [
-            "en": "Backend Server Base URL",
-            "ja": "バックエンドサーバーURL",
-            "zh-TW": "後台伺服器URL",
-            "zh-CN": "后台服务器URL"
-        ],
         "readerModeText": [
             "en": "Reader Text Mode",
             "ja": "リーダーテキスト表示",

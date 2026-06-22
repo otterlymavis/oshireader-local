@@ -442,7 +442,7 @@ struct PrivacyPolicyView: View {
 
                 policySection(
                     title: "Data Sent for App Functionality",
-                    body: "When you add watch keywords, refresh feeds, search stickers, translate sticker queries, or open articles, related keywords, search text, URLs, and article requests may be sent to the configured Oshi Reader backend, Google services, Irasutoya/Blogger feeds, news feeds, and the websites you choose to open."
+                    body: "When you add watch keywords, refresh feeds, search stickers, translate sticker queries, or open articles, related keywords, search text, URLs, and article requests may be sent to Google services, Irasutoya/Blogger feeds, news feeds, and the websites you choose to open."
                 )
 
                 policySection(

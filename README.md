@@ -2,54 +2,14 @@
 
 OshiReader is a native SwiftUI iOS app that tracks favorite creators, idols, and topics across supported Japanese media sources and presents matched items in a feed.
 
-> **Local-only:** the iOS app now performs **all ingestion on-device** (see `ios-swift/OshiReader/IngestionService.swift`) and stores everything locally. It requires no server at runtime. The `backend/` FastAPI service below is **dormant** — kept for reference/rollback but no longer used by the app.
+The app is local-only: ingestion runs on-device in `ios-swift/OshiReader/IngestionService.swift`, and feed data is stored locally. There is no backend service or scheduled GitHub poll in this repository.
 
 ## Project Structure
 
 ```text
 oshireader/
-├── backend/            # FastAPI service and ingestion scheduler (DORMANT — not used by the app)
-└── ios-swift/          # Native iOS SwiftUI application (runs ingestion on-device)
-```
-
-## Backend
-
-The backend exposes a REST API for watch terms, feed items, credentials, admin stats, and manual polling. It also runs a scheduled ingestion job.
-
-### Setup
-
-```bash
-cd backend
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-uvicorn app.main:app --reload
-```
-
-The API runs at `http://127.0.0.1:8000`, with interactive docs at `http://127.0.0.1:8000/docs`.
-
-### Configuration
-
-Backend settings are loaded from environment variables or `backend/.env`.
-
-| Environment Variable | Default | Description |
-|---|---:|---|
-| `DATABASE_URL` | `sqlite:///./otterpia.db` | SQLAlchemy database URL. Use a PostgreSQL URL for production. |
-| `YOUTUBE_API_KEY` | empty | Optional YouTube Data API key. The connector falls back to scraping when absent. |
-| `POLL_INTERVAL_MINUTES` | `15` | Scheduler interval for automatic ingestion. |
-| `ADMIN_API_TOKEN` | empty | Optional bearer token required for admin, credential, and watch-term write endpoints. Set this in production. |
-| `CORS_ALLOW_ORIGINS` | empty | Comma-separated browser origins allowed by CORS. Native iOS calls do not need CORS. |
-| `APNS_TEAM_ID` | empty | Apple Developer Team ID for remote push notifications. |
-| `APNS_KEY_ID` | empty | Apple APNs auth key ID. |
-| `APNS_PRIVATE_KEY` | empty | APNs `.p8` private key text. Use escaped `\n` line breaks if storing in one environment variable. |
-| `APNS_PRIVATE_KEY_PATH` | empty | Alternative path to the APNs `.p8` private key file. |
-| `APNS_TOPIC` | `com.otterpia.oshireader.plus` | APNs topic, usually the iOS bundle identifier. |
-| `APNS_USE_SANDBOX` | `true` | Use APNs sandbox host for development builds. Set to `false` for production tokens. |
-
-When `ADMIN_API_TOKEN` is set, protected requests must include:
-
-```text
-Authorization: Bearer <token>
+├── ios-swift/          # Native iOS SwiftUI application
+└── mobile/             # Mobile scraper/package experiments
 ```
 
 ## Native iOS App
@@ -66,33 +26,29 @@ open OshiReader.xcodeproj
 
 Select a simulator or device in Xcode and run the `OshiReader` scheme.
 
-The app is a universal iPhone and iPad build. Use schemes to choose the backend environment:
+The app is a universal iPhone and iPad build. The schemes select build configurations only:
 
-| Scheme | Configuration | Backend |
-|---|---|---|
-| `OshiReader Local` | `Debug` | `http://127.0.0.1:8000` |
-| `OshiReader Staging` | `Staging` | production URL until a staging backend is deployed |
-| `OshiReader Production` | `Release` | `https://otterpia-backend-production.up.railway.app` |
+| Scheme | Configuration |
+|---|---|
+| `OshiReader Local` | `Debug` |
+| `OshiReader Staging` | `Staging` |
+| `OshiReader Production` | `Release` |
 
-The backend URL is injected through `OshiReaderAPIBaseURL` in `Info.plist`, with values generated from `ios-swift/project.yml`.
+## Supported Sources
 
-Remote push notifications use APNs. The Swift app registers its APNs device token after notification permission is granted, then posts that token to `/api/devices/apns-token`. The backend sends remote notifications for new matches only when the watch term has notifications enabled.
-
-## Supported Backend Sources
-
-The backend scheduler currently registers these connectors:
+On-device ingestion currently reads these sources:
 
 | Platform | Source |
 |---|---|
-| YouTube | YouTube Data API or search scrape fallback |
+| YouTube | Search scrape fallback |
 | NicoNico | NicoNico snapshot search API |
 | TVer | TVer keyword search APIs |
 | Note | Public tag RSS feeds |
-| 5channel | Thread index scraping |
-| Girls Channel | Forum topic scraping |
+| 5channel | Google News site-filtered results |
+| Girls Channel | Google News site-filtered results |
 | Togetter | Curation page scraping |
 | ModelPress | ModelPress article search |
 | YahooNews | Yahoo News article search through a text mirror for EEA-safe access |
 | News/RSS | Curated Japanese entertainment RSS feeds |
 
-Watch terms support aliases. The scheduler searches the primary keyword and each alias while storing matches against the original watch term.
+Watch terms support aliases. Ingestion searches the primary keyword and each alias while storing matches against the original watch term.
