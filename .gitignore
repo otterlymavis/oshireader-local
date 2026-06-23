@@ -14,6 +14,9 @@ mobile/.expo/
 mobile/dist/
 mobile/tmp_*.json
 
+# Xcode
+xcuserdata/
+
 # General
 *.pyc
 .DS_Store

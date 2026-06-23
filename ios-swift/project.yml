@@ -26,6 +26,7 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         SWIFT_VERSION: "5.9"
         GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.utilities
         TARGETED_DEVICE_FAMILY: "1,2"
         # Always emit a dSYM so any archive can be uploaded for crash symbolication.
         DEBUG_INFORMATION_FORMAT: dwarf-with-dsym

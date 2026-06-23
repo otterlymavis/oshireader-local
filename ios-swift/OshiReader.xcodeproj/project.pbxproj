@@ -445,6 +445,7 @@
 				DEVELOPMENT_TEAM = D8H3TBWH7P;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = OshiReader/Info.plist;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -471,6 +472,7 @@
 				DEVELOPMENT_TEAM = D8H3TBWH7P;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = OshiReader/Info.plist;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -497,6 +499,7 @@
 				DEVELOPMENT_TEAM = D8H3TBWH7P;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = OshiReader/Info.plist;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
