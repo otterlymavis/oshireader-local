@@ -75,6 +75,68 @@ final class OshiReaderTests: XCTestCase {
         ])
     }
 
+    func testWatchTermDecodesLegacyBackupWithoutSourceSelection() throws {
+        let legacy = #"{"id":"legacy","keyword":"Legacy Oshi","collection_mode":"all_info","is_active":true,"notify_on_new":false,"aliases":[],"created_at":"2026-01-01T00:00:00Z"}"#.data(using: .utf8)!
+        let term = try JSONDecoder().decode(WatchTerm.self, from: legacy)
+
+        XCTAssertEqual(term.source_mode, .all)
+        XCTAssertEqual(term.selected_platforms, [])
+    }
+
+    func testISO8601DateParsingCachePreservesSupportedFormatsAndFailures() {
+        let zoned = "2026-01-01T12:34:56.123Z"
+        let naive = "2026-01-01T12:34:56"
+
+        XCTAssertNotNil(parseISO8601Date(zoned))
+        XCTAssertNotNil(parseISO8601Date(zoned))
+        XCTAssertNotNil(parseISO8601Date(naive))
+        XCTAssertNil(parseISO8601Date("not-a-date"))
+        XCTAssertNil(parseISO8601Date("not-a-date"))
+    }
+
+    @MainActor
+    func testSelectedSourcesAdvanceRevisionAndFilterIngestion() throws {
+        let initialRevision = db.dataRevision
+        let term = db.saveTerm(
+            keyword: "Selected Oshi",
+            sourceMode: .selected,
+            selectedPlatforms: [" youtube ", "unknown", "youtube"]
+        )
+
+        XCTAssertEqual(term.source_mode, .selected)
+        XCTAssertEqual(term.selected_platforms, ["youtube"])
+        XCTAssertGreaterThan(db.dataRevision, initialRevision)
+        XCTAssertEqual(
+            IngestionService.effectivePlatforms(for: term, available: ["youtube", "news", "tver"]),
+            ["youtube"]
+        )
+
+        let revisionAfterCreate = db.dataRevision
+        db.updateTerm(id: term.id, sourceMode: .selected, selectedPlatforms: [])
+        XCTAssertEqual(db.terms.first?.source_mode, .all)
+        XCTAssertEqual(db.terms.first?.selected_platforms, [])
+        XCTAssertGreaterThan(db.dataRevision, revisionAfterCreate)
+    }
+
+    @MainActor
+    func testUnsubscribingSourcesNormalizesSelectedTermSources() throws {
+        let term = db.saveTerm(
+            keyword: "Subscription Oshi",
+            sourceMode: .selected,
+            selectedPlatforms: ["youtube", "news"]
+        )
+
+        db.setSubscribedPlatforms(platforms: ["news", "tver"])
+        let partiallyValid = try XCTUnwrap(db.terms.first(where: { $0.id == term.id }))
+        XCTAssertEqual(partiallyValid.source_mode, .selected)
+        XCTAssertEqual(partiallyValid.selected_platforms, ["news"])
+
+        db.setSubscribedPlatforms(platforms: ["tver"])
+        let noLongerValid = try XCTUnwrap(db.terms.first(where: { $0.id == term.id }))
+        XCTAssertEqual(noLongerValid.source_mode, .all)
+        XCTAssertEqual(noLongerValid.selected_platforms, [])
+    }
+
     func testRequestLimiterCancellationDoesNotLeakOrBlockNextAcquire() async {
         let limiter = RequestLimiter(limit: 1)
         let firstAcquire = await limiter.acquire()
@@ -297,6 +359,25 @@ final class OshiReaderTests: XCTestCase {
     }
 
     @MainActor
+    func testBatchedMergeMatchesSingleMergeSemantics() throws {
+        let now = ISO8601DateFormatter().string(from: Date())
+        let first = FeedItem(
+            id: "batch:first", platform: "news", url: "https://example.com/first",
+            title: "First", content_text: nil, author: nil, thumbnail_url: nil,
+            media_type: "article", published_at: now, watch_term_keyword: "Batch", fetched_at: now
+        )
+        let second = FeedItem(
+            id: "batch:second", platform: "news", url: "https://example.com/second",
+            title: "Second", content_text: nil, author: nil, thumbnail_url: nil,
+            media_type: "article", published_at: now, watch_term_keyword: "Batch", fetched_at: now
+        )
+
+        let added = db.mergeItemsBatched(newItemsBatches: [[first], [second]])
+        XCTAssertEqual(added, 2)
+        XCTAssertEqual(Set(db.feedItems.map(\.id)), Set([first.id, second.id]))
+    }
+
+    @MainActor
     func testNotificationManagerSchedulesTestNotificationAfterAuthorization() async throws {
         let center = MockNotificationCenter(status: .notDetermined, grantsAuthorization: true)
         let manager = NotificationManager(center: center)
@@ -502,7 +583,13 @@ final class OshiReaderTests: XCTestCase {
     @MainActor
     func testLocalBackupRoundTrip() throws {
         let now = ISO8601DateFormatter().string(from: Date())
-        let term = WatchTerm(keyword: "Backup Oshi", collection_mode: "media_only", notify_on_new: true)
+        let term = WatchTerm(
+            keyword: "Backup Oshi",
+            collection_mode: "media_only",
+            source_mode: .selected,
+            selected_platforms: ["youtube", "news"],
+            notify_on_new: true
+        )
         let item = FeedItem(
             id: "news:backup",
             platform: "news",

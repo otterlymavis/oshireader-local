@@ -1,4 +1,73 @@
 import SwiftUI
+import ImageIO
+import UIKit
+
+/// Feed cards only need small images. Downsampling before UIImage creation keeps
+/// large source images from causing scroll-time memory spikes.
+actor FeedThumbnailLoader {
+    static let shared = FeedThumbnailLoader()
+
+    private let cache = NSCache<NSURL, UIImage>()
+    private var inFlight: [URL: Task<UIImage?, Never>] = [:]
+    private let maxPixelSize: Int
+
+    init(maxPixelSize: Int = 144) {
+        self.maxPixelSize = maxPixelSize
+        cache.countLimit = 100
+        cache.totalCostLimit = 24 * 1024 * 1024
+    }
+
+    func image(for url: URL) async -> UIImage? {
+        if let cached = cache.object(forKey: url as NSURL) { return cached }
+        if let existing = inFlight[url] { return await existing.value }
+
+        let maxPixelSize = maxPixelSize
+        let task = Task<UIImage?, Never> {
+            guard let (data, response) = try? await URLSession.shared.data(from: url),
+                  let http = response as? HTTPURLResponse,
+                  (200...299).contains(http.statusCode),
+                  let source = CGImageSourceCreateWithData(data as CFData, nil),
+                  let image = CGImageSourceCreateThumbnailAtIndex(
+                    source,
+                    0,
+                    [
+                        kCGImageSourceCreateThumbnailFromImageAlways: true,
+                        kCGImageSourceCreateThumbnailWithTransform: true,
+                        kCGImageSourceThumbnailMaxPixelSize: maxPixelSize
+                    ] as CFDictionary
+                  ) else { return nil }
+            return UIImage(cgImage: image)
+        }
+        inFlight[url] = task
+        let result = await task.value
+        inFlight[url] = nil
+        if let result { cache.setObject(result, forKey: url as NSURL, cost: result.jpegData(compressionQuality: 0.8)?.count ?? 1) }
+        return result
+    }
+}
+
+private struct FeedThumbnailView: View {
+    let url: URL
+    @State private var image: UIImage?
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+            } else {
+                Color.gray.opacity(0.1)
+            }
+        }
+        .frame(width: 72, height: 72)
+        .clipped()
+        .cornerRadius(8)
+        .task(id: url) {
+            image = await FeedThumbnailLoader.shared.image(for: url)
+        }
+    }
+}
 
 struct FeedView: View {
     @StateObject private var db = LocalDB.shared
@@ -496,17 +565,21 @@ struct FeedView: View {
         await withTaskGroup(of: [FeedItem].self) { group in
             var iterator = terms.makeIterator()
             var running = 0
+            var batches = [[FeedItem]]()
             while running < maxConcurrentTerms, let term = iterator.next() {
                 group.addTask { await IngestionService.shared.ingest(term: term, platforms: platforms) }
                 running += 1
             }
             for await items in group {
                 if !items.isEmpty {
-                    _ = db.mergeItems(newItems: items, sourceRevision: sourceRevision)
+                    batches.append(items)
                 }
                 if let term = iterator.next() {
                     group.addTask { await IngestionService.shared.ingest(term: term, platforms: platforms) }
                 }
+            }
+            if !batches.isEmpty {
+                _ = db.mergeItemsBatched(newItemsBatches: batches, sourceRevision: sourceRevision)
             }
         }
     }
@@ -631,21 +704,7 @@ struct FeedCard: View {
                 
                 // Optional Thumbnail URL
                 if let thumb = item.thumbnail_url, let url = URL(string: thumb) {
-                    AsyncImage(url: url) { phase in
-                        switch phase {
-                        case .success(let img):
-                            img
-                                .resizable()
-                                .aspectRatio(contentMode: .fill)
-                                .frame(width: 72, height: 72)
-                                .clipped()
-                                .cornerRadius(8)
-                        default:
-                            Color.gray.opacity(0.1)
-                                .frame(width: 72, height: 72)
-                                .cornerRadius(8)
-                        }
-                    }
+                    FeedThumbnailView(url: url)
                 }
             }
         }

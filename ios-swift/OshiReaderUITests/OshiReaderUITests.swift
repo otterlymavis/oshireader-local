@@ -29,6 +29,39 @@ final class OshiReaderUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["New UI Keyword"].waitForExistence(timeout: 3))
     }
 
+    func testAddKeywordWithSelectedSourceFlow() throws {
+        tapTab(index: 4, labels: ["Settings"])
+
+        let addKeywordButton = app.buttons["settings.addKeywordButton"]
+        XCTAssertTrue(addKeywordButton.waitForExistence(timeout: 3))
+        addKeywordButton.forceTap()
+
+        let keywordField = firstExistingTextField(labels: ["settings.keywordField", "Enter keyword..."]) ?? app.textFields.firstMatch
+        XCTAssertTrue(keywordField.waitForExistence(timeout: 3))
+        keywordField.tap()
+        keywordField.typeText("Selected Source UI Keyword")
+        app.toolbars.buttons["Done"].tapIfExists()
+
+        let selectedMode = waitForAnyButton(containing: ["Selected", "選択", "選取", "选择"], timeout: 3)
+        XCTAssertNotNil(selectedMode)
+        selectedMode?.tap()
+
+        let sourceMenu = app.buttons["settings.newKeywordSources"]
+        XCTAssertTrue(sourceMenu.waitForExistence(timeout: 3))
+        sourceMenu.tap()
+
+        let youtubeSource = app.buttons["settings.newKeywordSource.youtube"]
+        XCTAssertTrue(youtubeSource.waitForExistence(timeout: 3))
+        youtubeSource.tap()
+
+        XCTAssertTrue(sourceMenu.waitForExistence(timeout: 3))
+        let addButton = waitForButton(identifier: "settings.confirmAddKeywordButton", timeout: 3)
+        XCTAssertNotNil(addButton)
+        addButton?.tap()
+
+        XCTAssertTrue(app.staticTexts["Selected Source UI Keyword"].waitForExistence(timeout: 3))
+    }
+
     func testRefreshFeedAndFilterSheet() throws {
         tapTab(index: 0, labels: ["Feed"])
 

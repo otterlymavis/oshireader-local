@@ -625,6 +625,36 @@ class I18nManager: ObservableObject {
             "zh-TW": "收集模式",
             "zh-CN": "收集模式"
         ],
+        "sourceSelection": [
+            "en": "Sources",
+            "ja": "ソース",
+            "zh-TW": "來源",
+            "zh-CN": "来源"
+        ],
+        "allSources": [
+            "en": "All sources",
+            "ja": "すべてのソース",
+            "zh-TW": "所有來源",
+            "zh-CN": "所有来源"
+        ],
+        "selectedSources": [
+            "en": "Selected",
+            "ja": "選択",
+            "zh-TW": "選取",
+            "zh-CN": "选择"
+        ],
+        "chooseSources": [
+            "en": "Choose sources",
+            "ja": "ソースを選択",
+            "zh-TW": "選擇來源",
+            "zh-CN": "选择来源"
+        ],
+        "sourcesSelectedCount": [
+            "en": "%d sources selected",
+            "ja": "%d件のソースを選択中",
+            "zh-TW": "已選取 %d 個來源",
+            "zh-CN": "已选择 %d 个来源"
+        ],
         "add": [
             "en": "Add",
             "ja": "追加",

@@ -143,25 +143,37 @@ final class BackgroundRefreshManager {
             try await withThrowingTaskGroup(of: [FeedItem].self) { group in
                 var iterator = activeTerms.makeIterator()
                 var running = 0
+                var batches = [[FeedItem]]()
                 while running < Self.maxConcurrentTerms, let term = iterator.next() {
                     group.addTask {
                         await IngestionService.shared.ingest(term: term, platforms: platforms)
                     }
                     running += 1
                 }
-                for try await items in group {
-                    try Task.checkCancellation()
-                    guard activeRefreshGeneration == generation else { throw CancellationError() }
-                    if !items.isEmpty {
-                        _ = LocalDB.shared.mergeItems(newItems: items, sourceRevision: sourceRevision)
-                    }
-                    running -= 1
-                    if let term = iterator.next() {
-                        group.addTask {
-                            await IngestionService.shared.ingest(term: term, platforms: platforms)
+                do {
+                    for try await items in group {
+                        try Task.checkCancellation()
+                        guard activeRefreshGeneration == generation else { throw CancellationError() }
+                        if !items.isEmpty {
+                            batches.append(items)
                         }
-                        running += 1
+                        running -= 1
+                        if let term = iterator.next() {
+                            group.addTask {
+                                await IngestionService.shared.ingest(term: term, platforms: platforms)
+                            }
+                            running += 1
+                        }
                     }
+                } catch {
+                    // Keep completed term results when the refresh is cancelled or invalidated.
+                    if !batches.isEmpty {
+                        _ = LocalDB.shared.mergeItemsBatched(newItemsBatches: batches, sourceRevision: sourceRevision)
+                    }
+                    throw error
+                }
+                if !batches.isEmpty {
+                    _ = LocalDB.shared.mergeItemsBatched(newItemsBatches: batches, sourceRevision: sourceRevision)
                 }
             }
         }
@@ -174,6 +186,8 @@ final class BackgroundRefreshManager {
         if !customItems.isEmpty {
             _ = LocalDB.shared.mergeItems(newItems: customItems, sourceRevision: sourceRevision)
         }
+
+        LocalDB.shared.flushPendingFeedItemsSave()
 
         guard activeRefreshGeneration == generation else { throw CancellationError() }
         UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "background_refresh.last_completed_at")

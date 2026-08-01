@@ -98,4 +98,14 @@ enum PlatformRegistry {
     static var strictKeywordPlatformIDs: Set<String> {
         Set(all.filter(\.usesStrictKeywordMatching).map(\.id))
     }
+
+    static func normalizeIDs(_ ids: [String]) -> [String] {
+        let known = Set(all.map(\.id))
+        var seen = Set<String>()
+        return ids.compactMap { raw in
+            let id = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard known.contains(id), seen.insert(id).inserted else { return nil }
+            return id
+        }
+    }
 }

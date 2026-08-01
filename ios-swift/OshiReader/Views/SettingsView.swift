@@ -31,6 +31,8 @@ struct SettingsView: View {
     @State private var showingClearAllAlert = false
     @State private var newKeyword = ""
     @State private var newCollectionMode = "all_info"
+    @State private var newSourceMode: SourceMode = .all
+    @State private var newSelectedPlatforms = Set<String>()
     @State private var addingAliasForId: String? = nil
     @State private var newAliasText = ""
     // API token lives in the Keychain now that ingestion runs on-device.
@@ -45,6 +47,13 @@ struct SettingsView: View {
     
     var allPlatforms: [(String, String)] {
         PlatformRegistry.all.map { ($0.id, "\($0.icon) \($0.name)") }
+    }
+
+    private var selectablePlatforms: [(String, String)] {
+        let subscribed = Set(db.subscribedPlatforms)
+        return allPlatforms.filter { key, _ in
+            key != "custom" && subscribed.contains(key)
+        }
     }
     
     var body: some View {
@@ -208,6 +217,8 @@ struct SettingsView: View {
 
                                 Spacer()
                             }
+
+                            sourceSelectionMenu(for: term)
                         }
                         .accessibilityIdentifier("settings.keywordRow.\(term.keyword)")
                     }
@@ -423,6 +434,38 @@ struct SettingsView: View {
                         Text("📹 " + i18n.t("mediaOnly")).tag("media_only")
                     }
                     .pickerStyle(.segmented)
+
+                    Picker(i18n.t("sourceSelection"), selection: $newSourceMode) {
+                        Text(i18n.t("allSources")).tag(SourceMode.all)
+                        Text(i18n.t("selectedSources")).tag(SourceMode.selected)
+                    }
+                    .pickerStyle(.segmented)
+
+                    if newSourceMode == .selected {
+                        Menu {
+                            ForEach(selectablePlatforms, id: \.0) { key, label in
+                                Button {
+                                    if newSelectedPlatforms.contains(key) {
+                                        newSelectedPlatforms.remove(key)
+                                    } else {
+                                        newSelectedPlatforms.insert(key)
+                                    }
+                                } label: {
+                                    Label(label, systemImage: newSelectedPlatforms.contains(key) ? "checkmark.square" : "square")
+                                }
+                                .accessibilityIdentifier("settings.newKeywordSource.\(key)")
+                            }
+                        } label: {
+                            Label(
+                                newSelectedPlatforms.isEmpty
+                                    ? i18n.t("chooseSources")
+                                    : i18n.tFormat("sourcesSelectedCount", newSelectedPlatforms.count),
+                                systemImage: "line.3.horizontal.decrease.circle"
+                            )
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .accessibilityIdentifier("settings.newKeywordSources")
+                    }
                     
                     HStack(spacing: 10) {
                         Button(i18n.t("cancel")) {
@@ -443,7 +486,13 @@ struct SettingsView: View {
                                 showingAddKeywordAlert = false
                                 return
                             }
-                            let savedTerm = db.saveTerm(keyword: trimmed, collectionMode: newCollectionMode)
+                            let savedMode = newSourceMode == .selected && !newSelectedPlatforms.isEmpty ? SourceMode.selected : .all
+                            let savedTerm = db.saveTerm(
+                                keyword: trimmed,
+                                collectionMode: newCollectionMode,
+                                sourceMode: savedMode,
+                                selectedPlatforms: Array(newSelectedPlatforms).sorted()
+                            )
                             let sourceRevision = db.dataRevision
 
                             // Fetch the new keyword right away rather than waiting
@@ -458,6 +507,8 @@ struct SettingsView: View {
                             }
 
                             newKeyword = ""
+                            newSourceMode = .all
+                            newSelectedPlatforms = []
                             showingAddKeywordAlert = false
                         }
                         .accessibilityIdentifier("settings.confirmAddKeywordButton")
@@ -543,6 +594,48 @@ struct SettingsView: View {
         }
         newAliasText = ""
         addingAliasForId = nil
+    }
+
+    @ViewBuilder
+    private func sourceSelectionMenu(for term: WatchTerm) -> some View {
+        Menu {
+            Button {
+                db.updateTerm(id: term.id, sourceMode: .all, selectedPlatforms: [])
+            } label: {
+                Label(i18n.t("allSources"), systemImage: term.source_mode == .all ? "checkmark" : "globe")
+            }
+
+            Divider()
+
+            ForEach(selectablePlatforms, id: \.0) { key, label in
+                Button {
+                    var selected = term.source_mode == .selected ? Set(term.selected_platforms) : []
+                    if selected.contains(key) {
+                        selected.remove(key)
+                    } else {
+                        selected.insert(key)
+                    }
+                    db.updateTerm(
+                        id: term.id,
+                        sourceMode: selected.isEmpty ? .all : .selected,
+                        selectedPlatforms: Array(selected).sorted()
+                    )
+                } label: {
+                    Label(label, systemImage: term.source_mode == .selected && term.selected_platforms.contains(key) ? "checkmark.square" : "square")
+                }
+                .accessibilityIdentifier("settings.keywordSource.\(term.keyword).\(key)")
+            }
+        } label: {
+            Label(
+                term.source_mode == .all
+                    ? i18n.t("allSources")
+                    : i18n.tFormat("sourcesSelectedCount", term.selected_platforms.count),
+                systemImage: term.source_mode == .all ? "globe" : "line.3.horizontal.decrease.circle"
+            )
+            .font(.caption)
+            .foregroundColor(theme.colors.textMuted)
+        }
+        .accessibilityIdentifier("settings.keywordSources.\(term.keyword)")
     }
 
     private func displayName(for choice: AppFontChoice) -> String {

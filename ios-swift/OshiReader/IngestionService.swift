@@ -31,6 +31,12 @@ final class IngestionService {
         return result
     }
 
+    static func effectivePlatforms(for term: WatchTerm, available: Set<String>) -> Set<String> {
+        guard term.source_mode == .selected else { return available }
+        let selected = Set(PlatformRegistry.normalizeIDs(term.selected_platforms))
+        return selected.isEmpty ? available : available.intersection(selected)
+    }
+
     /// Fetch every subscribed source for one watch term. Network errors in any
     /// single source are swallowed (that source just contributes no items).
     func ingest(term: WatchTerm, platforms: Set<String>) async -> [FeedItem] {
@@ -38,10 +44,12 @@ final class IngestionService {
         let searchKeywords = Self.searchKeywords(for: term)
         guard !primaryKeyword.isEmpty, !searchKeywords.isEmpty else { return [] }
         let mediaOnly = term.collection_mode == "media_only"
+        let effectivePlatforms = Self.effectivePlatforms(for: term, available: platforms)
+        guard !effectivePlatforms.isEmpty else { return [] }
 
         return await withTaskGroup(of: [FeedItem].self) { group in
             func add(_ id: String, _ work: @escaping (String) async -> [FeedItem]) {
-                guard platforms.contains(id) else { return }
+                guard effectivePlatforms.contains(id) else { return }
                 for searchKeyword in searchKeywords {
                     group.addTask {
                         guard await Self.sourceRequestLimiter.acquire() else { return [] }

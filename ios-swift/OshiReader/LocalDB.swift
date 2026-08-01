@@ -30,6 +30,8 @@ class LocalDB: ObservableObject {
     private let pendingWritesLock = NSLock()
     private let contentCacheGenerationLock = NSLock()
     private var pendingWrites = 0
+    private var feedItemsSaveGeneration = 0
+    private var pendingFeedItemsSaveWorkItem: DispatchWorkItem?
     private var contentCacheGenerationValue = UserDefaults.standard.integer(forKey: "content_cache_generation")
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
@@ -47,7 +49,11 @@ class LocalDB: ObservableObject {
     
     // MARK: - Load and Save Helpers
     private func loadAll() {
-        self.terms = loadFromFile(name: "terms", defaultValue: [])
+        let loadedTerms: [WatchTerm] = loadFromFile(name: "terms", defaultValue: [])
+        self.terms = loadedTerms.map(Self.normalizedTerm)
+        if self.terms != loadedTerms {
+            saveToFile(name: "terms", value: self.terms)
+        }
         self.feedItems = loadFromFile(name: "feed_items", defaultValue: [])
         self.savedPages = loadFromFile(name: "saved_pages", defaultValue: [])
         self.customUrls = loadFromFile(name: "custom_urls", defaultValue: [])
@@ -118,7 +124,55 @@ class LocalDB: ObservableObject {
     /// Blocks until all ordinary asynchronous local writes submitted so far
     /// have reached disk. Intended for lifecycle transitions, not UI actions.
     func flushPendingWrites() {
+        flushPendingFeedItemsSave()
         queue.sync {}
+    }
+
+    /// Coalesces rapid feed merges into one serialized disk write while keeping
+    /// the in-memory feed immediately available to SwiftUI.
+    func flushPendingFeedItemsSave() {
+        let snapshot = feedItems
+        pendingWritesLock.lock()
+        feedItemsSaveGeneration &+= 1
+        pendingWritesLock.unlock()
+        pendingFeedItemsSaveWorkItem?.cancel()
+        pendingFeedItemsSaveWorkItem = nil
+        queue.sync {
+            do {
+                let data = try self.encoder.encode(snapshot)
+                try data.write(to: self.fileURL(for: "feed_items"), options: [.atomic])
+            } catch {
+                #if DEBUG
+                print("Error saving feed_items: \(error)")
+                #endif
+            }
+        }
+    }
+
+    private func saveFeedItemsSoon() {
+        pendingFeedItemsSaveWorkItem?.cancel()
+        let snapshot = feedItems
+        pendingWritesLock.lock()
+        feedItemsSaveGeneration &+= 1
+        let generation = feedItemsSaveGeneration
+        pendingWritesLock.unlock()
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.pendingWritesLock.lock()
+            let isCurrent = self.feedItemsSaveGeneration == generation
+            self.pendingWritesLock.unlock()
+            guard isCurrent else { return }
+            do {
+                let data = try self.encoder.encode(snapshot)
+                try data.write(to: self.fileURL(for: "feed_items"), options: [.atomic])
+            } catch {
+                #if DEBUG
+                print("Error saving feed_items: \(error)")
+                #endif
+            }
+        }
+        pendingFeedItemsSaveWorkItem = workItem
+        queue.asyncAfter(deadline: .now() + .milliseconds(250), execute: workItem)
     }
 
     private func saveEncodedFilesSynchronously(
@@ -218,10 +272,25 @@ class LocalDB: ObservableObject {
         dataRevision &+= 1
         UserDefaults.standard.set(dataRevision, forKey: "local_data_revision")
     }
+
+    private static func normalizedTerm(_ term: WatchTerm) -> WatchTerm {
+        var normalized = term
+        let platforms = normalizePlatformIDs(term.selected_platforms)
+        normalized.source_mode = term.source_mode == .selected && !platforms.isEmpty ? .selected : .all
+        normalized.selected_platforms = normalized.source_mode == .selected ? platforms : []
+        return normalized
+    }
     
     // MARK: - Watch Terms
-    func saveTerm(keyword: String, collectionMode: String = "all_info") -> WatchTerm {
-        let term = WatchTerm(keyword: keyword.trimmingCharacters(in: .whitespacesAndNewlines), collection_mode: collectionMode)
+    func saveTerm(keyword: String, collectionMode: String = "all_info", sourceMode: SourceMode = .all, selectedPlatforms: [String] = []) -> WatchTerm {
+        let normalizedPlatforms = Self.normalizePlatformIDs(selectedPlatforms)
+        let effectiveMode: SourceMode = sourceMode == .selected && !normalizedPlatforms.isEmpty ? .selected : .all
+        let term = WatchTerm(
+            keyword: keyword.trimmingCharacters(in: .whitespacesAndNewlines),
+            collection_mode: collectionMode,
+            source_mode: effectiveMode,
+            selected_platforms: effectiveMode == .selected ? normalizedPlatforms : []
+        )
         runOnMain {
             self.advanceDataRevision()
             self.terms.insert(term, at: 0)
@@ -230,19 +299,30 @@ class LocalDB: ObservableObject {
         return term
     }
     
-    func updateTerm(id: String, isActive: Bool? = nil, collectionMode: String? = nil, notifyOnNew: Bool? = nil, aliases: [String]? = nil) {
+    func updateTerm(id: String, isActive: Bool? = nil, collectionMode: String? = nil, sourceMode: SourceMode? = nil, selectedPlatforms: [String]? = nil, notifyOnNew: Bool? = nil, aliases: [String]? = nil) {
         runOnMain {
             if let idx = self.terms.firstIndex(where: { $0.id == id }) {
                 var term = self.terms[idx]
                 let changesIngestionScope =
                     isActive.map { $0 != term.is_active } ?? false ||
                     collectionMode.map { $0 != term.collection_mode } ?? false ||
+                    sourceMode.map { $0 != term.source_mode } ?? false ||
+                    selectedPlatforms.map { Self.normalizePlatformIDs($0) != term.selected_platforms } ?? false ||
                     aliases.map { $0 != term.aliases } ?? false
                 if changesIngestionScope {
                     self.advanceDataRevision()
                 }
                 if let isActive = isActive { term.is_active = isActive }
                 if let collectionMode = collectionMode { term.collection_mode = collectionMode }
+                if let sourceMode = sourceMode {
+                    let normalized = Self.normalizePlatformIDs(selectedPlatforms ?? term.selected_platforms)
+                    term.source_mode = sourceMode == .selected && !normalized.isEmpty ? .selected : .all
+                    term.selected_platforms = term.source_mode == .selected ? normalized : []
+                } else if let selectedPlatforms = selectedPlatforms {
+                    let normalized = Self.normalizePlatformIDs(selectedPlatforms)
+                    term.source_mode = term.source_mode == .selected && !normalized.isEmpty ? .selected : .all
+                    term.selected_platforms = term.source_mode == .selected ? normalized : []
+                }
                 if let notifyOnNew = notifyOnNew { term.notify_on_new = notifyOnNew }
                 if let aliases = aliases { term.aliases = aliases }
                 self.terms[idx] = term
@@ -261,7 +341,7 @@ class LocalDB: ObservableObject {
                 
                 // Also clean up items containing that watch term keyword
                 self.feedItems.removeAll(where: { $0.watch_term_keyword == keyword })
-                self.saveToFile(name: "feed_items", value: self.feedItems)
+                self.saveFeedItemsSoon()
             }
         }
     }
@@ -269,12 +349,17 @@ class LocalDB: ObservableObject {
     // MARK: - Feed Items & Merging
     @MainActor
     func mergeItems(newItems: [FeedItem], sourceRevision: Int? = nil) -> Int {
+        mergeItemsBatched(newItemsBatches: [newItems], sourceRevision: sourceRevision)
+    }
+
+    @MainActor
+    func mergeItemsBatched(newItemsBatches: [[FeedItem]], sourceRevision: Int? = nil) -> Int {
         guard sourceRevision == nil || sourceRevision == dataRevision else { return 0 }
         var addedCount = 0
         var addedItems: [FeedItem] = []
         let itemKey = { (i: FeedItem) -> String in "\(i.id)::\(i.watch_term_keyword)" }
         
-        let filteredNew = newItems.filter { item in
+        let filteredNew = newItemsBatches.flatMap { $0 }.filter { item in
             let key = itemKey(item)
             let isHidden = self.hiddenItems.contains(key)
             let isSearchFallback = item.id.contains("search:") || item.title?.lowercased().contains("search:") == true
@@ -332,7 +417,7 @@ class LocalDB: ObservableObject {
         }
 
         self.feedItems = finalItems
-        self.saveToFile(name: "feed_items", value: self.feedItems)
+        self.saveFeedItemsSoon()
         return addedCount
     }
     
@@ -343,7 +428,7 @@ class LocalDB: ObservableObject {
             self.saveToFile(name: "hidden_items", value: Array(self.hiddenItems))
             
             self.feedItems.removeAll(where: { $0.id == id && $0.watch_term_keyword == watchTermKeyword })
-            self.saveToFile(name: "feed_items", value: self.feedItems)
+            self.saveFeedItemsSoon()
         }
     }
     
@@ -463,10 +548,27 @@ class LocalDB: ObservableObject {
     // MARK: - Subscribed Platforms
     func setSubscribedPlatforms(platforms: [String]) {
         runOnMain {
-            guard self.subscribedPlatforms != platforms else { return }
+            let normalizedPlatforms = Self.normalizePlatformIDs(platforms)
+            let subscribedSourceIDs = Set(normalizedPlatforms.filter { $0 != "custom" })
+            var termsChanged = false
+            for index in self.terms.indices where self.terms[index].source_mode == .selected {
+                let validSelection = Self.normalizePlatformIDs(self.terms[index].selected_platforms)
+                    .filter { subscribedSourceIDs.contains($0) }
+                let nextMode: SourceMode = validSelection.isEmpty ? .all : .selected
+                let nextSelection = nextMode == .selected ? validSelection : []
+                if self.terms[index].source_mode != nextMode || self.terms[index].selected_platforms != nextSelection {
+                    self.terms[index].source_mode = nextMode
+                    self.terms[index].selected_platforms = nextSelection
+                    termsChanged = true
+                }
+            }
+            guard self.subscribedPlatforms != normalizedPlatforms || termsChanged else { return }
             self.advanceDataRevision()
-            self.subscribedPlatforms = platforms
+            self.subscribedPlatforms = normalizedPlatforms
             self.saveToFile(name: "subscribed_platforms", value: self.subscribedPlatforms)
+            if termsChanged {
+                self.saveToFile(name: "terms", value: self.terms)
+            }
         }
     }
     
@@ -581,6 +683,7 @@ class LocalDB: ObservableObject {
     // MARK: - Portable local backup
     @MainActor
     func exportBackupData() throws -> Data {
+        flushPendingFeedItemsSave()
         let backup = LocalBackup(
             exportedAt: ISO8601DateFormatter().string(from: Date()),
             terms: terms,
@@ -601,6 +704,7 @@ class LocalDB: ObservableObject {
 
     @MainActor
     func importBackupData(_ data: Data) throws {
+        flushPendingFeedItemsSave()
         guard data.count <= Self.maximumBackupBytes else {
             throw NSError(domain: "OshiReaderBackup", code: 5, userInfo: [NSLocalizedDescriptionKey: "Backup file is too large"])
         }
@@ -620,7 +724,7 @@ class LocalDB: ObservableObject {
         }
 
         let normalizedTerms = backup.terms.map { term -> WatchTerm in
-            var normalized = term
+            var normalized = Self.normalizedTerm(term)
             normalized.aliases = Array(IngestionService.searchKeywords(for: term).dropFirst())
             return normalized
         }

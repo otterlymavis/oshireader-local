@@ -1,20 +1,62 @@
 import Foundation
 
-func parseISO8601Date(_ value: String) -> Date? {
-    let iso = ISO8601DateFormatter()
-    iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-    if let date = iso.date(from: value) { return date }
-    iso.formatOptions = [.withInternetDateTime]
-    if let date = iso.date(from: value) { return date }
-    // Naive datetime without a timezone is treated as UTC.
-    let df = DateFormatter()
-    df.locale = Locale(identifier: "en_US_POSIX")
-    df.timeZone = TimeZone(identifier: "UTC")
-    for format in ["yyyy-MM-dd'T'HH:mm:ss.SSSSSS", "yyyy-MM-dd'T'HH:mm:ss.SSS", "yyyy-MM-dd'T'HH:mm:ss"] {
-        df.dateFormat = format
-        if let date = df.date(from: value) { return date }
+private enum _ISO8601Cache {
+    private struct CachedValue {
+        let date: Date?
     }
-    return nil
+
+    private static let lock = NSLock()
+    private static var parsedDates: [String: CachedValue] = [:]
+    private static let maxEntries = 4096
+
+    static let withFractional: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+
+    static let withoutFractional: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter
+    }()
+
+    private static let naiveFormatters: [DateFormatter] = [
+        "yyyy-MM-dd'T'HH:mm:ss.SSSSSS",
+        "yyyy-MM-dd'T'HH:mm:ss.SSS",
+        "yyyy-MM-dd'T'HH:mm:ss"
+    ].map { format in
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        formatter.dateFormat = format
+        return formatter
+    }
+
+    static func cachedDate(from value: String) -> Date? {
+        lock.lock()
+        if let cached = parsedDates[value] {
+            lock.unlock()
+            return cached.date
+        }
+
+        let result: Date?
+        if let date = withFractional.date(from: value) {
+            result = date
+        } else if let date = withoutFractional.date(from: value) {
+            result = date
+        } else {
+            result = naiveFormatters.lazy.compactMap { $0.date(from: value) }.first
+        }
+        if parsedDates.count >= maxEntries { parsedDates.removeAll(keepingCapacity: true) }
+        parsedDates[value] = CachedValue(date: result)
+        lock.unlock()
+        return result
+    }
+}
+
+func parseISO8601Date(_ value: String) -> Date? {
+    _ISO8601Cache.cachedDate(from: value)
 }
 
 func cleanDisplayText(_ value: String?) -> String? {
@@ -36,23 +78,32 @@ func cleanDisplayText(_ value: String?) -> String? {
 }
 
 // MARK: - WatchTerm
+enum SourceMode: String, Codable, Hashable {
+    case all
+    case selected
+}
+
 struct WatchTerm: Identifiable, Codable, Hashable {
     let id: String
     var keyword: String
     var collection_mode: String // "all_info" | "media_only"
+    var source_mode: SourceMode
+    var selected_platforms: [String]
     var is_active: Bool
     var notify_on_new: Bool
     var aliases: [String]
     let created_at: String
 
     enum CodingKeys: String, CodingKey {
-        case id, keyword, collection_mode, is_active, notify_on_new, aliases, created_at
+        case id, keyword, collection_mode, source_mode, selected_platforms, is_active, notify_on_new, aliases, created_at
     }
 
-    init(id: String = UUID().uuidString, keyword: String, collection_mode: String = "all_info", is_active: Bool = true, notify_on_new: Bool = false, aliases: [String] = [], created_at: String = ISO8601DateFormatter().string(from: Date())) {
+    init(id: String = UUID().uuidString, keyword: String, collection_mode: String = "all_info", source_mode: SourceMode = .all, selected_platforms: [String] = [], is_active: Bool = true, notify_on_new: Bool = false, aliases: [String] = [], created_at: String = _ISO8601Cache.withoutFractional.string(from: Date())) {
         self.id = id
         self.keyword = keyword
         self.collection_mode = collection_mode
+        self.source_mode = source_mode == .selected && selected_platforms.isEmpty ? .all : source_mode
+        self.selected_platforms = source_mode == .selected ? selected_platforms : []
         self.is_active = is_active
         self.notify_on_new = notify_on_new
         self.aliases = aliases
@@ -71,10 +122,14 @@ struct WatchTerm: Identifiable, Codable, Hashable {
         }
         self.keyword = try container.decode(String.self, forKey: .keyword)
         self.collection_mode = try container.decode(String.self, forKey: .collection_mode)
+        let decodedMode = try container.decodeIfPresent(SourceMode.self, forKey: .source_mode) ?? .all
+        let decodedPlatforms = try container.decodeIfPresent([String].self, forKey: .selected_platforms) ?? []
+        self.source_mode = decodedMode == .selected && decodedPlatforms.isEmpty ? .all : decodedMode
+        self.selected_platforms = decodedMode == .selected ? decodedPlatforms : []
         self.is_active = try container.decodeIfPresent(Bool.self, forKey: .is_active) ?? true
         self.notify_on_new = try container.decodeIfPresent(Bool.self, forKey: .notify_on_new) ?? false
         self.aliases = try container.decodeIfPresent([String].self, forKey: .aliases) ?? []
-        self.created_at = try container.decodeIfPresent(String.self, forKey: .created_at) ?? ISO8601DateFormatter().string(from: Date())
+        self.created_at = try container.decodeIfPresent(String.self, forKey: .created_at) ?? _ISO8601Cache.withoutFractional.string(from: Date())
     }
 }
 
