@@ -57,6 +57,7 @@ struct ReaderView: View {
                 WebViewHelper(
                     url: url,
                     cacheId: feedItem.id,
+                    cacheGeneration: db.contentCacheGeneration,
                     themeMode: readerTheme,
                     fontSize: fontSize,
                     readerMode: readerMode,
@@ -66,7 +67,7 @@ struct ReaderView: View {
                 )
                 .background(bgColor)
             } else {
-                Text("Invalid URL")
+                Text(i18n.t("invalidURL"))
                     .foregroundColor(theme.colors.textMuted)
             }
 
@@ -121,7 +122,7 @@ struct ReaderView: View {
                 }
             }
         }
-        .confirmationDialog("Image", isPresented: Binding(
+        .confirmationDialog(i18n.t("image"), isPresented: Binding(
             get: { imageAction != nil },
             set: { isPresented in
                 if !isPresented {
@@ -131,18 +132,18 @@ struct ReaderView: View {
         )) {
             if let action = imageAction {
                 ShareLink(item: action.url) {
-                    Label("Share Image", systemImage: "square.and.arrow.up")
+                    Label(i18n.t("shareImage"), systemImage: "square.and.arrow.up")
                 }
-                Button("Save Image") {
+                Button(i18n.t("saveImage")) {
                     saveImage(action.url)
                 }
-                Button("Open Image") {
+                Button(i18n.t("openImage")) {
                     UIApplication.shared.open(action.url)
                 }
             }
         }
-        .alert("Image", isPresented: $showingSaveImageStatus) {
-            Button("OK", role: .cancel) {}
+        .alert(i18n.t("image"), isPresented: $showingSaveImageStatus) {
+            Button(i18n.t("ok"), role: .cancel) {}
         } message: {
             Text(saveImageStatus)
         }
@@ -156,55 +157,66 @@ struct ReaderView: View {
     }
 
     private var readerControlBar: some View {
-        HStack {
-            Button(action: { readerMode.toggle() }) {
-                Label(readerMode ? i18n.t("readerModeText") : i18n.t("readerModeWeb"),
-                      systemImage: readerMode ? "doc.plaintext" : "globe")
-                    .font(.caption)
-                    .fontWeight(.bold)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(theme.colors.divider)
-                    .foregroundColor(theme.colors.primary)
-                    .cornerRadius(8)
-            }
-            .accessibilityIdentifier("reader.modeToggleButton")
+        VStack(spacing: 8) {
+            HStack(spacing: 10) {
+                Button(action: { readerMode.toggle() }) {
+                    Label(readerMode ? i18n.t("readerModeTextShort") : i18n.t("readerModeWebShort"),
+                          systemImage: readerMode ? "doc.plaintext" : "globe")
+                        .font(.caption)
+                        .fontWeight(.bold)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 7)
+                        .background(theme.colors.divider)
+                        .foregroundColor(theme.colors.primary)
+                        .cornerRadius(8)
+                }
+                .accessibilityLabel(readerMode ? i18n.t("readerModeText") : i18n.t("readerModeWeb"))
+                .accessibilityIdentifier("reader.modeToggleButton")
 
-            Spacer()
+                Spacer(minLength: 8)
+
+                Picker(i18n.t("readerTheme"), selection: $readerTheme) {
+                    Image(systemName: "sun.max.fill").tag(AppThemeMode.light)
+                    Image(systemName: "moon.fill").tag(AppThemeMode.dark)
+                    Image(systemName: "doc.text.magnifyingglass").tag(AppThemeMode.sepia)
+                }
+                .pickerStyle(.segmented)
+                .frame(minWidth: 112, maxWidth: 132)
+            }
 
             if readerMode {
-                HStack(spacing: 12) {
+                HStack(spacing: 8) {
                     Button(action: { fontSize = max(12.0, fontSize - 2.0) }) {
                         Text("A-")
                             .font(.subheadline)
+                            .fontWeight(.semibold)
                             .foregroundColor(theme.colors.textSub)
+                            .frame(minWidth: 36, minHeight: 30)
                     }
+                    .accessibilityLabel(i18n.t("decreaseTextSize"))
 
                     Text("\(Int(fontSize))")
                         .font(.caption)
                         .foregroundColor(theme.colors.textMuted)
+                        .frame(minWidth: 30)
 
                     Button(action: { fontSize = min(28.0, fontSize + 2.0) }) {
                         Text("A+")
                             .font(.subheadline)
+                            .fontWeight(.semibold)
                             .foregroundColor(theme.colors.textSub)
+                            .frame(minWidth: 36, minHeight: 30)
                     }
+                    .accessibilityLabel(i18n.t("increaseTextSize"))
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 4)
+                .frame(maxWidth: .infinity)
                 .background(theme.colors.divider)
                 .cornerRadius(8)
             }
-
-            Spacer()
-
-            Picker("Theme", selection: $readerTheme) {
-                Image(systemName: "sun.max.fill").tag(AppThemeMode.light)
-                Image(systemName: "moon.fill").tag(AppThemeMode.dark)
-                Image(systemName: "doc.text.magnifyingglass").tag(AppThemeMode.sepia)
-            }
-            .pickerStyle(.segmented)
-            .frame(width: 100)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
@@ -226,7 +238,7 @@ struct ReaderView: View {
                 let (data, _) = try await URLSession.shared.data(from: url)
                 guard let image = UIImage(data: data) else {
                     await MainActor.run {
-                        saveImageStatus = "Could not read this image."
+                        saveImageStatus = i18n.t("imageReadFailed")
                         showingSaveImageStatus = true
                     }
                     return
@@ -234,7 +246,7 @@ struct ReaderView: View {
                 let auth = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
                 guard auth == .authorized || auth == .limited else {
                     await MainActor.run {
-                        saveImageStatus = "Photos access is required to save images."
+                        saveImageStatus = i18n.t("photosAccessRequired")
                         showingSaveImageStatus = true
                     }
                     return
@@ -243,12 +255,12 @@ struct ReaderView: View {
                     PHAssetChangeRequest.creationRequestForAsset(from: image)
                 }
                 await MainActor.run {
-                    saveImageStatus = "Saved to Photos."
+                    saveImageStatus = i18n.t("imageSavedToPhotos")
                     showingSaveImageStatus = true
                 }
             } catch {
                 await MainActor.run {
-                    saveImageStatus = "Could not save this image."
+                    saveImageStatus = i18n.t("imageSaveFailed")
                     showingSaveImageStatus = true
                 }
             }
@@ -258,7 +270,7 @@ struct ReaderView: View {
     private func saveAllImages(_ urls: [URL]) {
         guard !urls.isEmpty else {
             isSavingAllImages = false
-            saveImageStatus = "No large images found on this page."
+            saveImageStatus = i18n.t("noLargeImagesFound")
             showingSaveImageStatus = true
             return
         }
@@ -267,7 +279,7 @@ struct ReaderView: View {
             guard auth == .authorized || auth == .limited else {
                 await MainActor.run {
                     isSavingAllImages = false
-                    saveImageStatus = "Photos access is required to save images."
+                    saveImageStatus = i18n.t("photosAccessRequired")
                     showingSaveImageStatus = true
                 }
                 return
@@ -293,8 +305,8 @@ struct ReaderView: View {
             await MainActor.run {
                 isSavingAllImages = false
                 saveImageStatus = saved > 0
-                    ? "Saved \(saved) image\(saved == 1 ? "" : "s") to Photos."
-                    : "No images could be saved."
+                    ? (saved == 1 ? i18n.t("oneImageSavedToPhotos") : i18n.tFormat("imagesSavedToPhotos", saved))
+                    : i18n.t("noImagesSaved")
                 showingSaveImageStatus = true
             }
         }
@@ -304,6 +316,7 @@ struct ReaderView: View {
 struct WebViewHelper: UIViewRepresentable {
     let url: URL
     let cacheId: String
+    let cacheGeneration: Int
     let themeMode: AppThemeMode
     let fontSize: CGFloat
     let readerMode: Bool
@@ -346,6 +359,12 @@ struct WebViewHelper: UIViewRepresentable {
                 }
             }
         }
+    }
+
+    static func dismantleUIView(_ uiView: WKWebView, coordinator: Coordinator) {
+        uiView.configuration.userContentController.removeScriptMessageHandler(forName: "oshireader")
+        uiView.navigationDelegate = nil
+        uiView.uiDelegate = nil
     }
 
     private func styleInjectionJS() -> String {
@@ -428,9 +447,15 @@ struct WebViewHelper: UIViewRepresentable {
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             webView.evaluateJavaScript(parent.styleInjectionJS(), completionHandler: nil)
+            let cacheId = parent.cacheId
+            let cacheGeneration = parent.cacheGeneration
             webView.evaluateJavaScript("document.documentElement.outerHTML") { result, _ in
                 guard let html = result as? String, !html.isEmpty else { return }
-                LocalDB.shared.saveContentCache(id: self.parent.cacheId, html: html)
+                LocalDB.shared.saveContentCache(
+                    id: cacheId,
+                    html: html,
+                    sourceGeneration: cacheGeneration
+                )
             }
         }
 

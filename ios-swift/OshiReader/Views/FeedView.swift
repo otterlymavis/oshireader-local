@@ -115,53 +115,70 @@ struct FeedView: View {
         ZStack(alignment: .bottomTrailing) {
             VStack(spacing: 0) {
                 // Filter Summary bar (collapsible trigger)
-                Button(action: { showFilterSheet.toggle() }) {
-                    HStack {
-                        Image(systemName: "slider.horizontal.3")
-                            .foregroundColor(filterCount > 0 ? theme.colors.primary : theme.colors.textMuted)
-                        Text(i18n.t("filter"))
-                            .font(.subheadline)
-                            .fontWeight(.semibold)
-                            .foregroundColor(filterCount > 0 ? theme.colors.primary : theme.colors.textSub)
-                        
-                        if filterCount > 0 {
-                            Text("\(filterCount)")
-                                .font(.caption2)
-                                .bold()
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(theme.colors.primary)
-                                .foregroundColor(.white)
-                                .clipShape(Capsule())
+                VStack(alignment: .leading, spacing: 0) {
+                    Button(action: { showFilterSheet = true }) {
+                        HStack {
+                            Image(systemName: "slider.horizontal.3")
+                                .foregroundColor(filterCount > 0 ? theme.colors.primary : theme.colors.textMuted)
+                            Text(i18n.t("filter"))
+                                .font(.subheadline)
+                                .fontWeight(.semibold)
+                                .foregroundColor(filterCount > 0 ? theme.colors.primary : theme.colors.textSub)
+
+                            if filterCount > 0 {
+                                Text("\(filterCount)")
+                                    .font(.caption2)
+                                    .bold()
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(theme.colors.primary)
+                                    .foregroundColor(.white)
+                                    .clipShape(Capsule())
+                            }
+
+                            Spacer()
+                            Image(systemName: showFilterSheet ? "chevron.up" : "chevron.down")
+                                .foregroundColor(theme.colors.textMuted)
+                                .font(.caption)
                         }
-                        
-                        if let sk = selectedKeyword {
-                            PillView(text: sk, theme: theme)
-                        }
-                        if let sp = selectedPlatform {
-                            let meta = theme.metadata(for: sp)
-                            PillView(text: "\(meta.icon) \(meta.name)", bgColor: meta.bg, fgColor: meta.fg)
-                        }
-                        if mediaFilter == "media_only" {
-                            PillView(text: "📹 " + i18n.t("mediaOnly"), theme: theme)
-                        }
-                        
-                        Spacer()
-                        Image(systemName: showFilterSheet ? "chevron.up" : "chevron.down")
-                            .foregroundColor(theme.colors.textMuted)
-                            .font(.caption)
+                        .padding(.horizontal, 14)
+                        .padding(.top, 10)
+                        .padding(.bottom, filterCount > 0 ? 6 : 10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
                     }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    .background(theme.colors.card)
-                    .overlay(
-                        Rectangle()
-                            .frame(height: 0.5)
-                            .foregroundColor(theme.colors.divider),
-                        alignment: .bottom
-                    )
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel(i18n.t("filter"))
+                    .accessibilityValue(filterCount > 0 ? i18n.tFormat("activeFiltersCount", filterCount) : "")
+                    .accessibilityIdentifier("feed.filterButton")
+                    .buttonStyle(.plain)
+
+                    if filterCount > 0 {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 6) {
+                                if let sk = selectedKeyword {
+                                    PillView(text: sk, theme: theme)
+                                }
+                                if let sp = selectedPlatform {
+                                    let meta = theme.metadata(for: sp)
+                                    PillView(text: "\(meta.icon) \(meta.name)", bgColor: meta.bg, fgColor: meta.fg)
+                                }
+                                if mediaFilter == "media_only" {
+                                    PillView(text: "📹 " + i18n.t("mediaOnly"), theme: theme)
+                                }
+                            }
+                            .padding(.horizontal, 14)
+                            .padding(.bottom, 8)
+                        }
+                    }
                 }
-                .accessibilityIdentifier("feed.filterButton")
+                .background(theme.colors.card)
+                .overlay(
+                    Rectangle()
+                        .frame(height: 0.5)
+                        .foregroundColor(theme.colors.divider),
+                    alignment: .bottom
+                )
                 
                 // Horizontal platform strip
                 if !orderedPlatforms.isEmpty {
@@ -170,14 +187,16 @@ struct FeedView: View {
                             HStack(spacing: 8) {
                                 // "All" button
                                 Button(action: { selectedPlatform = nil }) {
-                                    VStack(spacing: 3) {
+                                    HStack(spacing: 6) {
                                         Text("🌐")
-                                            .font(.system(size: 18))
+                                            .font(.system(size: 16))
                                         Text(i18n.t("all"))
-                                            .font(.system(size: 11, weight: selectedPlatform == nil ? .bold : .medium))
+                                            .font(.system(size: 12, weight: selectedPlatform == nil ? .bold : .medium))
                                             .foregroundColor(selectedPlatform == nil ? .white : theme.colors.textMuted)
+                                            .lineLimit(1)
                                     }
-                                    .frame(width: 58, height: 58)
+                                    .padding(.horizontal, 10)
+                                    .frame(minWidth: 64, minHeight: 44)
                                     .background(selectedPlatform == nil ? theme.colors.primary : theme.colors.divider)
                                     .cornerRadius(10)
                                 }
@@ -201,15 +220,17 @@ struct FeedView: View {
                                             }
                                         }
                                     }) {
-                                        VStack(spacing: 3) {
+                                        HStack(spacing: 6) {
                                             Text(meta.icon)
-                                                .font(.system(size: 18))
+                                                .font(.system(size: 16))
                                             Text(meta.name)
-                                                .font(.system(size: 11, weight: isSelected ? .bold : .medium))
+                                                .font(.system(size: 12, weight: isSelected ? .bold : .medium))
                                                 .foregroundColor(fg)
                                                 .lineLimit(1)
+                                                .minimumScaleFactor(0.82)
                                         }
-                                        .frame(width: 58, height: 58)
+                                        .padding(.horizontal, 10)
+                                        .frame(minWidth: 64, minHeight: 44)
                                         .background(bg)
                                         .cornerRadius(10)
                                     }
@@ -222,10 +243,10 @@ struct FeedView: View {
                         
                         // Reorder button
                         Button(action: { showReorderSheet.toggle() }) {
-                            Text("≡")
-                                .font(.title3)
+                            Image(systemName: "line.3.horizontal")
+                                .font(.system(size: 16, weight: .semibold))
                                 .foregroundColor(theme.colors.textMuted)
-                                .frame(width: 44, height: 58)
+                                .frame(width: 44, height: 44)
                                 .background(theme.colors.divider)
                                 .cornerRadius(10)
                                 .padding(.trailing, 10)
@@ -289,7 +310,7 @@ struct FeedView: View {
                                     Button {
                                         _ = db.toggleSaved(item: item)
                                     } label: {
-                                        Label(savedItemIds.contains(item.id) ? "Unsave" : "Save",
+                                        Label(savedItemIds.contains(item.id) ? i18n.t("unsave") : i18n.t("save"),
                                               systemImage: savedItemIds.contains(item.id) ? "bookmark.slash" : "bookmark")
                                     }
                                     .tint(theme.colors.primary)
@@ -313,7 +334,7 @@ struct FeedView: View {
                                     Button {
                                         _ = db.toggleSaved(item: item)
                                     } label: {
-                                        Label(savedItemIds.contains(item.id) ? "Unsave" : "Save",
+                                        Label(savedItemIds.contains(item.id) ? i18n.t("unsave") : i18n.t("save"),
                                               systemImage: savedItemIds.contains(item.id) ? "bookmark.slash" : "bookmark")
                                     }
                                     .tint(theme.colors.primary)
@@ -327,7 +348,7 @@ struct FeedView: View {
                             } label: {
                                 HStack {
                                     Spacer()
-                                    Text("Load more (\(min(filteredItems.count, 100) - displayedCount) remaining)")
+                                    Text(i18n.tFormat("loadMoreRemaining", min(filteredItems.count, 100) - displayedCount))
                                         .font(.subheadline)
                                         .foregroundColor(theme.colors.primary)
                                     Spacer()
@@ -386,10 +407,11 @@ struct FeedView: View {
         .sheet(isPresented: $showAddUrlSheet) {
             AddUrlSheet(customUrlString: $customUrlString, customUrlTitle: $customUrlTitle, theme: theme, i18n: i18n) {
                 db.addCustomUrl(url: customUrlString, title: customUrlTitle)
+                let sourceRevision = db.dataRevision
                 Task {
                     let customItems = await NetworkManager.shared.scrapeCustomUrls(db.customUrls)
                     if !customItems.isEmpty {
-                        _ = await db.mergeItems(newItems: customItems)
+                        _ = db.mergeItems(newItems: customItems, sourceRevision: sourceRevision)
                     }
                 }
                 customUrlString = ""
@@ -401,16 +423,15 @@ struct FeedView: View {
         .sheet(isPresented: $showReorderSheet) {
             ReorderSourcesSheet(theme: theme, i18n: i18n)
         }
-        .accessibilityIdentifier("feed.screen")
-        .onChange(of: selectedKeyword) { _ in displayedCount = 20 }
-        .onChange(of: selectedPlatform) { _ in displayedCount = 20 }
-        .onChange(of: daysFilter) { newDays in
+        .onChange(of: selectedKeyword) { _, _ in displayedCount = 20 }
+        .onChange(of: selectedPlatform) { _, _ in displayedCount = 20 }
+        .onChange(of: daysFilter) { _, newDays in
             displayedCount = 20
             if newDays == 0 {
                 Task { await refreshFeed() }
             }
         }
-        .onChange(of: mediaFilter) { _ in displayedCount = 20 }
+        .onChange(of: mediaFilter) { _, _ in displayedCount = 20 }
         .onAppear {
             guard !hasLoadedOnce else { return }
             hasLoadedOnce = true
@@ -445,12 +466,13 @@ struct FeedView: View {
         // query time in LocalDB.queryFeed.
         let activeTerms = db.terms.filter { $0.is_active }
         let subscribed = Set(db.subscribedPlatforms.filter { $0 != "custom" })
-        await ingestTerms(activeTerms, platforms: subscribed)
+        let sourceRevision = db.dataRevision
+        await ingestTerms(activeTerms, platforms: subscribed, sourceRevision: sourceRevision)
 
         // Refresh custom URL cards.
         let customItems = await NetworkManager.shared.scrapeCustomUrls(db.customUrls)
         if !customItems.isEmpty {
-            _ = await db.mergeItems(newItems: customItems)
+            _ = db.mergeItems(newItems: customItems, sourceRevision: sourceRevision)
         }
     }
 
@@ -458,13 +480,17 @@ struct FeedView: View {
     /// and we have no cached items for it yet).
     private func ingestPlatform(_ platformId: String) async {
         if ProcessInfo.processInfo.arguments.contains("--uitesting") { return }
-        await ingestTerms(db.terms.filter { $0.is_active }, platforms: [platformId])
+        await ingestTerms(
+            db.terms.filter { $0.is_active },
+            platforms: [platformId],
+            sourceRevision: db.dataRevision
+        )
     }
 
     /// Ingest a set of terms, capping how many run at once so a large watch
     /// list doesn't fire hundreds of simultaneous requests (each term already
     /// fans out across ~12 sources). Results merge as they arrive.
-    private func ingestTerms(_ terms: [WatchTerm], platforms: Set<String>) async {
+    private func ingestTerms(_ terms: [WatchTerm], platforms: Set<String>, sourceRevision: Int) async {
         guard !terms.isEmpty, !platforms.isEmpty else { return }
         let maxConcurrentTerms = 3
         await withTaskGroup(of: [FeedItem].self) { group in
@@ -475,7 +501,9 @@ struct FeedView: View {
                 running += 1
             }
             for await items in group {
-                if !items.isEmpty { _ = await db.mergeItems(newItems: items) }
+                if !items.isEmpty {
+                    _ = db.mergeItems(newItems: items, sourceRevision: sourceRevision)
+                }
                 if let term = iterator.next() {
                     group.addTask { await IngestionService.shared.ingest(term: term, platforms: platforms) }
                 }
@@ -744,6 +772,8 @@ struct FilterButton: View {
                 .foregroundColor(isSelected ? .white : theme.colors.textSub)
                 .cornerRadius(999)
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(text)
         .accessibilityIdentifier(accessibilityId ?? "filter.option.\(text)")
     }
 }
@@ -806,12 +836,12 @@ struct AddUrlSheet: View {
     
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Add Custom RSS/Web Feed")
+            Text(i18n.t("addCustomFeed"))
                 .font(.headline)
                 .foregroundColor(theme.colors.text)
                 .padding(.top, 10)
             
-            TextField("Feed/Webpage Title...", text: $customUrlTitle)
+            TextField(i18n.t("feedTitlePlaceholder"), text: $customUrlTitle)
                 .padding()
                 .background(theme.colors.card)
                 .cornerRadius(8)
@@ -898,7 +928,7 @@ struct ReorderSourcesSheet: View {
                 .padding(.horizontal, 16)
                 .padding(.vertical, 10)
             }
-            .navigationTitle("Reorder Sources")
+            .navigationTitle(i18n.t("reorderSources"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {

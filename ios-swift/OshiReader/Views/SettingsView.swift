@@ -1,4 +1,24 @@
 import SwiftUI
+import UniformTypeIdentifiers
+
+struct LocalBackupDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.json] }
+    static var writableContentTypes: [UTType] { [.json] }
+
+    var data: Data
+
+    init(data: Data = Data()) {
+        self.data = data
+    }
+
+    init(configuration: ReadConfiguration) throws {
+        data = configuration.file.regularFileContents ?? Data()
+    }
+
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: data)
+    }
+}
 
 struct SettingsView: View {
     @StateObject private var db = LocalDB.shared
@@ -16,22 +36,16 @@ struct SettingsView: View {
     // API token lives in the Keychain now that ingestion runs on-device.
     @State private var twitterBearerToken = KeychainHelper.read(.twitterBearerToken) ?? ""
     @AppStorage("auto_translate_reader") private var autoTranslateReader = false
+    @State private var backupDocument = LocalBackupDocument()
+    @State private var showingBackupExporter = false
+    @State private var showingBackupImporter = false
+    @State private var backupMessage = ""
+    @State private var showingBackupMessage = false
+    @State private var showingAliasLimitMessage = false
     
-    let allPlatforms = [
-        ("youtube", "📹 YouTube"),
-        ("niconico", "💬 NicoNico"),
-        ("tver", "📺 TVer"),
-        ("note", "📝 Note"),
-        ("girlschannel", "👭 GirlsChannel"),
-        ("5ch", "💬 5ch"),
-        ("togetter", "🐧 Togetter"),
-        ("news", "📰 General News"),
-        ("yahoonews", "🇯🇵 YahooNews"),
-        ("mdpr", "💅 ModelPress"),
-        ("oricon", "🎤 Oricon"),
-        ("twitter", "𝕏 X"),
-        ("custom", "🌐 Custom Feeds")
-    ]
+    var allPlatforms: [(String, String)] {
+        PlatformRegistry.all.map { ($0.id, "\($0.icon) \($0.name)") }
+    }
     
     var body: some View {
         NavigationStack {
@@ -39,142 +53,161 @@ struct SettingsView: View {
                 // Section: Keywords management
                 Section(header: Text(i18n.t("watchTerms"))) {
                     ForEach(db.terms) { term in
-                        HStack {
-                            NavigationLink(destination: AvatarEditorView(keyword: term.keyword)) {
-                                ZStack {
-                                    Circle()
-                                        .fill(theme.colors.divider)
-                                        .frame(width: 38, height: 38)
-                                    if let avatar = db.oshiAvatars[term.keyword], let url = URL(string: avatar) {
-                                        AsyncImage(url: url) { image in
-                                            image
-                                                .resizable()
-                                                .aspectRatio(contentMode: .fill)
-                                        } placeholder: {
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack(alignment: .top, spacing: 10) {
+                                NavigationLink(destination: AvatarEditorView(keyword: term.keyword)) {
+                                    ZStack {
+                                        Circle()
+                                            .fill(theme.colors.divider)
+                                            .frame(width: 38, height: 38)
+                                        if let avatar = db.oshiAvatars[term.keyword], let url = URL(string: avatar) {
+                                            AsyncImage(url: url) { image in
+                                                image
+                                                    .resizable()
+                                                    .aspectRatio(contentMode: .fill)
+                                            } placeholder: {
+                                                Text("🎨")
+                                            }
+                                            .frame(width: 38, height: 38)
+                                            .clipShape(Circle())
+                                        } else {
                                             Text("🎨")
+                                                .font(.body)
                                         }
-                                        .frame(width: 38, height: 38)
-                                        .clipShape(Circle())
-                                    } else {
-                                        Text("🎨")
-                                            .font(.body)
                                     }
                                 }
-                            }
-                            .buttonStyle(PlainButtonStyle())
-                            .accessibilityIdentifier("settings.keywordAvatar.\(term.keyword)")
+                                .buttonStyle(PlainButtonStyle())
+                                .accessibilityIdentifier("settings.keywordAvatar.\(term.keyword)")
 
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(term.keyword)
-                                    .font(.subheadline)
-                                    .fontWeight(.semibold)
-                                    .foregroundColor(theme.colors.text)
-                                // Alias chips
-                                if !term.aliases.isEmpty || addingAliasForId == term.id {
-                                    ScrollView(.horizontal, showsIndicators: false) {
-                                        HStack(spacing: 4) {
-                                            ForEach(term.aliases, id: \.self) { alias in
-                                                HStack(spacing: 2) {
-                                                    Text(alias)
-                                                        .font(.caption2)
-                                                        .foregroundColor(theme.colors.textSub)
-                                                    Button {
-                                                        let updated = term.aliases.filter { $0 != alias }
-                                                        db.updateTerm(id: term.id, aliases: updated)
-                                                    } label: {
-                                                        Image(systemName: "xmark")
-                                                            .font(.system(size: 8, weight: .bold))
-                                                            .foregroundColor(theme.colors.textMuted)
-                                                    }
-                                                    .buttonStyle(.plain)
-                                                }
-                                                .padding(.horizontal, 6)
-                                                .padding(.vertical, 3)
-                                                .background(theme.colors.divider)
-                                                .cornerRadius(99)
-                                            }
-                                            if addingAliasForId == term.id {
-                                                TextField(i18n.t("keyword"), text: $newAliasText)
-                                                    .font(.caption2)
-                                                    .frame(width: 80)
-                                                    .autocorrectionDisabled()
-                                                    .textInputAutocapitalization(.never)
-                                                    .submitLabel(.done)
-                                                    .onSubmit {
-                                                        let trimmed = newAliasText.trimmingCharacters(in: .whitespacesAndNewlines)
-                                                        if !trimmed.isEmpty && !term.aliases.contains(trimmed) {
-                                                            let updated = term.aliases + [trimmed]
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(term.keyword)
+                                        .font(.subheadline)
+                                        .fontWeight(.semibold)
+                                        .foregroundColor(theme.colors.text)
+                                        .lineLimit(2)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                    // Alias chips
+                                    if !term.aliases.isEmpty || addingAliasForId == term.id {
+                                        ScrollView(.horizontal, showsIndicators: false) {
+                                            HStack(spacing: 4) {
+                                                ForEach(term.aliases, id: \.self) { alias in
+                                                    HStack(spacing: 2) {
+                                                        Text(alias)
+                                                            .font(.caption2)
+                                                            .foregroundColor(theme.colors.textSub)
+                                                        Button {
+                                                            let updated = term.aliases.filter { $0 != alias }
                                                             db.updateTerm(id: term.id, aliases: updated)
+                                                        } label: {
+                                                            Image(systemName: "xmark")
+                                                                .font(.system(size: 8, weight: .bold))
+                                                                .foregroundColor(theme.colors.textMuted)
                                                         }
-                                                        newAliasText = ""
-                                                        addingAliasForId = nil
+                                                        .buttonStyle(.plain)
                                                     }
-                                            }
-                                            Button {
-                                                newAliasText = ""
-                                                addingAliasForId = addingAliasForId == term.id ? nil : term.id
-                                            } label: {
-                                                Image(systemName: addingAliasForId == term.id ? "checkmark" : "plus")
-                                                    .font(.system(size: 9, weight: .bold))
-                                                    .foregroundColor(theme.colors.primary)
-                                                    .frame(width: 20, height: 18)
-                                                    .background(theme.colors.primaryBg)
+                                                    .padding(.horizontal, 6)
+                                                    .padding(.vertical, 3)
+                                                    .background(theme.colors.divider)
                                                     .cornerRadius(99)
+                                                }
+                                                if addingAliasForId == term.id {
+                                                    TextField(i18n.t("keyword"), text: $newAliasText)
+                                                        .font(.caption2)
+                                                        .frame(minWidth: 80, maxWidth: 140)
+                                                        .autocorrectionDisabled()
+                                                        .textInputAutocapitalization(.never)
+                                                        .submitLabel(.done)
+                                                        .onSubmit { commitAlias(for: term) }
+                                                }
+                                                Button {
+                                                    if addingAliasForId == term.id {
+                                                        if term.aliases.count >= IngestionService.maximumAliasesPerTerm {
+                                                            showingAliasLimitMessage = true
+                                                            newAliasText = ""
+                                                            addingAliasForId = nil
+                                                            return
+                                                        }
+                                                        commitAlias(for: term)
+                                                    } else {
+                                                        newAliasText = ""
+                                                        addingAliasForId = term.id
+                                                    }
+                                                } label: {
+                                                    Image(systemName: addingAliasForId == term.id ? "checkmark" : "plus")
+                                                        .font(.system(size: 9, weight: .bold))
+                                                        .foregroundColor(theme.colors.primary)
+                                                        .frame(width: 20, height: 18)
+                                                        .background(theme.colors.primaryBg)
+                                                        .cornerRadius(99)
+                                                }
+                                                .buttonStyle(.plain)
                                             }
-                                            .buttonStyle(.plain)
                                         }
+                                    } else {
+                                        Button {
+                                            newAliasText = ""
+                                            addingAliasForId = term.id
+                                        } label: {
+                                            Label(i18n.t("addAlias"), systemImage: "plus")
+                                                .font(.caption2)
+                                                .foregroundColor(theme.colors.textMuted)
+                                        }
+                                        .buttonStyle(.plain)
                                     }
-                                } else {
-                                    Button {
-                                        newAliasText = ""
-                                        addingAliasForId = term.id
-                                    } label: {
-                                        Label(i18n.t("addAlias"), systemImage: "plus")
-                                            .font(.caption2)
-                                            .foregroundColor(theme.colors.textMuted)
-                                    }
-                                    .buttonStyle(.plain)
                                 }
-                            }
-                            Spacer()
+                                .frame(maxWidth: .infinity, alignment: .leading)
 
-                            Button {
-                                let next = term.collection_mode == "all_info" ? "media_only" : "all_info"
-                                db.updateTerm(id: term.id, collectionMode: next)
-                            } label: {
-                                Text(term.collection_mode == "media_only" ? "📹" : "📄")
-                                    .font(.caption)
-                                    .fontWeight(.bold)
-                                    .padding(.horizontal, 8)
-                                    .padding(.vertical, 5)
-                                    .background(theme.colors.divider)
-                                    .foregroundColor(theme.colors.textSub)
-                                    .clipShape(Capsule())
+                                Toggle("", isOn: Binding(
+                                    get: { term.is_active },
+                                    set: { next in
+                                        db.updateTerm(id: term.id, isActive: next)
+                                    }
+                                ))
+                                .labelsHidden()
+                                .tint(theme.colors.primary)
+                                .accessibilityLabel(i18n.t("active"))
+                                .accessibilityIdentifier("settings.keywordToggle.\(term.keyword)")
                             }
-                            .buttonStyle(PlainButtonStyle())
-                            .accessibilityIdentifier("settings.keywordMode.\(term.keyword)")
-                            
-                            // Push notifications bell button
-                            Button(action: {
-                                let next = !term.notify_on_new
-                                db.updateTerm(id: term.id, notifyOnNew: next)
-                            }) {
-                                Image(systemName: term.notify_on_new ? "bell.fill" : "bell.slash")
-                                    .foregroundColor(term.notify_on_new ? theme.colors.primary : theme.colors.textMuted)
-                                    .font(.body)
-                                    .padding(.horizontal, 8)
-                            }
-                            .buttonStyle(PlainButtonStyle())
-                            .accessibilityIdentifier("settings.keywordBell.\(term.keyword)")
-                            
-                            Toggle("", isOn: Binding(
-                                get: { term.is_active },
-                                set: { next in
-                                    db.updateTerm(id: term.id, isActive: next)
+
+                            HStack(spacing: 8) {
+                                Button {
+                                    let next = term.collection_mode == "all_info" ? "media_only" : "all_info"
+                                    db.updateTerm(id: term.id, collectionMode: next)
+                                } label: {
+                                    Label(term.collection_mode == "media_only" ? i18n.t("mediaOnly") : i18n.t("allInfo"),
+                                          systemImage: term.collection_mode == "media_only" ? "play.rectangle" : "doc.text")
+                                        .font(.caption)
+                                        .fontWeight(.semibold)
+                                        .lineLimit(1)
+                                        .padding(.horizontal, 9)
+                                        .padding(.vertical, 6)
+                                        .background(theme.colors.divider)
+                                        .foregroundColor(theme.colors.textSub)
+                                        .clipShape(Capsule())
                                 }
-                            ))
-                            .tint(theme.colors.primary)
-                            .accessibilityIdentifier("settings.keywordToggle.\(term.keyword)")
+                                .buttonStyle(PlainButtonStyle())
+                                .accessibilityIdentifier("settings.keywordMode.\(term.keyword)")
+
+                                Button(action: {
+                                    let next = !term.notify_on_new
+                                    db.updateTerm(id: term.id, notifyOnNew: next)
+                                }) {
+                                    Label(term.notify_on_new ? i18n.t("notificationsOn") : i18n.t("notificationsOff"),
+                                          systemImage: term.notify_on_new ? "bell.fill" : "bell.slash")
+                                        .font(.caption)
+                                        .fontWeight(.semibold)
+                                        .lineLimit(1)
+                                        .padding(.horizontal, 9)
+                                        .padding(.vertical, 6)
+                                        .background(term.notify_on_new ? theme.colors.primaryBg : theme.colors.divider)
+                                        .foregroundColor(term.notify_on_new ? theme.colors.primary : theme.colors.textMuted)
+                                        .clipShape(Capsule())
+                                }
+                                .buttonStyle(PlainButtonStyle())
+                                .accessibilityIdentifier("settings.keywordBell.\(term.keyword)")
+
+                                Spacer()
+                            }
                         }
                         .accessibilityIdentifier("settings.keywordRow.\(term.keyword)")
                     }
@@ -219,9 +252,9 @@ struct SettingsView: View {
 
                 Section(header: Text(i18n.t("notificationsSection"))) {
                     HStack {
-                        Label("Push Notifications", systemImage: "bell.badge")
+                        Label(i18n.t("pushNotifications"), systemImage: "bell.badge")
                         Spacer()
-                        Text(notifications.statusText)
+                        Text(notificationStatusText)
                             .foregroundColor(notifications.canScheduleNotifications ? theme.colors.primary : theme.colors.textMuted)
                     }
                     .accessibilityIdentifier("settings.notificationStatus")
@@ -231,7 +264,7 @@ struct SettingsView: View {
                         Button {
                             Task { _ = await notifications.requestAuthorization() }
                         } label: {
-                            Label("Enable Notifications", systemImage: "bell.badge.fill")
+                            Label(i18n.t("enableNotifications"), systemImage: "bell.badge.fill")
                                 .foregroundColor(theme.colors.primary)
                         }
                         .accessibilityIdentifier("settings.enableNotificationsButton")
@@ -241,7 +274,7 @@ struct SettingsView: View {
                                 UIApplication.shared.open(url)
                             }
                         } label: {
-                            Label("Open iOS Settings", systemImage: "gear")
+                            Label(i18n.t("openIOSSettings"), systemImage: "gear")
                                 .foregroundColor(theme.colors.primary)
                         }
                         .accessibilityIdentifier("settings.openSettingsButton")
@@ -249,7 +282,7 @@ struct SettingsView: View {
                         Button {
                             Task { try? await notifications.sendTestNotification() }
                         } label: {
-                            Label("Send Test Notification", systemImage: "paperplane.fill")
+                            Label(i18n.t("sendTestNotification"), systemImage: "paperplane.fill")
                                 .foregroundColor(theme.colors.primary)
                         }
                         .accessibilityIdentifier("settings.testNotificationButton")
@@ -264,7 +297,7 @@ struct SettingsView: View {
 
                 Section(
                     header: Text(i18n.t("credentialsSection")),
-                    footer: Text("Stored only on this device (Keychain). X results require your own bearer token; without it that source is skipped.")
+                    footer: Text(i18n.t("credentialsFooter"))
                 ) {
                     SecureField("X Bearer Token", text: $twitterBearerToken)
                         .textInputAutocapitalization(.never)
@@ -283,9 +316,9 @@ struct SettingsView: View {
                     }
                     .pickerStyle(.segmented)
 
-                    Picker("Style", selection: $theme.style) {
+                    Picker(i18n.t("style"), selection: $theme.style) {
                         ForEach(AppColorStyle.allCases) { style in
-                            Text(style.displayName).tag(style)
+                            Text(displayName(for: style)).tag(style)
                         }
                     }
                     .pickerStyle(.segmented)
@@ -294,7 +327,10 @@ struct SettingsView: View {
                     // Language selection
                     Picker(i18n.t("language"), selection: Binding(
                         get: { i18n.lang },
-                        set: { i18n.setLanguage($0) }
+                        set: {
+                            i18n.setLanguage($0)
+                            NotificationManager.shared.registerNotificationCategories()
+                        }
                     )) {
                         Text("日本語").tag("ja")
                         Text("English").tag("en")
@@ -302,17 +338,17 @@ struct SettingsView: View {
                         Text("简体中文").tag("zh-CN")
                     }
 
-                    Picker("Font", selection: $appearance.fontChoice) {
+                    Picker(i18n.t("font"), selection: $appearance.fontChoice) {
                         ForEach(AppFontChoice.allCases) { choice in
-                            Text(choice.displayName).tag(choice)
+                            Text(displayName(for: choice)).tag(choice)
                         }
                     }
                     .pickerStyle(.segmented)
                     .accessibilityIdentifier("settings.fontPicker")
 
-                    Picker("Font Size", selection: $appearance.fontSizeChoice) {
+                    Picker(i18n.t("fontSize"), selection: $appearance.fontSizeChoice) {
                         ForEach(AppFontSizeChoice.allCases) { choice in
-                            Text(choice.displayName).tag(choice)
+                            Text(displayName(for: choice)).tag(choice)
                         }
                     }
                     .pickerStyle(.segmented)
@@ -330,16 +366,36 @@ struct SettingsView: View {
 
                 Section(header: Text(i18n.t("privacySection"))) {
                     NavigationLink(destination: PrivacyPolicyView(theme: theme)) {
-                        Label("Privacy Policy", systemImage: "hand.raised")
+                        Label(i18n.t("privacyPolicy"), systemImage: "hand.raised")
                     }
                     .accessibilityIdentifier("settings.privacyPolicyLink")
                 }
 
                 Section(header: Text(i18n.t("dataSection"))) {
+                    Button {
+                        do {
+                            backupDocument = LocalBackupDocument(data: try db.exportBackupData())
+                            showingBackupExporter = true
+                        } catch {
+                            backupMessage = error.localizedDescription
+                            showingBackupMessage = true
+                        }
+                    } label: {
+                        Label(i18n.t("exportBackup"), systemImage: "square.and.arrow.up")
+                    }
+                    .accessibilityIdentifier("settings.exportBackupButton")
+
+                    Button {
+                        showingBackupImporter = true
+                    } label: {
+                        Label(i18n.t("importBackup"), systemImage: "square.and.arrow.down")
+                    }
+                    .accessibilityIdentifier("settings.importBackupButton")
+
                     Button(role: .destructive) {
                         showingClearAllAlert = true
                     } label: {
-                        Label("Clear All Data", systemImage: "trash")
+                        Label(i18n.t("clearAllData"), systemImage: "trash")
                     }
                     .accessibilityIdentifier("settings.clearAllDataButton")
                 }
@@ -388,6 +444,7 @@ struct SettingsView: View {
                                 return
                             }
                             let savedTerm = db.saveTerm(keyword: trimmed, collectionMode: newCollectionMode)
+                            let sourceRevision = db.dataRevision
 
                             // Fetch the new keyword right away rather than waiting
                             // for the next feed refresh.
@@ -395,7 +452,9 @@ struct SettingsView: View {
                                 if ProcessInfo.processInfo.arguments.contains("--uitesting") { return }
                                 let subscribed = Set(db.subscribedPlatforms.filter { $0 != "custom" })
                                 let items = await IngestionService.shared.ingest(term: savedTerm, platforms: subscribed)
-                                if !items.isEmpty { _ = await db.mergeItems(newItems: items) }
+                                if !items.isEmpty {
+                                    _ = db.mergeItems(newItems: items, sourceRevision: sourceRevision)
+                                }
                             }
 
                             newKeyword = ""
@@ -416,49 +475,141 @@ struct SettingsView: View {
                 .background(theme.colors.bg)
                 .presentationDetents([.medium])
             }
-            .alert("Clear All Data?", isPresented: $showingClearAllAlert) {
+            .alert(i18n.t("clearAllDataTitle"), isPresented: $showingClearAllAlert) {
                 Button(i18n.t("cancel"), role: .cancel) {}
                 Button(i18n.t("delete"), role: .destructive) {
                     db.clearAllData()
                 }
             } message: {
-                Text("This removes keywords, feed items, saved pages, custom URLs, avatars, hidden items, wallpaper, and source order from this device.")
+                Text(i18n.t("clearAllDataMessage"))
             }
+            .fileExporter(
+                isPresented: $showingBackupExporter,
+                document: backupDocument,
+                contentType: .json,
+                defaultFilename: "oshireader-backup.json"
+            ) { result in
+                if case .failure(let error) = result {
+                    backupMessage = error.localizedDescription
+                    showingBackupMessage = true
+                }
+            }
+            .fileImporter(isPresented: $showingBackupImporter, allowedContentTypes: [.json]) { result in
+                do {
+                    let url = try result.get()
+                    let didAccess = url.startAccessingSecurityScopedResource()
+                    defer {
+                        if didAccess { url.stopAccessingSecurityScopedResource() }
+                    }
+                    let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+                    let byteCount = (attributes[.size] as? NSNumber)?.int64Value ?? 0
+                    guard byteCount <= Int64(LocalDB.maximumBackupBytes) else {
+                        throw NSError(domain: "OshiReaderBackup", code: 5, userInfo: [NSLocalizedDescriptionKey: "Backup file is too large"])
+                    }
+                    let data = try Data(contentsOf: url, options: [.mappedIfSafe])
+                    try db.importBackupData(data)
+                    backupMessage = i18n.t("backupImported")
+                } catch {
+                    backupMessage = error.localizedDescription
+                }
+                showingBackupMessage = true
+            }
+            .alert(i18n.t("backupStatus"), isPresented: $showingBackupMessage) {
+                Button(i18n.t("ok"), role: .cancel) {}
+            } message: {
+                Text(backupMessage)
+            }
+            .alert(i18n.t("addAlias"), isPresented: $showingAliasLimitMessage) {
+                Button(i18n.t("ok"), role: .cancel) {}
+            } message: {
+                Text(i18n.t("aliasLimitReached"))
+            }
+        }
+    }
+
+    private func displayName(for style: AppColorStyle) -> String {
+        switch style {
+        case .colourful: return i18n.t("styleColourful")
+        case .standard: return i18n.t("styleStandard")
+        }
+    }
+
+    private func commitAlias(for term: WatchTerm) {
+        let trimmed = newAliasText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty,
+           !term.aliases.contains(trimmed),
+           term.aliases.count < IngestionService.maximumAliasesPerTerm {
+            db.updateTerm(id: term.id, aliases: term.aliases + [trimmed])
+        }
+        newAliasText = ""
+        addingAliasForId = nil
+    }
+
+    private func displayName(for choice: AppFontChoice) -> String {
+        switch choice {
+        case .normal: return i18n.t("fontNormal")
+        case .comicSans: return i18n.t("fontComicSans")
+        }
+    }
+
+    private func displayName(for choice: AppFontSizeChoice) -> String {
+        switch choice {
+        case .normal: return i18n.t("fontSizeNormal")
+        case .large: return i18n.t("fontSizeLarge")
+        case .extraLarge: return i18n.t("fontSizeExtraLarge")
+        }
+    }
+
+    private var notificationStatusText: String {
+        switch notifications.authorizationStatus {
+        case .authorized:
+            return i18n.t("notificationStatusEnabled")
+        case .provisional:
+            return i18n.t("notificationStatusQuiet")
+        case .denied:
+            return i18n.t("notificationStatusDisabled")
+        case .ephemeral:
+            return i18n.t("notificationStatusTemporary")
+        case .notDetermined:
+            return i18n.t("notificationStatusNotRequested")
+        @unknown default:
+            return i18n.t("notificationStatusUnknown")
         }
     }
 }
 
 struct PrivacyPolicyView: View {
     let theme: ThemeManager
+    @StateObject private var i18n = I18nManager.shared
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 policySection(
-                    title: "Data Stored on This Device",
-                    body: "Oshi Reader stores watch keywords, feed items, saved pages, custom URLs, display settings, wallpaper choices, avatar compositions, and cached article HTML for offline reading — all locally on this device."
+                    title: i18n.t("privacyStoredTitle"),
+                    body: i18n.t("privacyStoredBody")
                 )
 
                 policySection(
-                    title: "Data Sent for App Functionality",
-                    body: "When you add watch keywords, refresh feeds, search stickers, translate sticker queries, or open articles, related keywords, search text, URLs, and article requests may be sent to Google services, Irasutoya/Blogger feeds, news feeds, and the websites you choose to open."
+                    title: i18n.t("privacySentTitle"),
+                    body: i18n.t("privacySentBody")
                 )
 
                 policySection(
-                    title: "Tracking and Advertising",
-                    body: "This app does not use advertising identifiers, App Tracking Transparency, third-party ad SDKs, or data broker tracking. Data is used solely to provide feed, reader, search, translation, and customization features."
+                    title: i18n.t("privacyTrackingTitle"),
+                    body: i18n.t("privacyTrackingBody")
                 )
 
                 policySection(
-                    title: "Permissions",
-                    body: "Notifications: requested when you enable keyword alerts or send a test notification.\n\nPhoto Library: requested when you save an image from the article reader to your Photos.\n\nThis app does not request access to location, contacts, camera, microphone, Bluetooth, health data, or motion sensors."
+                    title: i18n.t("privacyPermissionsTitle"),
+                    body: i18n.t("privacyPermissionsBody")
                 )
             }
             .padding(18)
         }
         .accessibilityIdentifier("privacy.screen")
         .background(theme.colors.bg)
-        .navigationTitle("Privacy Policy")
+        .navigationTitle(i18n.t("privacyPolicy"))
         .navigationBarTitleDisplayMode(.inline)
     }
 

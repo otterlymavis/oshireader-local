@@ -13,41 +13,101 @@ final class IngestionService {
 
     /// Caps concurrent news.google.com requests across all in-flight terms.
     private static let googleNewsLimiter = RequestLimiter(limit: 3)
+    /// Caps all source requests across foreground and background ingestion.
+    private static let sourceRequestLimiter = RequestLimiter(limit: 4)
+    static let maximumAliasesPerTerm = 5
 
     // MARK: - Orchestration
+
+    static func searchKeywords(for term: WatchTerm) -> [String] {
+        var result = [String]()
+        var seen = Set<String>()
+        for value in [term.keyword] + term.aliases {
+            let keyword = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !keyword.isEmpty, seen.insert(keyword).inserted else { continue }
+            result.append(keyword)
+            if result.count >= 1 + Self.maximumAliasesPerTerm { break }
+        }
+        return result
+    }
 
     /// Fetch every subscribed source for one watch term. Network errors in any
     /// single source are swallowed (that source just contributes no items).
     func ingest(term: WatchTerm, platforms: Set<String>) async -> [FeedItem] {
-        let keyword = term.keyword.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !keyword.isEmpty else { return [] }
+        let primaryKeyword = term.keyword.trimmingCharacters(in: .whitespacesAndNewlines)
+        let searchKeywords = Self.searchKeywords(for: term)
+        guard !primaryKeyword.isEmpty, !searchKeywords.isEmpty else { return [] }
         let mediaOnly = term.collection_mode == "media_only"
 
         return await withTaskGroup(of: [FeedItem].self) { group in
-            func add(_ id: String, _ work: @escaping () async -> [FeedItem]) {
+            func add(_ id: String, _ work: @escaping (String) async -> [FeedItem]) {
                 guard platforms.contains(id) else { return }
-                group.addTask { await work() }
+                for searchKeyword in searchKeywords {
+                    group.addTask {
+                        guard await Self.sourceRequestLimiter.acquire() else { return [] }
+                        guard !Task.isCancelled else {
+                            await Self.sourceRequestLimiter.release()
+                            return []
+                        }
+                        let items = await work(searchKeyword)
+                        await Self.sourceRequestLimiter.release()
+                        return items.map { self.withWatchTermKeyword($0, keyword: primaryKeyword) }
+                    }
+                }
             }
 
-            add("news")        { await self.fetchCuratedNews(keyword: keyword, mediaOnly: mediaOnly) }
-            add("5ch")         { await self.fetchGoogleNews(keyword: keyword, query: "\(keyword) site:5ch.net", platform: "5ch", mediaType: "text", mediaOnly: mediaOnly) }
-            add("girlschannel") { await self.fetchGoogleNews(keyword: keyword, query: "\(keyword) site:girlschannel.net", platform: "girlschannel", mediaType: "text", mediaOnly: mediaOnly) }
-            add("mdpr")        { await self.fetchGoogleNews(keyword: keyword, query: "\(keyword) site:mdpr.jp", platform: "mdpr", mediaType: "article", mediaOnly: mediaOnly, titlePatterns: [#"\s*[-|]\s*モデルプレス\s*$"#]) }
-            add("oricon")      { await self.fetchGoogleNews(keyword: keyword, query: "\(keyword) site:oricon.co.jp", platform: "oricon", mediaType: "article", mediaOnly: mediaOnly, author: "ORICON NEWS", limit: 20, titlePatterns: [#"\s*[-|]\s*(ORICON NEWS|オリコンニュース|オリコン)\s*$"#]) }
-            add("yahoonews")   { await self.fetchYahooNews(keyword: keyword, mediaOnly: mediaOnly) }
-            add("niconico")    { await self.fetchNiconico(keyword: keyword) }
-            add("note")        { await self.fetchNote(keyword: keyword, mediaOnly: mediaOnly) }
+            add("news")        { await self.fetchCuratedNews(keyword: $0, mediaOnly: mediaOnly) }
+            add("5ch")         { await self.fetchGoogleNews(keyword: $0, query: "\($0) site:5ch.net", platform: "5ch", mediaType: "text", mediaOnly: mediaOnly) }
+            add("girlschannel") { await self.fetchGoogleNews(keyword: $0, query: "\($0) site:girlschannel.net", platform: "girlschannel", mediaType: "text", mediaOnly: mediaOnly) }
+            add("mdpr")        { await self.fetchGoogleNews(keyword: $0, query: "\($0) site:mdpr.jp", platform: "mdpr", mediaType: "article", mediaOnly: mediaOnly, titlePatterns: [#"\s*[-|]\s*モデルプレス\s*$"#]) }
+            add("oricon")      { await self.fetchGoogleNews(keyword: $0, query: "\($0) site:oricon.co.jp", platform: "oricon", mediaType: "article", mediaOnly: mediaOnly, author: "ORICON NEWS", limit: 20, titlePatterns: [#"\s*[-|]\s*(ORICON NEWS|オリコンニュース|オリコン)\s*$"#]) }
+            add("yahoonews")   { await self.fetchYahooNews(keyword: $0, mediaOnly: mediaOnly) }
+            add("niconico")    { await self.fetchNiconico(keyword: $0) }
+            add("note")        { await self.fetchNote(keyword: $0, mediaOnly: mediaOnly) }
             // Togetter via Google News so items carry real publish dates (the
             // search-page scrape doesn't expose reliable dates).
-            add("togetter")    { await self.fetchGoogleNews(keyword: keyword, query: "\(keyword) site:togetter.com", platform: "togetter", mediaType: "article", mediaOnly: mediaOnly) }
-            add("tver")        { await self.fetchTVer(keyword: keyword) }
-            add("youtube")     { await self.fetchYouTube(keyword: keyword) }
-            add("twitter")     { await self.fetchTwitter(keyword: keyword, mediaOnly: mediaOnly) }
+            add("togetter")    { await self.fetchGoogleNews(keyword: $0, query: "\($0) site:togetter.com", platform: "togetter", mediaType: "article", mediaOnly: mediaOnly) }
+            add("tver")        { await self.fetchTVer(keyword: $0) }
+            add("youtube")     { await self.fetchYouTube(keyword: $0) }
+            add("twitter")     { await self.fetchTwitter(keyword: $0, mediaOnly: mediaOnly) }
+
+            // Keep the source catalog additive: existing dedicated fetchers
+            // above win, while the remaining reference sources use dated RSS
+            // results from Google News until they warrant a dedicated parser.
+            for source in PlatformRegistry.googleNewsSources where
+                !["5ch", "girlschannel", "mdpr", "oricon", "yahoonews", "togetter", "twitter"].contains(source.id) {
+                add(source.id) {
+                    await self.fetchGoogleNews(
+                        keyword: $0,
+                        query: "\($0) site:\(source.googleNewsSite ?? "")",
+                        platform: source.id,
+                        mediaType: "article",
+                        mediaOnly: mediaOnly,
+                        locale: source.newsLocale
+                    )
+                }
+            }
 
             var all = [FeedItem]()
             for await items in group { all.append(contentsOf: items) }
             return all
         }
+    }
+
+    private func withWatchTermKeyword(_ item: FeedItem, keyword: String) -> FeedItem {
+        FeedItem(
+            id: item.id,
+            platform: item.platform,
+            url: item.url,
+            title: item.title,
+            content_text: item.content_text,
+            author: item.author,
+            thumbnail_url: item.thumbnail_url,
+            media_type: item.media_type,
+            published_at: item.published_at,
+            watch_term_keyword: keyword,
+            fetched_at: item.fetched_at
+        )
     }
 
     // MARK: - General news
@@ -108,14 +168,19 @@ final class IngestionService {
         mediaOnly: Bool,
         author: String? = nil,
         limit: Int = 25,
-        titlePatterns: [String] = []
+        titlePatterns: [String] = [],
+        locale: PlatformDefinition.NewsLocale = .japan
     ) async -> [FeedItem] {
         if mediaOnly { return [] }
-        guard let url = googleNewsURL(query) else { return [] }
+        guard let url = googleNewsURL(query, locale: locale) else { return [] }
         // Many sources funnel through news.google.com; throttle so we don't get
         // rate-limited (which previously made sources like 5ch return nothing).
-        await Self.googleNewsLimiter.acquire()
-        let entries = await parseRSS(url)
+        guard await Self.googleNewsLimiter.acquire() else { return [] }
+        guard !Task.isCancelled else {
+            await Self.googleNewsLimiter.release()
+            return []
+        }
+        let entries = await parseRSS(url, headers: ["Accept-Language": locale.acceptLanguage])
         await Self.googleNewsLimiter.release()
 
         var seen = Set<String>()
@@ -843,9 +908,14 @@ final class IngestionService {
         return delegate.items
     }
 
-    private func googleNewsURL(_ query: String) -> URL? {
+    private func googleNewsURL(_ query: String, locale: PlatformDefinition.NewsLocale = .japan) -> URL? {
         guard let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) else { return nil }
-        return URL(string: "https://news.google.com/rss/search?q=\(encoded)&hl=ja&gl=JP&ceid=JP%3Aja")
+        switch locale {
+        case .japan:
+            return URL(string: "https://news.google.com/rss/search?q=\(encoded)&hl=ja&gl=JP&ceid=JP%3Aja")
+        case .englishUS:
+            return URL(string: "https://news.google.com/rss/search?q=\(encoded)&hl=en&gl=US&ceid=US%3Aen")
+        }
     }
 
     private func cleanTitle(_ value: String, patterns: [String]) -> String {
@@ -893,24 +963,32 @@ final class IngestionService {
 actor RequestLimiter {
     private let limit: Int
     private var active = 0
-    private var waiters: [CheckedContinuation<Void, Never>] = []
 
-    init(limit: Int) { self.limit = limit }
+    init(limit: Int) {
+        precondition(limit > 0)
+        self.limit = limit
+    }
 
-    func acquire() async {
-        if active < limit {
-            active += 1
-            return
+    func acquire() async -> Bool {
+        while !Task.isCancelled {
+            if active < limit {
+                active += 1
+                return true
+            }
+
+            // Polling keeps the wait cancellation-aware without storing
+            // continuations that can race with release().
+            do {
+                try await Task.sleep(nanoseconds: 10_000_000)
+            } catch {
+                return false
+            }
         }
-        await withCheckedContinuation { waiters.append($0) }
+        return false
     }
 
     func release() {
-        if let next = waiters.first {
-            waiters.removeFirst()
-            next.resume()   // hand the slot directly to a waiter
-        } else {
-            active -= 1
-        }
+        precondition(active > 0)
+        active -= 1
     }
 }

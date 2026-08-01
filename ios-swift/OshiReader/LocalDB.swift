@@ -1,8 +1,16 @@
 import Foundation
 import Combine
 
+private struct LocalRestoreManifest: Codable {
+    let stagingDirectory: String
+    let files: [String]
+    let wallpaper: String?
+    let sourcesOrder: [String]?
+}
+
 class LocalDB: ObservableObject {
     static let shared = LocalDB()
+    static let maximumBackupBytes = 20 * 1024 * 1024
     
     // Published states for views
     @Published var terms: [WatchTerm] = []
@@ -15,12 +23,19 @@ class LocalDB: ObservableObject {
     @Published var oshiAvatars: [String: String] = [:]
     @Published var compositions: [String: [AvatarLayer]] = [:]
     @Published var hiddenItems: Set<String> = []
+    @Published private(set) var contentCacheGeneration: Int = UserDefaults.standard.integer(forKey: "content_cache_generation")
+    @Published private(set) var dataRevision: Int = UserDefaults.standard.integer(forKey: "local_data_revision")
     
     private let queue = DispatchQueue(label: "com.otterlymavis.oshireader.db", qos: .userInitiated)
+    private let pendingWritesLock = NSLock()
+    private let contentCacheGenerationLock = NSLock()
+    private var pendingWrites = 0
+    private var contentCacheGenerationValue = UserDefaults.standard.integer(forKey: "content_cache_generation")
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
     
     private init() {
+        recoverPendingRestoreIfNeeded()
         loadAll()
     }
     
@@ -36,17 +51,17 @@ class LocalDB: ObservableObject {
         self.feedItems = loadFromFile(name: "feed_items", defaultValue: [])
         self.savedPages = loadFromFile(name: "saved_pages", defaultValue: [])
         self.customUrls = loadFromFile(name: "custom_urls", defaultValue: [])
-        self.subscribedPlatforms = loadFromFile(name: "subscribed_platforms", defaultValue: [
-            "youtube", "niconico", "tver", "note",
-            "girlschannel", "5ch", "togetter", "news", "custom",
-            "yahoonews", "mdpr", "oricon", "twitter"
-        ])
-        var didAddMissingPlatforms = false
-        for platform in ["oricon", "twitter", "mdpr", "yahoonews", "togetter", "niconico", "girlschannel"] where !self.subscribedPlatforms.contains(platform) {
-            self.subscribedPlatforms.append(platform)
-            didAddMissingPlatforms = true
-        }
-        if didAddMissingPlatforms {
+        let subscribedPlatformsURL = fileURL(for: "subscribed_platforms")
+        let hasSavedSubscribedPlatforms = FileManager.default.fileExists(atPath: subscribedPlatformsURL.path)
+        let loadedSubscribedPlatforms: [String] = loadFromFile(
+            name: "subscribed_platforms",
+            defaultValue: PlatformRegistry.defaultSubscribedIDs
+        )
+        self.subscribedPlatforms = Self.subscribedPlatformsForLoadedValue(
+            loadedSubscribedPlatforms,
+            hasSavedFile: hasSavedSubscribedPlatforms
+        )
+        if hasSavedSubscribedPlatforms, self.subscribedPlatforms != loadedSubscribedPlatforms {
             saveToFile(name: "subscribed_platforms", value: self.subscribedPlatforms)
         }
         self.wallpaper = UserDefaults.standard.string(forKey: "wallpaper_url")
@@ -73,8 +88,21 @@ class LocalDB: ObservableObject {
     }
     
     private func saveToFile<T: Encodable>(name: String, value: T) {
+        saveToFile(name: name, value: value, shouldWrite: nil)
+    }
+
+    private func saveToFile<T: Encodable>(name: String, value: T, shouldWrite: (() -> Bool)?) {
         let url = fileURL(for: name)
+        pendingWritesLock.lock()
+        pendingWrites += 1
+        pendingWritesLock.unlock()
         queue.async {
+            defer {
+                self.pendingWritesLock.lock()
+                self.pendingWrites -= 1
+                self.pendingWritesLock.unlock()
+            }
+            if let shouldWrite, !shouldWrite() { return }
             do {
                 let data = try self.encoder.encode(value)
                 try data.write(to: url, options: [.atomic])
@@ -86,6 +114,95 @@ class LocalDB: ObservableObject {
             }
         }
     }
+
+    /// Blocks until all ordinary asynchronous local writes submitted so far
+    /// have reached disk. Intended for lifecycle transitions, not UI actions.
+    func flushPendingWrites() {
+        queue.sync {}
+    }
+
+    private func saveEncodedFilesSynchronously(
+        _ files: [(String, Data)],
+        wallpaper: String?,
+        sourcesOrder: [String]?
+    ) throws {
+        let docsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let stagingName = ".oshireader-restore-\(UUID().uuidString)"
+        let stagingDirectory = docsDirectory.appendingPathComponent(stagingName, isDirectory: true)
+        try FileManager.default.createDirectory(at: stagingDirectory, withIntermediateDirectories: true)
+        do {
+            try queue.sync {
+                for (name, data) in files {
+                    try data.write(to: stagingDirectory.appendingPathComponent("\(name).json"), options: [.atomic])
+                }
+            }
+            let manifest = LocalRestoreManifest(
+                stagingDirectory: stagingName,
+                files: files.map { $0.0 },
+                wallpaper: wallpaper,
+                sourcesOrder: sourcesOrder
+            )
+            let manifestData = try JSONEncoder().encode(manifest)
+            try manifestData.write(to: docsDirectory.appendingPathComponent("restore_manifest.json"), options: [.atomic])
+            try applyPendingRestore()
+        } catch {
+            // Keep a fully written manifest/staging directory only when the
+            // replacement phase has started; the next launch can recover it.
+            if !FileManager.default.fileExists(atPath: docsDirectory.appendingPathComponent("restore_manifest.json").path) {
+                try? FileManager.default.removeItem(at: stagingDirectory)
+            }
+            throw error
+        }
+    }
+
+    private func recoverPendingRestoreIfNeeded() {
+        do { try applyPendingRestore() } catch {
+            #if DEBUG
+            print("Pending local restore could not be completed: \(error)")
+            #endif
+        }
+    }
+
+    private func applyPendingRestore() throws {
+        let docsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let manifestURL = docsDirectory.appendingPathComponent("restore_manifest.json")
+        guard FileManager.default.fileExists(atPath: manifestURL.path) else { return }
+        let manifest = try JSONDecoder().decode(LocalRestoreManifest.self, from: Data(contentsOf: manifestURL))
+        let expectedFiles: Set<String> = [
+            "terms", "feed_items", "saved_pages", "custom_urls",
+            "subscribed_platforms", "oshi_avatars", "oshi_compositions", "hidden_items"
+        ]
+        guard Set(manifest.files) == expectedFiles,
+              manifest.stagingDirectory.hasPrefix(".oshireader-restore-"),
+              !manifest.stagingDirectory.contains("/") else {
+            throw NSError(domain: "OshiReaderBackup", code: 6, userInfo: [NSLocalizedDescriptionKey: "Invalid restore manifest"])
+        }
+        let stagingDirectory = docsDirectory.appendingPathComponent(manifest.stagingDirectory, isDirectory: true)
+        guard stagingDirectory.deletingLastPathComponent().standardizedFileURL.path == docsDirectory.standardizedFileURL.path else {
+            throw NSError(domain: "OshiReaderBackup", code: 6, userInfo: [NSLocalizedDescriptionKey: "Invalid restore staging path"])
+        }
+
+        for name in manifest.files {
+            let stagedURL = stagingDirectory.appendingPathComponent("\(name).json")
+            let destinationURL = fileURL(for: name)
+            if FileManager.default.fileExists(atPath: destinationURL.path),
+               FileManager.default.fileExists(atPath: stagedURL.path) {
+                _ = try FileManager.default.replaceItemAt(destinationURL, withItemAt: stagedURL)
+            } else if FileManager.default.fileExists(atPath: stagedURL.path) {
+                try FileManager.default.moveItem(at: stagedURL, to: destinationURL)
+            } else if !FileManager.default.fileExists(atPath: destinationURL.path) {
+                throw NSError(domain: "OshiReaderBackup", code: 3, userInfo: [NSLocalizedDescriptionKey: "Restore staging data is incomplete"])
+            }
+        }
+
+        if let wallpaper = manifest.wallpaper { UserDefaults.standard.set(wallpaper, forKey: "wallpaper_url") }
+        else { UserDefaults.standard.removeObject(forKey: "wallpaper_url") }
+        if let sourcesOrder = manifest.sourcesOrder { UserDefaults.standard.set(sourcesOrder, forKey: "sources_order") }
+        else { UserDefaults.standard.removeObject(forKey: "sources_order") }
+
+        try? FileManager.default.removeItem(at: stagingDirectory)
+        try FileManager.default.removeItem(at: manifestURL)
+    }
     
     private func runOnMain(_ block: @escaping () -> Void) {
         if Thread.isMainThread {
@@ -96,11 +213,17 @@ class LocalDB: ObservableObject {
             }
         }
     }
+
+    private func advanceDataRevision() {
+        dataRevision &+= 1
+        UserDefaults.standard.set(dataRevision, forKey: "local_data_revision")
+    }
     
     // MARK: - Watch Terms
     func saveTerm(keyword: String, collectionMode: String = "all_info") -> WatchTerm {
         let term = WatchTerm(keyword: keyword.trimmingCharacters(in: .whitespacesAndNewlines), collection_mode: collectionMode)
         runOnMain {
+            self.advanceDataRevision()
             self.terms.insert(term, at: 0)
             self.saveToFile(name: "terms", value: self.terms)
         }
@@ -111,6 +234,13 @@ class LocalDB: ObservableObject {
         runOnMain {
             if let idx = self.terms.firstIndex(where: { $0.id == id }) {
                 var term = self.terms[idx]
+                let changesIngestionScope =
+                    isActive.map { $0 != term.is_active } ?? false ||
+                    collectionMode.map { $0 != term.collection_mode } ?? false ||
+                    aliases.map { $0 != term.aliases } ?? false
+                if changesIngestionScope {
+                    self.advanceDataRevision()
+                }
                 if let isActive = isActive { term.is_active = isActive }
                 if let collectionMode = collectionMode { term.collection_mode = collectionMode }
                 if let notifyOnNew = notifyOnNew { term.notify_on_new = notifyOnNew }
@@ -125,6 +255,7 @@ class LocalDB: ObservableObject {
         runOnMain {
             if let term = self.terms.firstIndex(where: { $0.id == id }) {
                 let keyword = self.terms[term].keyword
+                self.advanceDataRevision()
                 self.terms.remove(at: term)
                 self.saveToFile(name: "terms", value: self.terms)
                 
@@ -137,7 +268,8 @@ class LocalDB: ObservableObject {
     
     // MARK: - Feed Items & Merging
     @MainActor
-    func mergeItems(newItems: [FeedItem]) -> Int {
+    func mergeItems(newItems: [FeedItem], sourceRevision: Int? = nil) -> Int {
+        guard sourceRevision == nil || sourceRevision == dataRevision else { return 0 }
         var addedCount = 0
         var addedItems: [FeedItem] = []
         let itemKey = { (i: FeedItem) -> String in "\(i.id)::\(i.watch_term_keyword)" }
@@ -223,7 +355,8 @@ class LocalDB: ObservableObject {
         let formatter = ISO8601DateFormatter()
         let cutoffString = cutoffDate.map { formatter.string(from: $0) }
         
-        let strictKeywordPlatforms = Set(["mdpr", "news", "tver"])
+        let strictKeywordPlatforms = PlatformRegistry.strictKeywordPlatformIDs
+            .union(["news", "tver"])
         
         return feedItems.filter { item in
             let key = "\(item.id)::\(item.watch_term_keyword)"
@@ -254,7 +387,11 @@ class LocalDB: ObservableObject {
             
             // Strict keyword matching logic
             if strictKeywordPlatforms.contains(item.platform), !item.watch_term_keyword.isEmpty {
-                if !matchesKeyword(item: item, kw: item.watch_term_keyword) {
+                let aliases = self.terms
+                    .first { $0.keyword == item.watch_term_keyword }?
+                    .aliases ?? []
+                let matchingKeywords = [item.watch_term_keyword] + aliases
+                if !matchingKeywords.contains(where: { matchesKeyword(item: item, kw: $0) }) {
                     return false
                 }
             }
@@ -326,6 +463,8 @@ class LocalDB: ObservableObject {
     // MARK: - Subscribed Platforms
     func setSubscribedPlatforms(platforms: [String]) {
         runOnMain {
+            guard self.subscribedPlatforms != platforms else { return }
+            self.advanceDataRevision()
             self.subscribedPlatforms = platforms
             self.saveToFile(name: "subscribed_platforms", value: self.subscribedPlatforms)
         }
@@ -340,6 +479,7 @@ class LocalDB: ObservableObject {
             if self.customUrls.contains(where: { $0.id == id }) { return }
             let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
             let entry = CustomUrl(id: id, url: normalized, title: trimmedTitle.isEmpty ? nil : trimmedTitle, added_at: ISO8601DateFormatter().string(from: Date()))
+            self.advanceDataRevision()
             self.customUrls.insert(entry, at: 0)
             self.saveToFile(name: "custom_urls", value: self.customUrls)
         }
@@ -347,12 +487,15 @@ class LocalDB: ObservableObject {
     
     func removeCustomUrl(id: String) {
         runOnMain {
+            guard self.customUrls.contains(where: { $0.id == id }) else { return }
+            self.advanceDataRevision()
             self.customUrls.removeAll(where: { $0.id == id })
             self.saveToFile(name: "custom_urls", value: self.customUrls)
         }
     }
 
     // MARK: - Data Reset
+    @MainActor
     func clearAllData() {
         let fileNames = [
             "terms",
@@ -365,41 +508,40 @@ class LocalDB: ObservableObject {
             "hidden_items"
         ]
 
-        runOnMain {
-            self.terms = []
-            self.feedItems = []
-            self.savedPages = []
-            self.customUrls = []
-            self.subscribedPlatforms = [
-                "youtube", "niconico", "tver", "note",
-                "girlschannel", "5ch", "togetter", "news", "custom",
-                "yahoonews", "mdpr", "oricon", "twitter"
-            ]
-            self.wallpaper = nil
-            self.sourcesOrder = nil
-            self.oshiAvatars = [:]
-            self.compositions = [:]
-            self.hiddenItems = []
+        flushPendingWrites()
+        dataRevision += 1
+        UserDefaults.standard.set(dataRevision, forKey: "local_data_revision")
+        invalidateContentCaches()
+        NotificationManager.shared.clearLocalNotifications()
+        terms = []
+        feedItems = []
+        savedPages = []
+        customUrls = []
+        subscribedPlatforms = PlatformRegistry.defaultSubscribedIDs
+        wallpaper = nil
+        sourcesOrder = nil
+        oshiAvatars = [:]
+        compositions = [:]
+        hiddenItems = []
 
-            for name in fileNames {
-                let url = self.fileURL(for: name)
-                if FileManager.default.fileExists(atPath: url.path) {
-                    try? FileManager.default.removeItem(at: url)
-                }
+        for name in fileNames {
+            let url = fileURL(for: name)
+            if FileManager.default.fileExists(atPath: url.path) {
+                try? FileManager.default.removeItem(at: url)
             }
-            // Delete all content cache files (cache_*.json) written by saveContentCache.
-            let docsDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            if let contents = try? FileManager.default.contentsOfDirectory(
-                at: docsDir, includingPropertiesForKeys: nil
-            ) {
-                for cacheUrl in contents where cacheUrl.lastPathComponent.hasPrefix("cache_") || cacheUrl.lastPathComponent.hasPrefix("oshi_wallpaper") {
-                    try? FileManager.default.removeItem(at: cacheUrl)
-                }
-            }
-            UserDefaults.standard.removeObject(forKey: "wallpaper_url")
-            UserDefaults.standard.removeObject(forKey: "sources_order")
-            self.saveToFile(name: "subscribed_platforms", value: self.subscribedPlatforms)
         }
+        // Delete wallpaper files separately from content caches.
+        let docsDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        if let contents = try? FileManager.default.contentsOfDirectory(
+            at: docsDir, includingPropertiesForKeys: nil
+        ) {
+            for cacheUrl in contents where cacheUrl.lastPathComponent.hasPrefix("oshi_wallpaper") {
+                try? FileManager.default.removeItem(at: cacheUrl)
+            }
+        }
+        UserDefaults.standard.removeObject(forKey: "wallpaper_url")
+        UserDefaults.standard.removeObject(forKey: "sources_order")
+        saveToFile(name: "subscribed_platforms", value: subscribedPlatforms)
     }
     
     // MARK: - Wallpaper & Custom Order (UserDefaults)
@@ -433,6 +575,121 @@ class LocalDB: ObservableObject {
         runOnMain {
             self.compositions[keyword] = layers
             self.saveToFile(name: "oshi_compositions", value: self.compositions)
+        }
+    }
+
+    // MARK: - Portable local backup
+    @MainActor
+    func exportBackupData() throws -> Data {
+        let backup = LocalBackup(
+            exportedAt: ISO8601DateFormatter().string(from: Date()),
+            terms: terms,
+            feedItems: feedItems,
+            savedPages: savedPages,
+            customUrls: customUrls,
+            subscribedPlatforms: subscribedPlatforms,
+            wallpaper: wallpaper,
+            sourcesOrder: sourcesOrder,
+            oshiAvatars: oshiAvatars,
+            compositions: compositions,
+            hiddenItems: Array(hiddenItems)
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return try encoder.encode(backup)
+    }
+
+    @MainActor
+    func importBackupData(_ data: Data) throws {
+        guard data.count <= Self.maximumBackupBytes else {
+            throw NSError(domain: "OshiReaderBackup", code: 5, userInfo: [NSLocalizedDescriptionKey: "Backup file is too large"])
+        }
+        let backup = try JSONDecoder().decode(LocalBackup.self, from: data)
+        guard backup.subscribed_platforms.count <= 100 else {
+            throw NSError(domain: "OshiReaderBackup", code: 2, userInfo: [NSLocalizedDescriptionKey: "Backup contains too many platforms"])
+        }
+        guard backup.terms.count <= 200,
+              backup.feed_items.count <= 2_000,
+              backup.saved_pages.count <= 2_000,
+              backup.custom_urls.count <= 200,
+              backup.oshi_avatars.count <= 200,
+              backup.compositions.count <= 200,
+              backup.compositions.values.allSatisfy({ $0.count <= 100 }),
+              backup.hidden_items.count <= 5_000 else {
+            throw NSError(domain: "OshiReaderBackup", code: 4, userInfo: [NSLocalizedDescriptionKey: "Backup contains too much data"])
+        }
+
+        let normalizedTerms = backup.terms.map { term -> WatchTerm in
+            var normalized = term
+            normalized.aliases = Array(IngestionService.searchKeywords(for: term).dropFirst())
+            return normalized
+        }
+        let normalizedSubscribedPlatforms = Self.normalizePlatformIDs(backup.subscribed_platforms)
+        let normalizedSourcesOrder = backup.sources_order.map(Self.normalizePlatformIDs)
+
+        let encodedFiles: [(String, Data)] = try [
+            ("terms", encoder.encode(normalizedTerms)),
+            ("feed_items", encoder.encode(Array(backup.feed_items.sorted { $0.published_at > $1.published_at }.prefix(600)))),
+            ("saved_pages", encoder.encode(backup.saved_pages)),
+            ("custom_urls", encoder.encode(backup.custom_urls)),
+            ("subscribed_platforms", encoder.encode(normalizedSubscribedPlatforms)),
+            ("oshi_avatars", encoder.encode(backup.oshi_avatars)),
+            ("oshi_compositions", encoder.encode(backup.compositions)),
+            ("hidden_items", encoder.encode(backup.hidden_items))
+        ]
+        try saveEncodedFilesSynchronously(
+            encodedFiles,
+            wallpaper: backup.wallpaper,
+            sourcesOrder: normalizedSourcesOrder
+        )
+
+        dataRevision += 1
+        UserDefaults.standard.set(dataRevision, forKey: "local_data_revision")
+        invalidateContentCaches()
+        NotificationManager.shared.clearLocalNotifications()
+
+        terms = normalizedTerms
+        feedItems = Array(backup.feed_items.sorted { $0.published_at > $1.published_at }.prefix(600))
+        savedPages = backup.saved_pages
+        customUrls = backup.custom_urls
+        subscribedPlatforms = normalizedSubscribedPlatforms
+        wallpaper = backup.wallpaper
+        sourcesOrder = normalizedSourcesOrder
+        oshiAvatars = backup.oshi_avatars
+        compositions = backup.compositions
+        hiddenItems = Set(backup.hidden_items)
+
+    }
+
+    static func subscribedPlatformsForLoadedValue(_ ids: [String], hasSavedFile: Bool) -> [String] {
+        hasSavedFile ? normalizePlatformIDs(ids) : PlatformRegistry.defaultSubscribedIDs
+    }
+
+    static func normalizePlatformIDs(_ ids: [String]) -> [String] {
+        let knownIDs = Set(PlatformRegistry.all.map(\.id))
+        var seen = Set<String>()
+        return ids.compactMap { rawID in
+            let id = rawID.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard knownIDs.contains(id), seen.insert(id).inserted else { return nil }
+            return id
+        }
+    }
+
+    private func invalidateContentCaches() {
+        contentCacheGenerationLock.lock()
+        contentCacheGenerationValue += 1
+        let nextGeneration = contentCacheGenerationValue
+        contentCacheGeneration = nextGeneration
+        UserDefaults.standard.set(nextGeneration, forKey: "content_cache_generation")
+        contentCacheGenerationLock.unlock()
+
+        queue.sync {
+            let docsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            if let contents = try? FileManager.default.contentsOfDirectory(at: docsDirectory, includingPropertiesForKeys: nil) {
+                for url in contents where url.lastPathComponent.hasPrefix("cache_") {
+                    try? FileManager.default.removeItem(at: url)
+                }
+            }
         }
     }
 
@@ -496,9 +753,15 @@ class LocalDB: ObservableObject {
     }
     
     // MARK: - Content Cache (Offline Pages)
-    func saveContentCache(id: String, html: String) {
+    func saveContentCache(id: String, html: String, sourceGeneration: Int? = nil) {
         let name = "cache_\(id.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? id)"
-        saveToFile(name: name, value: html)
+        saveToFile(name: name, value: html) { [weak self] in
+            guard let self else { return false }
+            guard let sourceGeneration else { return true }
+            self.contentCacheGenerationLock.lock()
+            defer { self.contentCacheGenerationLock.unlock() }
+            return sourceGeneration == self.contentCacheGenerationValue
+        }
     }
     
     func getContentCache(id: String) -> String? {

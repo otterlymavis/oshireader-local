@@ -6,6 +6,10 @@ protocol NotificationCenterClient {
     func authorizationStatus() async -> UNAuthorizationStatus
     func requestAuthorization(options: UNAuthorizationOptions) async throws -> Bool
     func add(_ request: UNNotificationRequest) async throws
+    func removeAllPendingNotificationRequests()
+    func removeAllDeliveredNotifications()
+    func removePendingNotificationRequests(withIdentifiers identifiers: [String])
+    func removeDeliveredNotifications(withIdentifiers identifiers: [String])
 }
 
 extension UNUserNotificationCenter: NotificationCenterClient {
@@ -17,10 +21,14 @@ extension UNUserNotificationCenter: NotificationCenterClient {
 @MainActor
 final class NotificationManager: ObservableObject {
     static let shared = NotificationManager()
+    static let categoryIdentifier = "oshireader.new-items"
+    static let openActionIdentifier = "oshireader.notification.open"
+    static let saveActionIdentifier = "oshireader.notification.save"
 
     @Published private(set) var authorizationStatus: UNAuthorizationStatus = .notDetermined
 
     private let center: NotificationCenterClient
+    private var localNotificationGeneration = 0
 
     init(center: NotificationCenterClient = UNUserNotificationCenter.current()) {
         self.center = center
@@ -52,6 +60,33 @@ final class NotificationManager: ObservableObject {
 
     func refreshAuthorizationStatus() async {
         authorizationStatus = await center.authorizationStatus()
+    }
+
+    func registerNotificationCategories() {
+        let open = UNNotificationAction(
+            identifier: Self.openActionIdentifier,
+            title: I18nManager.shared.t("openNotification"),
+            options: [.foreground]
+        )
+        let save = UNNotificationAction(
+            identifier: Self.saveActionIdentifier,
+            title: I18nManager.shared.t("save"),
+            options: []
+        )
+        UNUserNotificationCenter.current().setNotificationCategories([
+            UNNotificationCategory(
+                identifier: Self.categoryIdentifier,
+                actions: [open, save],
+                intentIdentifiers: [],
+                options: []
+            )
+        ])
+    }
+
+    func clearLocalNotifications() {
+        localNotificationGeneration &+= 1
+        center.removeAllPendingNotificationRequests()
+        center.removeAllDeliveredNotifications()
     }
 
     @discardableResult
@@ -93,29 +128,57 @@ final class NotificationManager: ObservableObject {
 
     func notifyForNewItems(_ items: [FeedItem], terms: [WatchTerm]) async {
         guard !items.isEmpty else { return }
+        let generation = localNotificationGeneration
         await refreshAuthorizationStatus()
+        guard generation == localNotificationGeneration else { return }
         guard canScheduleNotifications else { return }
 
         let notifiedKeywords = Set(terms.filter(\.notify_on_new).map(\.keyword))
         guard !notifiedKeywords.isEmpty else { return }
 
-        let counts = Dictionary(grouping: items.filter { notifiedKeywords.contains($0.watch_term_keyword) }) {
+        let matchingItems = items.filter { notifiedKeywords.contains($0.watch_term_keyword) }
+        let counts = Dictionary(grouping: matchingItems) {
             $0.watch_term_keyword
         }.mapValues(\.count)
 
         for (keyword, count) in counts where count > 0 {
+            guard generation == localNotificationGeneration else { return }
+            let representative = matchingItems.first { $0.watch_term_keyword == keyword }
             let content = UNMutableNotificationContent()
             content.title = "New items for \(keyword)"
             content.body = "\(count) new item\(count == 1 ? "" : "s") found."
             content.sound = .default
+            content.categoryIdentifier = Self.categoryIdentifier
+            if let representative {
+                var userInfo: [String: Any] = [
+                    "feed_item_id": representative.id,
+                    "watch_term_keyword": representative.watch_term_keyword,
+                    "platform": representative.platform,
+                    "url": representative.url,
+                    "media_type": representative.media_type,
+                    "published_at": representative.published_at,
+                    "fetched_at": representative.fetched_at
+                ]
+                if let title = representative.title { userInfo["title"] = title }
+                if let contentText = representative.content_text { userInfo["content_text"] = contentText }
+                if let author = representative.author { userInfo["author"] = author }
+                if let thumbnailURL = representative.thumbnail_url { userInfo["thumbnail_url"] = thumbnailURL }
+                content.userInfo = userInfo
+            }
 
             let request = UNNotificationRequest(
-                identifier: "oshireader-new-\(keyword)",
+                identifier: "oshireader-new-\(generation)-\(keyword)",
                 content: content,
                 trigger: nil
             )
             do {
+                guard generation == localNotificationGeneration else { return }
                 try await center.add(request)
+                guard generation == localNotificationGeneration else {
+                    center.removePendingNotificationRequests(withIdentifiers: [request.identifier])
+                    center.removeDeliveredNotifications(withIdentifiers: [request.identifier])
+                    return
+                }
             } catch {
                 #if DEBUG
                 print("Notification scheduling failed for \(keyword): \(error)")

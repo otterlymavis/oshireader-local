@@ -11,6 +11,7 @@ struct ContentView: View {
     @StateObject private var theme = ThemeManager.shared
     @StateObject private var i18n = I18nManager.shared
     @StateObject private var appearance = AppearanceManager.shared
+    @StateObject private var notificationNavigation = NotificationNavigationManager.shared
     
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var selectedTab: OshiTab = .feed
@@ -109,6 +110,11 @@ struct ContentView: View {
         .font(appearance.appFont)
         .ifLet(appearance.dynamicTypeSizeOverride) { view, size in
             view.environment(\.dynamicTypeSize, size)
+        }
+        .sheet(item: $notificationNavigation.selectedItem) { item in
+            NavigationStack {
+                ReaderView(feedItem: item)
+            }
         }
     }
 

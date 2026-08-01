@@ -172,3 +172,73 @@ struct ScrapeRun: Codable, Hashable {
     let ran_at: String
     let logs: [ScraperLog]
 }
+
+// MARK: - Local backup
+struct LocalBackup: Codable {
+    static let currentVersion = 1
+
+    let version: Int
+    let exported_at: String
+    let terms: [WatchTerm]
+    let feed_items: [FeedItem]
+    let saved_pages: [SavedPage]
+    let custom_urls: [CustomUrl]
+    let subscribed_platforms: [String]
+    let wallpaper: String?
+    let sources_order: [String]?
+    let oshi_avatars: [String: String]
+    let compositions: [String: [AvatarLayer]]
+    let hidden_items: [String]
+
+    init(
+        exportedAt: String,
+        terms: [WatchTerm],
+        feedItems: [FeedItem],
+        savedPages: [SavedPage],
+        customUrls: [CustomUrl],
+        subscribedPlatforms: [String],
+        wallpaper: String?,
+        sourcesOrder: [String]?,
+        oshiAvatars: [String: String],
+        compositions: [String: [AvatarLayer]],
+        hiddenItems: [String]
+    ) {
+        self.version = Self.currentVersion
+        self.exported_at = exportedAt
+        self.terms = terms
+        self.feed_items = feedItems
+        self.saved_pages = savedPages
+        self.custom_urls = customUrls
+        self.subscribed_platforms = subscribedPlatforms
+        self.wallpaper = wallpaper
+        self.sources_order = sourcesOrder
+        self.oshi_avatars = oshiAvatars
+        self.compositions = compositions
+        self.hidden_items = hiddenItems
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let version = try container.decodeIfPresent(Int.self, forKey: .version) ?? 0
+        guard version <= Self.currentVersion else {
+            throw DecodingError.dataCorruptedError(forKey: .version, in: container, debugDescription: "Unsupported backup version")
+        }
+        self.version = version
+        self.exported_at = try container.decodeIfPresent(String.self, forKey: .exported_at) ?? ""
+        self.terms = try container.decodeIfPresent([WatchTerm].self, forKey: .terms) ?? []
+        self.feed_items = try container.decodeIfPresent([FeedItem].self, forKey: .feed_items) ?? []
+        self.saved_pages = try container.decodeIfPresent([SavedPage].self, forKey: .saved_pages) ?? []
+        self.custom_urls = try container.decodeIfPresent([CustomUrl].self, forKey: .custom_urls) ?? []
+        self.subscribed_platforms = try container.decodeIfPresent([String].self, forKey: .subscribed_platforms) ?? []
+        self.wallpaper = try container.decodeIfPresent(String.self, forKey: .wallpaper)
+        self.sources_order = try container.decodeIfPresent([String].self, forKey: .sources_order)
+        self.oshi_avatars = try container.decodeIfPresent([String: String].self, forKey: .oshi_avatars) ?? [:]
+        self.compositions = try container.decodeIfPresent([String: [AvatarLayer]].self, forKey: .compositions) ?? [:]
+        self.hidden_items = try container.decodeIfPresent([String].self, forKey: .hidden_items) ?? []
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case version, exported_at, terms, feed_items, saved_pages, custom_urls
+        case subscribed_platforms, wallpaper, sources_order, oshi_avatars, compositions, hidden_items
+    }
+}

@@ -169,8 +169,9 @@ struct AvatarEditorView: View {
                         Button(action: {
                             if activeLayer != nil { cropMode.toggle() }
                         }) {
-                            Text(cropMode ? "Move" : "Crop")
+                            Label(cropMode ? i18n.t("move") : i18n.t("crop"), systemImage: cropMode ? "arrow.up.and.down.and.arrow.left.and.right" : "crop")
                                 .font(.system(size: 11, weight: .bold))
+                                .labelStyle(.titleAndIcon)
                                 .padding(.horizontal, 12)
                                 .padding(.vertical, 6)
                                 .background(cropMode ? theme.colors.primaryBg : theme.colors.divider)
@@ -182,17 +183,17 @@ struct AvatarEditorView: View {
                         .accessibilityIdentifier("avatar.cropButton")
                         
                         if cropMode {
-                            toolbarBtn("Zoom +", needsSelection: false) { cropZoom(0.15) }
-                            toolbarBtn("Zoom -", needsSelection: false) { cropZoom(-0.15) }
-                            toolbarBtn("Fit",    needsSelection: false) { resetCrop() }
+                            toolbarIconBtn(i18n.t("zoomIn"), systemImage: "plus.magnifyingglass", needsSelection: false) { cropZoom(0.15) }
+                            toolbarIconBtn(i18n.t("zoomOut"), systemImage: "minus.magnifyingglass", needsSelection: false) { cropZoom(-0.15) }
+                            toolbarIconBtn(i18n.t("fit"), systemImage: "arrow.down.right.and.arrow.up.left", needsSelection: false) { resetCrop() }
                         }
 
                         Divider().frame(height: 16)
 
-                        toolbarBtn("＋", a11y: "avatar.scaleUpButton",   size: 12) { scaleLayer(0.15) }
-                        toolbarBtn("－", a11y: "avatar.scaleDownButton",  size: 12) { scaleLayer(-0.15) }
-                        toolbarBtn("⟲", size: 12) { rotateLayer(-15) }
-                        toolbarBtn("⟳", size: 12) { rotateLayer(15) }
+                        toolbarIconBtn(i18n.t("scaleUp"), systemImage: "plus.circle", a11y: "avatar.scaleUpButton") { scaleLayer(0.15) }
+                        toolbarIconBtn(i18n.t("scaleDown"), systemImage: "minus.circle", a11y: "avatar.scaleDownButton") { scaleLayer(-0.15) }
+                        toolbarIconBtn(i18n.t("rotateLeft"), systemImage: "rotate.left") { rotateLayer(-15) }
+                        toolbarIconBtn(i18n.t("rotateRight"), systemImage: "rotate.right") { rotateLayer(15) }
                         toolbarBtn(i18n.t("layerForward")) { bringForward() }
                         toolbarBtn(i18n.t("layerBack")) { sendBack() }
                         toolbarBtn(i18n.t("delete"), a11y: "avatar.deleteLayerButton", destructive: true) { deleteSelected() }
@@ -260,13 +261,15 @@ struct AvatarEditorView: View {
                 Button(action: {
                     Task { await performSearch() }
                 }) {
-                    Text("🔍")
-                        .font(.title3)
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundColor(.white)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 8)
                         .background(theme.colors.primary)
                         .cornerRadius(10)
                 }
+                .accessibilityLabel(i18n.t("search"))
                 .accessibilityIdentifier("avatar.stickerSearchButton")
             }
             .padding(.horizontal, 12)
@@ -551,6 +554,28 @@ struct AvatarEditorView: View {
         }
         .disabled(needsSelection && activeLayer == nil)
         .opacity(needsSelection && activeLayer == nil ? 0.4 : 1.0)
+        .accessibilityIdentifier(a11y ?? "")
+    }
+
+    @ViewBuilder
+    private func toolbarIconBtn(
+        _ label: String,
+        systemImage: String,
+        a11y: String? = nil,
+        needsSelection: Bool = true,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 13, weight: .bold))
+                .frame(width: 30, height: 28)
+                .background(theme.colors.divider)
+                .foregroundColor(theme.colors.text)
+                .cornerRadius(99)
+        }
+        .disabled(needsSelection && activeLayer == nil)
+        .opacity(needsSelection && activeLayer == nil ? 0.4 : 1.0)
+        .accessibilityLabel(label)
         .accessibilityIdentifier(a11y ?? "")
     }
 }

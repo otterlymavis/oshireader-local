@@ -35,9 +35,10 @@ final class OshiReaderUITests: XCTestCase {
         XCTAssertTrue(app.buttons["feed.refreshButton"].waitForExistence(timeout: 3))
         app.buttons["feed.refreshButton"].tap()
 
-        let filterButton = firstFeedFilterButton() ?? app.buttons["feed.filterButton"]
-        XCTAssertTrue(filterButton.waitForExistence(timeout: 3))
-        filterButton.tap()
+        let filterButton = firstFeedFilterButton()
+        XCTAssertNotNil(filterButton)
+        XCTAssertTrue(filterButton?.waitForExistence(timeout: 3) ?? false)
+        filterButton?.forceTap()
         let mediaOnlyButton = app.buttons["filter.mediaOnlyButton"]
         XCTAssertTrue(mediaOnlyButton.waitForExistence(timeout: 3))
         mediaOnlyButton.tap()
@@ -93,22 +94,26 @@ final class OshiReaderUITests: XCTestCase {
     func testSettingsPrivacyPolicyFlow() throws {
         tapTab(index: 4, labels: ["Settings"])
 
-        let comicSansButton = waitForButton(containing: "Comic", timeout: 2, swipes: 2)
+        XCTAssertTrue(waitForElement(identifier: "settings.fontPicker", timeout: 2, swipes: 8).exists)
+        let comicSansButton = waitForAnyButton(containing: ["Comic"], timeout: 2, swipes: 1)
         XCTAssertNotNil(comicSansButton)
         comicSansButton?.tap()
 
-        let largeButton = waitForButton(containing: "Large", timeout: 2, swipes: 1)
+        XCTAssertTrue(waitForElement(identifier: "settings.fontSizePicker", timeout: 2, swipes: 2).exists)
+        let largeButton = waitForAnyButton(exactly: ["Large", "大"], timeout: 2, swipes: 1)
         XCTAssertNotNil(largeButton)
         largeButton?.tap()
 
-        app.swipeUp()
-        app.swipeUp()
-
-        let privacyLink = firstExistingButton(containing: "Privacy Policy") ?? app.buttons["settings.privacyPolicyLink"]
+        let privacyLink = waitForElement(identifier: "settings.privacyPolicyLink", timeout: 2, swipes: 6)
         XCTAssertTrue(privacyLink.waitForExistence(timeout: 3))
         privacyLink.tap()
 
-        XCTAssertTrue(app.staticTexts["Data Stored on This Device"].exists)
+        XCTAssertTrue(waitForAnyStaticText([
+            "Data Stored on This Device",
+            "このデバイスに保存されるデータ",
+            "儲存在此裝置的資料",
+            "存储在此设备的数据"
+        ], timeout: 3))
     }
 
     func testSettingsNotificationControls() throws {
@@ -161,12 +166,21 @@ final class OshiReaderUITests: XCTestCase {
         }
     }
 
+    private func firstExistingButton(exactly text: String) -> XCUIElement? {
+        let buttons = app.buttons.allElementsBoundByIndex
+        return buttons.first { button in
+            button.exists && button.label.localizedCaseInsensitiveCompare(text) == .orderedSame
+        }
+    }
+
     private func firstFeedFilterButton() -> XCUIElement? {
+        let identifiedButton = app.buttons["feed.filterButton"]
+        if identifiedButton.waitForExistence(timeout: 3) {
+            return identifiedButton
+        }
+
         let labels = ["Filter", "フィルター", "篩選", "筛选"]
-        let scopedButtons = app.buttons.matching(identifier: "feed.screen").allElementsBoundByIndex
-        return scopedButtons.first { button in
-            button.exists && labels.contains { button.label.localizedCaseInsensitiveContains($0) }
-        } ?? app.buttons.allElementsBoundByIndex.first { button in
+        return app.buttons.allElementsBoundByIndex.first { button in
             button.exists && labels.contains { button.label.localizedCaseInsensitiveContains($0) }
         }
     }
@@ -187,6 +201,17 @@ final class OshiReaderUITests: XCTestCase {
         return texts.compactMap { firstExistingButton(containing: $0) }.first
     }
 
+    private func waitForAnyButton(exactly texts: [String], timeout: TimeInterval) -> XCUIElement? {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if let button = texts.compactMap({ firstExistingButton(exactly: $0) }).first {
+                return button
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        return texts.compactMap { firstExistingButton(exactly: $0) }.first
+    }
+
     private func waitForButton(containing text: String, timeout: TimeInterval) -> XCUIElement? {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
@@ -201,6 +226,30 @@ final class OshiReaderUITests: XCTestCase {
     private func waitForButton(containing text: String, timeout: TimeInterval, swipes: Int) -> XCUIElement? {
         for attempt in 0...swipes {
             if let button = waitForButton(containing: text, timeout: timeout) {
+                return button
+            }
+            if attempt < swipes {
+                app.swipeUp()
+            }
+        }
+        return nil
+    }
+
+    private func waitForAnyButton(containing texts: [String], timeout: TimeInterval, swipes: Int) -> XCUIElement? {
+        for attempt in 0...swipes {
+            if let button = waitForAnyButton(containing: texts, timeout: timeout) {
+                return button
+            }
+            if attempt < swipes {
+                app.swipeUp()
+            }
+        }
+        return nil
+    }
+
+    private func waitForAnyButton(exactly texts: [String], timeout: TimeInterval, swipes: Int) -> XCUIElement? {
+        for attempt in 0...swipes {
+            if let button = waitForAnyButton(exactly: texts, timeout: timeout) {
                 return button
             }
             if attempt < swipes {
@@ -244,6 +293,18 @@ final class OshiReaderUITests: XCTestCase {
             }
         }
         return nil
+    }
+
+    private func waitForAnyStaticText(_ labels: [String], timeout: TimeInterval) -> Bool {
+        let elements = labels.map { app.staticTexts[$0] }
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if elements.contains(where: { $0.exists }) {
+                return true
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        return elements.contains(where: { $0.exists })
     }
 }
 

@@ -1,6 +1,6 @@
 import SwiftUI
 
-private struct SearchLink: Identifiable {
+struct SearchLink: Identifiable {
     let id: String
     let group: String
     let label: String
@@ -97,7 +97,7 @@ struct SearchView: View {
                 keyword = first
             }
         }
-        .onChange(of: db.customUrls) { _ in
+        .onChange(of: db.customUrls) { _, _ in
             if selectedGroup == "Custom", customSearchLinks.isEmpty {
                 selectedGroup = "News"
             }
@@ -155,7 +155,7 @@ struct SearchView: View {
             .cornerRadius(8)
 
             if activeTerms.isEmpty {
-                Text("Add watch keywords in Settings, or type a keyword here.")
+                Text(i18n.t("addWatchKeywordsHint"))
                     .font(.system(size: 13))
                     .foregroundColor(theme.colors.textMuted)
             } else {
@@ -220,7 +220,7 @@ struct SearchView: View {
                     .font(.system(size: 15, weight: .bold))
                     .foregroundColor(theme.colors.text)
                 Spacer()
-                Text(selectedGroup == "Custom" ? "Saved URLs" : (trimmedKeyword.isEmpty ? "Enter keyword" : trimmedKeyword))
+                Text(selectedGroup == "Custom" ? i18n.t("savedURLs") : (trimmedKeyword.isEmpty ? i18n.t("enterKeyword") : trimmedKeyword))
                     .font(.system(size: 12, weight: .medium))
                     .foregroundColor(theme.colors.textMuted)
             }
@@ -384,7 +384,7 @@ private let groupMeta: [String: SearchGroupMeta] = [
     "Custom": SearchGroupMeta(symbol: "link", color: Color(red: 0.32, green: 0.32, blue: 0.36))
 ]
 
-private let staticSearchLinks: [SearchLink] = [
+let staticSearchLinks: [SearchLink] = [
     SearchLink(id: "yahoo-news", group: "News", label: "Yahoo! News Japan", domain: "news.yahoo.co.jp", platform: "yahoonews") {
         "https://news.yahoo.co.jp/search?p=\($0.urlQueryEscaped)&ei=utf-8"
     },
@@ -397,7 +397,7 @@ private let staticSearchLinks: [SearchLink] = [
     SearchLink(id: "nhk", group: "News", label: "NHK News", domain: "www3.nhk.or.jp", platform: "news") {
         "https://www.google.com/search?q=\("\($0) site:www3.nhk.or.jp/news".urlQueryEscaped)"
     },
-    SearchLink(id: "livedoor", group: "News", label: "Livedoor News", domain: "news.livedoor.com", platform: "news") {
+    SearchLink(id: "livedoor", group: "News", label: "Livedoor News", domain: "news.livedoor.com", platform: "livedoor") {
         "https://news.livedoor.com/search/article/?keyword=\($0.urlQueryEscaped)"
     },
     SearchLink(id: "line-news", group: "News", label: "LINE NEWS", domain: "news.line.me", platform: "news") {
@@ -409,25 +409,25 @@ private let staticSearchLinks: [SearchLink] = [
     SearchLink(id: "modelpress", group: "Entertainment", label: "Modelpress", domain: "mdpr.jp", platform: "mdpr") {
         "https://mdpr.jp/search?keyword=\($0.urlQueryEscaped)"
     },
-    SearchLink(id: "natalie", group: "Entertainment", label: "Natalie", domain: "natalie.mu", platform: "news") {
+    SearchLink(id: "natalie", group: "Entertainment", label: "Natalie", domain: "natalie.mu", platform: "natalie") {
         "https://natalie.mu/search?query=\($0.urlQueryEscaped)"
     },
-    SearchLink(id: "oricon", group: "Entertainment", label: "Oricon News", domain: "oricon.co.jp", platform: "news") {
+    SearchLink(id: "oricon", group: "Entertainment", label: "Oricon News", domain: "oricon.co.jp", platform: "oricon") {
         "https://www.oricon.co.jp/search/?qs=\($0.urlQueryEscaped)&cat=all"
     },
     SearchLink(id: "cinematoday", group: "Entertainment", label: "Cinema Today", domain: "cinematoday.jp", platform: "news") {
         "https://www.cinematoday.jp/search?keyword=\($0.urlQueryEscaped)"
     },
-    SearchLink(id: "realsound", group: "Entertainment", label: "Real Sound", domain: "realsound.jp", platform: "news") {
+    SearchLink(id: "realsound", group: "Entertainment", label: "Real Sound", domain: "realsound.jp", platform: "realsound") {
         "https://realsound.jp/?s=\($0.urlQueryEscaped)"
     },
-    SearchLink(id: "sponichi", group: "Entertainment", label: "Sponichi", domain: "sponichi.co.jp", platform: "news") {
+    SearchLink(id: "sponichi", group: "Entertainment", label: "Sponichi", domain: "sponichi.co.jp", platform: "sponichi") {
         "https://www.sponichi.co.jp/search/index.html?Keywords=\($0.urlQueryEscaped)"
     },
     SearchLink(id: "daily", group: "Entertainment", label: "Daily Sports", domain: "daily.co.jp", platform: "news") {
         "https://www.daily.co.jp/search/?q=\($0.urlQueryEscaped)"
     },
-    SearchLink(id: "hochi", group: "Entertainment", label: "Hochi Sports", domain: "hochi.news", platform: "news") {
+    SearchLink(id: "hochi", group: "Entertainment", label: "Hochi Sports", domain: "hochi.news", platform: "hochi") {
         "https://hochi.news/search?q=\($0.urlQueryEscaped)"
     },
     SearchLink(id: "bunshun", group: "Magazines", label: "文春オンライン", domain: "bunshun.jp", platform: "news") {
@@ -469,7 +469,7 @@ private let staticSearchLinks: [SearchLink] = [
     SearchLink(id: "note", group: "Writing", label: "note", domain: "note.com", platform: "note") {
         "https://note.com/search?q=\($0.urlQueryEscaped)&context=note"
     },
-    SearchLink(id: "ameblo", group: "Writing", label: "Ameba Blog", domain: "ameblo.jp", platform: "news") {
+    SearchLink(id: "ameblo", group: "Writing", label: "Ameba Blog", domain: "ameblo.jp", platform: "ameblo") {
         "https://search.ameba.jp/search.html?q=\($0.urlQueryEscaped)"
     },
     SearchLink(id: "x", group: "Social", label: "X", domain: "x.com", platform: "twitter") {

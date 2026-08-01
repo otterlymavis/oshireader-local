@@ -219,6 +219,8 @@ class ThemeManager: ObservableObject {
             return PlatformMetadata(name: "Note", icon: "📝", accent: Color(red: 0.1, green: 0.7, blue: 0.5), bg: Color(red: 0.9, green: 0.97, blue: 0.95), fg: Color(red: 0.1, green: 0.7, blue: 0.5))
         } else if p == "news" {
             return PlatformMetadata(name: "News", icon: "📰", accent: Color.purple, bg: Color(red: 0.96, green: 0.9, blue: 1.0), fg: Color.purple)
+        } else if let definition = PlatformRegistry.definition(for: p) {
+            return PlatformMetadata(name: definition.name, icon: definition.icon, accent: colors.primary, bg: colors.primaryBg, fg: colors.primary)
         } else {
             return PlatformMetadata(name: platform.capitalized, icon: "🌐", accent: colors.primary, bg: colors.primaryBg, fg: colors.primary)
         }

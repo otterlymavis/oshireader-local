@@ -25,6 +25,187 @@ final class OshiReaderTests: XCTestCase {
         db = nil
         try super.tearDownWithError()
     }
+
+    func testPlatformRegistryContainsReferenceSourcesWithoutChangingDefaults() {
+        let ids = Set(PlatformRegistry.all.map(\.id))
+        XCTAssertTrue(ids.isSuperset(of: [
+            "smartnews", "ameblo", "aera", "hochi", "sponichi", "livedoor",
+            "mantanweb", "realsound", "cinemacafe", "thetv", "natalie",
+            "billboardjapan", "soompi", "allkpop", "kpopofficial", "barks"
+        ]))
+        XCTAssertEqual(PlatformRegistry.definition(for: "soompi")?.newsLocale, .englishUS)
+        XCTAssertEqual(PlatformRegistry.definition(for: "soompi")?.newsLocale.acceptLanguage, "en,ko;q=0.9,ja;q=0.7")
+        XCTAssertTrue(PlatformRegistry.strictKeywordPlatformIDs.contains("allkpop"))
+        XCTAssertEqual(PlatformRegistry.definition(for: "natalie")?.googleNewsSite, "natalie.mu")
+        XCTAssertNil(PlatformRegistry.definition(for: "twitter")?.googleNewsSite)
+        XCTAssertEqual(PlatformRegistry.definition(for: "custom")?.googleNewsSite, nil)
+        XCTAssertEqual(PlatformRegistry.defaultSubscribedIDs.last, "custom")
+        XCTAssertFalse(PlatformRegistry.defaultSubscribedIDs.contains("soompi"))
+    }
+
+    func testDedicatedSearchLinksUseDedicatedPlatformIDs() {
+        let registeredIDs = Set(PlatformRegistry.all.map(\.id))
+        let mismatches = staticSearchLinks.compactMap { link -> String? in
+            guard registeredIDs.contains(link.id), link.platform != link.id else { return nil }
+            return "\(link.id)->\(link.platform)"
+        }
+
+        XCTAssertEqual(mismatches, [])
+    }
+
+    func testSavedSubscribedPlatformsDoNotReAddMissingDefaultsOnLoad() {
+        XCTAssertEqual(
+            LocalDB.subscribedPlatformsForLoadedValue(["news", " youtube ", "unknown", "news"], hasSavedFile: true),
+            ["news", "youtube"]
+        )
+        XCTAssertEqual(
+            LocalDB.subscribedPlatformsForLoadedValue(["news"], hasSavedFile: false),
+            PlatformRegistry.defaultSubscribedIDs
+        )
+    }
+
+    func testIngestionSearchKeywordsIncludesTrimmedUniqueAliases() {
+        let term = WatchTerm(
+            keyword: "  Primary Oshi ",
+            aliases: ["Alias Oshi", "Primary Oshi", "  Alias Oshi  ", "", "Alias 3", "Alias 4", "Alias 5", "Alias 6", "Alias 7"]
+        )
+
+        XCTAssertEqual(IngestionService.searchKeywords(for: term), [
+            "Primary Oshi", "Alias Oshi", "Alias 3", "Alias 4", "Alias 5", "Alias 6"
+        ])
+    }
+
+    func testRequestLimiterCancellationDoesNotLeakOrBlockNextAcquire() async {
+        let limiter = RequestLimiter(limit: 1)
+        let firstAcquire = await limiter.acquire()
+        XCTAssertTrue(firstAcquire)
+
+        let waitingTask = Task { await limiter.acquire() }
+        try? await Task.sleep(nanoseconds: 30_000_000)
+        waitingTask.cancel()
+
+        let cancelledAcquire = await waitingTask.value
+        XCTAssertFalse(cancelledAcquire)
+        await limiter.release()
+        let nextAcquire = await limiter.acquire()
+        XCTAssertTrue(nextAcquire)
+        await limiter.release()
+    }
+
+    @MainActor
+    func testStrictFeedMatchingAcceptsAliasOnlyArticle() throws {
+        let term = db.saveTerm(keyword: "Primary Oshi")
+        db.updateTerm(id: term.id, aliases: ["Alias Oshi"])
+        let nowString = ISO8601DateFormatter().string(from: Date())
+        let item = FeedItem(
+            id: "news:alias-only",
+            platform: "news",
+            url: "https://example.com/alias-only",
+            title: "Latest update on Alias Oshi",
+            content_text: "Alias Oshi appeared in a new report.",
+            author: nil,
+            thumbnail_url: nil,
+            media_type: "article",
+            published_at: nowString,
+            watch_term_keyword: term.keyword,
+            fetched_at: nowString
+        )
+
+        XCTAssertEqual(db.mergeItems(newItems: [item]), 1)
+        XCTAssertEqual(db.queryFeed(keyword: term.keyword, days: 30).first?.id, item.id)
+    }
+
+    @MainActor
+    func testDeletingSourcesRejectsStaleIngestionResults() throws {
+        let term = db.saveTerm(keyword: "Deleted Oshi")
+        let staleTermRevision = db.dataRevision
+        db.deleteTerm(id: term.id)
+
+        let termItem = FeedItem(
+            id: "news:stale-term",
+            platform: "news",
+            url: "https://example.com/stale-term",
+            title: "Stale term result",
+            content_text: nil,
+            author: nil,
+            thumbnail_url: nil,
+            media_type: "article",
+            published_at: ISO8601DateFormatter().string(from: Date()),
+            watch_term_keyword: term.keyword,
+            fetched_at: ISO8601DateFormatter().string(from: Date())
+        )
+        XCTAssertEqual(db.mergeItems(newItems: [termItem], sourceRevision: staleTermRevision), 0)
+        XCTAssertFalse(db.feedItems.contains(where: { $0.id == termItem.id }))
+
+        db.addCustomUrl(url: "https://example.com/stale-feed.xml", title: "Stale feed")
+        let customURL = try XCTUnwrap(db.customUrls.first)
+        let staleCustomRevision = db.dataRevision
+        db.removeCustomUrl(id: customURL.id)
+
+        let customItem = FeedItem(
+            id: "custom:stale-feed",
+            platform: "custom",
+            url: customURL.url,
+            title: "Stale custom result",
+            content_text: nil,
+            author: nil,
+            thumbnail_url: nil,
+            media_type: "article",
+            published_at: ISO8601DateFormatter().string(from: Date()),
+            watch_term_keyword: "",
+            fetched_at: ISO8601DateFormatter().string(from: Date())
+        )
+        XCTAssertEqual(db.mergeItems(newItems: [customItem], sourceRevision: staleCustomRevision), 0)
+        XCTAssertFalse(db.feedItems.contains(where: { $0.id == customItem.id }))
+    }
+
+    @MainActor
+    func testChangingIngestionSourcesRejectsStaleResults() throws {
+        let term = db.saveTerm(keyword: "Disabled Oshi")
+        let staleTermRevision = db.dataRevision
+        db.updateTerm(id: term.id, isActive: false)
+
+        let staleTermItem = FeedItem(
+            id: "news:disabled-term",
+            platform: "news",
+            url: "https://example.com/disabled-term",
+            title: "Disabled term result",
+            content_text: nil,
+            author: nil,
+            thumbnail_url: nil,
+            media_type: "article",
+            published_at: ISO8601DateFormatter().string(from: Date()),
+            watch_term_keyword: term.keyword,
+            fetched_at: ISO8601DateFormatter().string(from: Date())
+        )
+        XCTAssertEqual(db.mergeItems(newItems: [staleTermItem], sourceRevision: staleTermRevision), 0)
+
+        let stalePlatformRevision = db.dataRevision
+        db.setSubscribedPlatforms(platforms: ["youtube"])
+        XCTAssertNotEqual(db.dataRevision, stalePlatformRevision)
+        XCTAssertEqual(
+            db.mergeItems(newItems: [staleTermItem], sourceRevision: stalePlatformRevision),
+            0
+        )
+    }
+
+    @MainActor
+    func testDataRevisionTracksOnlyIngestionAffectingChanges() throws {
+        let initialRevision = db.dataRevision
+        let term = db.saveTerm(keyword: "Revision Oshi")
+        XCTAssertNotEqual(db.dataRevision, initialRevision)
+
+        let afterTermCreateRevision = db.dataRevision
+        db.updateTerm(id: term.id, notifyOnNew: !term.notify_on_new)
+        XCTAssertEqual(db.dataRevision, afterTermCreateRevision)
+
+        db.updateTerm(id: term.id, aliases: ["Revision Alias"])
+        XCTAssertNotEqual(db.dataRevision, afterTermCreateRevision)
+
+        let afterAliasRevision = db.dataRevision
+        db.addCustomUrl(url: "https://example.com/revision-feed.xml", title: "Revision Feed")
+        XCTAssertNotEqual(db.dataRevision, afterAliasRevision)
+    }
     
     // MARK: - Feature 1: Watch Keywords (Terms)
     func testWatchTerms() throws {
@@ -191,6 +372,29 @@ final class OshiReaderTests: XCTestCase {
     }
 
     @MainActor
+    func testClearDuringNotificationSchedulingDropsStaleRequests() async throws {
+        let center = MockNotificationCenter(status: .authorized)
+        let manager = NotificationManager(center: center)
+        center.onAuthorizationStatus = {
+            manager.clearLocalNotifications()
+        }
+        let nowString = ISO8601DateFormatter().string(from: Date())
+        let term = WatchTerm(id: "notify", keyword: "Notify Oshi", notify_on_new: true)
+        let item = FeedItem(
+            id: "youtube:notify-stale", platform: "youtube", url: "https://youtube.com/watch?v=notify-stale",
+            title: "Stale notification", content_text: nil, author: nil, thumbnail_url: nil,
+            media_type: "video", published_at: nowString, watch_term_keyword: term.keyword,
+            fetched_at: nowString
+        )
+
+        await manager.notifyForNewItems([item], terms: [term])
+
+        XCTAssertTrue(center.requests.isEmpty)
+        XCTAssertGreaterThanOrEqual(center.removeAllPendingCount, 1)
+        XCTAssertGreaterThanOrEqual(center.removeAllDeliveredCount, 1)
+    }
+
+    @MainActor
     func testMergeItemsOnlyNotifiesForNewItems() throws {
         let nowString = ISO8601DateFormatter().string(from: Date())
         let item = FeedItem(
@@ -293,6 +497,124 @@ final class OshiReaderTests: XCTestCase {
         let isSaved2 = db.toggleSaved(item: item)
         XCTAssertFalse(isSaved2)
         XCTAssertEqual(db.getSaved().count, 0)
+    }
+
+    @MainActor
+    func testLocalBackupRoundTrip() throws {
+        let now = ISO8601DateFormatter().string(from: Date())
+        let term = WatchTerm(keyword: "Backup Oshi", collection_mode: "media_only", notify_on_new: true)
+        let item = FeedItem(
+            id: "news:backup",
+            platform: "news",
+            url: "https://example.com/backup",
+            title: "Backup article",
+            content_text: nil,
+            author: nil,
+            thumbnail_url: nil,
+            media_type: "article",
+            published_at: now,
+            watch_term_keyword: term.keyword,
+            fetched_at: now
+        )
+        db.terms = [term]
+        db.feedItems = [item]
+        db.savedPages = [SavedPage(id: item.id, url: item.url, title: item.title, platform: item.platform, saved_at: now)]
+        db.customUrls = [CustomUrl(id: "custom:backup", url: "https://example.com/feed.xml", title: "Backup feed", added_at: now)]
+
+        let data = try db.exportBackupData()
+        db.terms.removeAll()
+        db.feedItems.removeAll()
+        db.savedPages.removeAll()
+        db.customUrls.removeAll()
+        try db.importBackupData(data)
+
+        XCTAssertEqual(db.terms, [term])
+        XCTAssertEqual(db.feedItems, [item])
+        XCTAssertEqual(db.savedPages.count, 1)
+        XCTAssertEqual(db.customUrls.count, 1)
+    }
+
+    @MainActor
+    func testBackupImportNormalizesAliasesToIngestionLimit() throws {
+        let term = WatchTerm(
+            keyword: "Primary Oshi",
+            aliases: [" Alias Oshi ", "Primary Oshi", "Alias Oshi", "Alias 2", "Alias 3", "Alias 4", "Alias 5"]
+        )
+        let backup = LocalBackup(
+            exportedAt: ISO8601DateFormatter().string(from: Date()),
+            terms: [term],
+            feedItems: [],
+            savedPages: [],
+            customUrls: [],
+            subscribedPlatforms: ["news"],
+            wallpaper: nil,
+            sourcesOrder: nil,
+            oshiAvatars: [:],
+            compositions: [:],
+            hiddenItems: []
+        )
+        let data = try JSONEncoder().encode(backup)
+
+        try db.importBackupData(data)
+
+        XCTAssertEqual(db.terms.first?.aliases, ["Alias Oshi", "Alias 2", "Alias 3", "Alias 4", "Alias 5"])
+        XCTAssertEqual(IngestionService.searchKeywords(for: db.terms[0]).count, 6)
+    }
+
+    @MainActor
+    func testBackupImportDropsUnknownPlatformIDs() throws {
+        let backup = LocalBackup(
+            exportedAt: ISO8601DateFormatter().string(from: Date()),
+            terms: [],
+            feedItems: [],
+            savedPages: [],
+            customUrls: [],
+            subscribedPlatforms: ["news", "unknown", " youtube ", "news", "custom", "backend-only"],
+            wallpaper: nil,
+            sourcesOrder: ["custom", "unknown", "news", "custom", " youtube "],
+            oshiAvatars: [:],
+            compositions: [:],
+            hiddenItems: []
+        )
+        let data = try JSONEncoder().encode(backup)
+
+        try db.importBackupData(data)
+
+        XCTAssertEqual(db.subscribedPlatforms, ["news", "youtube", "custom"])
+        XCTAssertEqual(db.sourcesOrder, ["custom", "news", "youtube"])
+    }
+
+    @MainActor
+    func testNotificationPayloadRecoversEvictedItem() throws {
+        let item = FeedItem(
+            id: "news:evicted",
+            platform: "news",
+            url: "https://example.com/evicted",
+            title: "Evicted article",
+            content_text: "Cached in the notification payload.",
+            author: "Desk",
+            thumbnail_url: nil,
+            media_type: "article",
+            published_at: "2026-07-27T00:00:00Z",
+            watch_term_keyword: "Evicted Oshi",
+            fetched_at: "2026-07-27T00:00:00Z"
+        )
+        db.feedItems = []
+        NotificationNavigationManager.shared.open(userInfo: [
+            "feed_item_id": item.id,
+            "watch_term_keyword": item.watch_term_keyword,
+            "platform": item.platform,
+            "url": item.url,
+            "title": item.title as Any,
+            "content_text": item.content_text as Any,
+            "author": item.author as Any,
+            "media_type": item.media_type,
+            "published_at": item.published_at,
+            "fetched_at": item.fetched_at
+        ])
+
+        XCTAssertEqual(NotificationNavigationManager.shared.selectedItem, item)
+        NotificationNavigationManager.shared.selectedItem = nil
     }
     
     // MARK: - Feature 5: Custom tracked URLs
@@ -445,8 +767,13 @@ final class OshiReaderTests: XCTestCase {
 private final class MockNotificationCenter: NotificationCenterClient {
     private(set) var status: UNAuthorizationStatus
     private let grantsAuthorization: Bool
+    var onAuthorizationStatus: (() async -> Void)?
     private(set) var authorizationRequestCount = 0
     private(set) var requests: [UNNotificationRequest] = []
+    private(set) var removedPendingIdentifiers: [[String]] = []
+    private(set) var removedDeliveredIdentifiers: [[String]] = []
+    private(set) var removeAllPendingCount = 0
+    private(set) var removeAllDeliveredCount = 0
 
     init(status: UNAuthorizationStatus, grantsAuthorization: Bool = true) {
         self.status = status
@@ -454,7 +781,8 @@ private final class MockNotificationCenter: NotificationCenterClient {
     }
 
     func authorizationStatus() async -> UNAuthorizationStatus {
-        status
+        await onAuthorizationStatus?()
+        return status
     }
 
     func requestAuthorization(options: UNAuthorizationOptions) async throws -> Bool {
@@ -467,5 +795,23 @@ private final class MockNotificationCenter: NotificationCenterClient {
 
     func add(_ request: UNNotificationRequest) async throws {
         requests.append(request)
+    }
+
+    func removeAllPendingNotificationRequests() {
+        removeAllPendingCount += 1
+        requests.removeAll()
+    }
+
+    func removeAllDeliveredNotifications() {
+        removeAllDeliveredCount += 1
+    }
+
+    func removePendingNotificationRequests(withIdentifiers identifiers: [String]) {
+        removedPendingIdentifiers.append(identifiers)
+        requests.removeAll { identifiers.contains($0.identifier) }
+    }
+
+    func removeDeliveredNotifications(withIdentifiers identifiers: [String]) {
+        removedDeliveredIdentifiers.append(identifiers)
     }
 }
