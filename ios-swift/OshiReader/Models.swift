@@ -178,6 +178,55 @@ struct CustomUrl: Codable, Hashable, Identifiable {
     let added_at: String
 }
 
+// MARK: - Ameblo blog source
+struct AmebloBlog: Codable, Hashable, Identifiable {
+    static let maximumCount = 20
+
+    let id: String
+    let url: String
+    let amebaID: String
+    let title: String?
+    let added_at: String
+
+    init?(url rawURL: String, title: String? = nil, addedAt: String = ISO8601DateFormatter().string(from: Date())) {
+        guard let normalized = Self.normalizeURL(rawURL) else { return nil }
+        self.id = "ameblo:\(normalized.amebaID)"
+        self.url = normalized.url
+        self.amebaID = normalized.amebaID
+        let trimmedTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.title = trimmedTitle?.isEmpty == false ? trimmedTitle : nil
+        self.added_at = addedAt
+    }
+
+    var rssURL: URL? {
+        URL(string: "https://rssblog.ameba.jp/\(amebaID)/rss20.xml")
+    }
+
+    static func normalizeURL(_ rawURL: String) -> (url: String, amebaID: String)? {
+        guard var components = URLComponents(string: rawURL.trimmingCharacters(in: .whitespacesAndNewlines)),
+              let host = components.host?.lowercased(),
+              host == "ameblo.jp" || host == "www.ameblo.jp" else { return nil }
+        let pathParts = components.path.split(separator: "/").map(String.init)
+        guard pathParts.count == 1,
+              let amebaID = pathParts.first,
+              amebaID.range(of: "^[A-Za-z0-9_-]+$", options: .regularExpression) != nil else { return nil }
+        components.scheme = "https"
+        components.host = "ameblo.jp"
+        components.path = "/\(amebaID)"
+        components.query = nil
+        components.fragment = nil
+        guard let normalizedURL = components.string else { return nil }
+        return (normalizedURL, amebaID)
+    }
+}
+
+enum AmebloBlogAddResult: Equatable {
+    case added
+    case invalidURL
+    case duplicate
+    case limitReached
+}
+
 // MARK: - AvatarLayer
 struct AvatarLayer: Codable, Hashable, Identifiable {
     let id: String
@@ -230,7 +279,7 @@ struct ScrapeRun: Codable, Hashable {
 
 // MARK: - Local backup
 struct LocalBackup: Codable {
-    static let currentVersion = 1
+    static let currentVersion = 2
 
     let version: Int
     let exported_at: String
@@ -238,6 +287,7 @@ struct LocalBackup: Codable {
     let feed_items: [FeedItem]
     let saved_pages: [SavedPage]
     let custom_urls: [CustomUrl]
+    let ameblo_blogs: [AmebloBlog]
     let subscribed_platforms: [String]
     let wallpaper: String?
     let sources_order: [String]?
@@ -251,6 +301,7 @@ struct LocalBackup: Codable {
         feedItems: [FeedItem],
         savedPages: [SavedPage],
         customUrls: [CustomUrl],
+        amebloBlogs: [AmebloBlog] = [],
         subscribedPlatforms: [String],
         wallpaper: String?,
         sourcesOrder: [String]?,
@@ -264,6 +315,7 @@ struct LocalBackup: Codable {
         self.feed_items = feedItems
         self.saved_pages = savedPages
         self.custom_urls = customUrls
+        self.ameblo_blogs = amebloBlogs
         self.subscribed_platforms = subscribedPlatforms
         self.wallpaper = wallpaper
         self.sources_order = sourcesOrder
@@ -284,6 +336,7 @@ struct LocalBackup: Codable {
         self.feed_items = try container.decodeIfPresent([FeedItem].self, forKey: .feed_items) ?? []
         self.saved_pages = try container.decodeIfPresent([SavedPage].self, forKey: .saved_pages) ?? []
         self.custom_urls = try container.decodeIfPresent([CustomUrl].self, forKey: .custom_urls) ?? []
+        self.ameblo_blogs = try container.decodeIfPresent([AmebloBlog].self, forKey: .ameblo_blogs) ?? []
         self.subscribed_platforms = try container.decodeIfPresent([String].self, forKey: .subscribed_platforms) ?? []
         self.wallpaper = try container.decodeIfPresent(String.self, forKey: .wallpaper)
         self.sources_order = try container.decodeIfPresent([String].self, forKey: .sources_order)
@@ -293,7 +346,7 @@ struct LocalBackup: Codable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case version, exported_at, terms, feed_items, saved_pages, custom_urls
+        case version, exported_at, terms, feed_items, saved_pages, custom_urls, ameblo_blogs
         case subscribed_platforms, wallpaper, sources_order, oshi_avatars, compositions, hidden_items
     }
 }

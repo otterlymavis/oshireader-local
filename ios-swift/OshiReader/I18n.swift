@@ -2,16 +2,32 @@ import Foundation
 
 class I18nManager: ObservableObject {
     static let shared = I18nManager()
+    private var profileID: UUID?
     
     @Published var lang: String = "ja" // Default to ja
     
     private init() {
-        self.lang = UserDefaults.standard.string(forKey: "selected_lang") ?? "ja"
+        let activeProfileID = LocalProfileStore.shared.activeProfileID
+        self.profileID = activeProfileID
+        self.lang = UserDefaults.standard.string(
+            forKey: LocalProfileStore.defaultsKey("selected_lang", profileID: activeProfileID)
+        ) ?? "ja"
     }
     
     func setLanguage(_ language: String) {
         self.lang = language
-        UserDefaults.standard.set(language, forKey: "selected_lang")
+        UserDefaults.standard.set(language, forKey: storageKey("selected_lang"))
+    }
+
+    @MainActor
+    func configure(profileID: UUID) {
+        self.profileID = profileID
+        self.lang = UserDefaults.standard.string(forKey: storageKey("selected_lang")) ?? "ja"
+    }
+
+    private func storageKey(_ key: String) -> String {
+        guard let profileID else { return key }
+        return LocalProfileStore.defaultsKey(key, profileID: profileID)
     }
     
     private let translations: [String: [String: String]] = [

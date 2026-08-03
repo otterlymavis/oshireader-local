@@ -150,7 +150,7 @@ struct ReaderView: View {
         .onAppear {
             readerTheme = theme.mode
             fontSize = appearance.readerFontSize
-            if UserDefaults.standard.bool(forKey: "auto_translate_reader") {
+            if UserDefaults.standard.bool(forKey: LocalProfileStore.defaultsKey("auto_translate_reader")) {
                 isTranslated = true
             }
         }

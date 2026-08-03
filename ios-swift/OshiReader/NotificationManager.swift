@@ -89,6 +89,13 @@ final class NotificationManager: ObservableObject {
         center.removeAllDeliveredNotifications()
     }
 
+    func clearNotification(forTermID termID: String) {
+        localNotificationGeneration &+= 1
+        let identifier = Self.notificationIdentifier(forTermID: termID)
+        center.removePendingNotificationRequests(withIdentifiers: [identifier])
+        center.removeDeliveredNotifications(withIdentifiers: [identifier])
+    }
+
     @discardableResult
     func requestAuthorization() async -> Bool {
         do {
@@ -135,6 +142,12 @@ final class NotificationManager: ObservableObject {
 
         let notifiedKeywords = Set(terms.filter(\.notify_on_new).map(\.keyword))
         guard !notifiedKeywords.isEmpty else { return }
+        var notifiedTermsByKeyword: [String: WatchTerm] = [:]
+        for term in terms where term.notify_on_new {
+            // Preserve the existing one-digest-per-keyword behavior for
+            // legacy data that may contain duplicate keywords.
+            notifiedTermsByKeyword[term.keyword] = notifiedTermsByKeyword[term.keyword] ?? term
+        }
 
         let matchingItems = items.filter { notifiedKeywords.contains($0.watch_term_keyword) }
         let counts = Dictionary(grouping: matchingItems) {
@@ -143,6 +156,7 @@ final class NotificationManager: ObservableObject {
 
         for (keyword, count) in counts where count > 0 {
             guard generation == localNotificationGeneration else { return }
+            guard let term = notifiedTermsByKeyword[keyword] else { continue }
             let representative = matchingItems.first { $0.watch_term_keyword == keyword }
             let content = UNMutableNotificationContent()
             content.title = "New items for \(keyword)"
@@ -167,12 +181,13 @@ final class NotificationManager: ObservableObject {
             }
 
             let request = UNNotificationRequest(
-                identifier: "oshireader-new-\(generation)-\(keyword)",
+                identifier: Self.notificationIdentifier(forTermID: term.id),
                 content: content,
                 trigger: nil
             )
             do {
                 guard generation == localNotificationGeneration else { return }
+                center.removePendingNotificationRequests(withIdentifiers: [request.identifier])
                 try await center.add(request)
                 guard generation == localNotificationGeneration else {
                     center.removePendingNotificationRequests(withIdentifiers: [request.identifier])
@@ -186,5 +201,9 @@ final class NotificationManager: ObservableObject {
 
             }
         }
+    }
+
+    private static func notificationIdentifier(forTermID termID: String) -> String {
+        "oshireader-new-term-\(termID)"
     }
 }

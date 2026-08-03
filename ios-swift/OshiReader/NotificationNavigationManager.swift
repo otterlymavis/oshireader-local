@@ -10,6 +10,9 @@ final class NotificationNavigationManager: ObservableObject {
 
     func open(userInfo: [AnyHashable: Any]) {
         selectedItem = item(from: userInfo)
+        if let keyword = selectedItem?.watch_term_keyword {
+            RecentTermUsageStore.shared.markUsed(keyword: keyword, terms: LocalDB.shared.terms)
+        }
     }
 
     func save(userInfo: [AnyHashable: Any]) {

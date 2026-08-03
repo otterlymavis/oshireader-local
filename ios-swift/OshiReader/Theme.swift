@@ -156,21 +156,39 @@ struct PlatformMetadata {
 }
 
 class ThemeManager: ObservableObject {
+    private var profileID: UUID?
+
     @Published var mode: AppThemeMode = .light {
-        didSet { UserDefaults.standard.set(mode.rawValue, forKey: "app_theme_mode") }
+        didSet { UserDefaults.standard.set(mode.rawValue, forKey: storageKey("app_theme_mode")) }
     }
 
     @Published var style: AppColorStyle {
-        didSet { UserDefaults.standard.set(style.rawValue, forKey: "app_color_style") }
+        didSet { UserDefaults.standard.set(style.rawValue, forKey: storageKey("app_color_style")) }
     }
     
     static let shared = ThemeManager()
 
     private init() {
-        let storedMode = UserDefaults.standard.string(forKey: "app_theme_mode") ?? AppThemeMode.light.rawValue
+        let activeProfileID = LocalProfileStore.shared.activeProfileID
+        self.profileID = activeProfileID
+        let storedMode = UserDefaults.standard.string(forKey: LocalProfileStore.defaultsKey("app_theme_mode", profileID: activeProfileID)) ?? AppThemeMode.light.rawValue
         self.mode = AppThemeMode(rawValue: storedMode) ?? .light
-        let storedStyle = UserDefaults.standard.string(forKey: "app_color_style") ?? AppColorStyle.colourful.rawValue
+        let storedStyle = UserDefaults.standard.string(forKey: LocalProfileStore.defaultsKey("app_color_style", profileID: activeProfileID)) ?? AppColorStyle.colourful.rawValue
         self.style = AppColorStyle(rawValue: storedStyle) ?? .colourful
+    }
+
+    @MainActor
+    func configure(profileID: UUID) {
+        self.profileID = profileID
+        let storedMode = UserDefaults.standard.string(forKey: storageKey("app_theme_mode")) ?? AppThemeMode.light.rawValue
+        let storedStyle = UserDefaults.standard.string(forKey: storageKey("app_color_style")) ?? AppColorStyle.colourful.rawValue
+        mode = AppThemeMode(rawValue: storedMode) ?? .light
+        style = AppColorStyle(rawValue: storedStyle) ?? .colourful
+    }
+
+    private func storageKey(_ key: String) -> String {
+        guard let profileID else { return key }
+        return LocalProfileStore.defaultsKey(key, profileID: profileID)
     }
     
     var colors: AppColors {
@@ -229,21 +247,38 @@ class ThemeManager: ObservableObject {
 
 class AppearanceManager: ObservableObject {
     static let shared = AppearanceManager()
+    private var profileID: UUID?
 
     @Published var fontChoice: AppFontChoice {
-        didSet { UserDefaults.standard.set(fontChoice.rawValue, forKey: "app_font_choice") }
+        didSet { UserDefaults.standard.set(fontChoice.rawValue, forKey: storageKey("app_font_choice")) }
     }
 
     @Published var fontSizeChoice: AppFontSizeChoice {
-        didSet { UserDefaults.standard.set(fontSizeChoice.rawValue, forKey: "app_font_size_choice") }
+        didSet { UserDefaults.standard.set(fontSizeChoice.rawValue, forKey: storageKey("app_font_size_choice")) }
     }
 
     private init() {
-        let storedFont = UserDefaults.standard.string(forKey: "app_font_choice") ?? AppFontChoice.normal.rawValue
+        let activeProfileID = LocalProfileStore.shared.activeProfileID
+        self.profileID = activeProfileID
+        let storedFont = UserDefaults.standard.string(forKey: LocalProfileStore.defaultsKey("app_font_choice", profileID: activeProfileID)) ?? AppFontChoice.normal.rawValue
         self.fontChoice = AppFontChoice(rawValue: storedFont) ?? .normal
 
-        let storedSize = UserDefaults.standard.string(forKey: "app_font_size_choice") ?? AppFontSizeChoice.normal.rawValue
+        let storedSize = UserDefaults.standard.string(forKey: LocalProfileStore.defaultsKey("app_font_size_choice", profileID: activeProfileID)) ?? AppFontSizeChoice.normal.rawValue
         self.fontSizeChoice = AppFontSizeChoice(rawValue: storedSize) ?? .normal
+    }
+
+    @MainActor
+    func configure(profileID: UUID) {
+        self.profileID = profileID
+        let storedFont = UserDefaults.standard.string(forKey: storageKey("app_font_choice")) ?? AppFontChoice.normal.rawValue
+        let storedSize = UserDefaults.standard.string(forKey: storageKey("app_font_size_choice")) ?? AppFontSizeChoice.normal.rawValue
+        fontChoice = AppFontChoice(rawValue: storedFont) ?? .normal
+        fontSizeChoice = AppFontSizeChoice(rawValue: storedSize) ?? .normal
+    }
+
+    private func storageKey(_ key: String) -> String {
+        guard let profileID else { return key }
+        return LocalProfileStore.defaultsKey(key, profileID: profileID)
     }
 
     // Returns a DynamicTypeSize override when the user has chosen a larger-than-system

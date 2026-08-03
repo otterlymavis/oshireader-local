@@ -1,11 +1,11 @@
 import BackgroundTasks
 import Foundation
 
-private actor RefreshCompletion {
-    private var result: Bool?
-    private var continuation: CheckedContinuation<Bool, Never>?
+private actor BackgroundRefreshWaiter {
+    private var result: LocalRefreshResult?
+    private var continuation: CheckedContinuation<LocalRefreshResult, Never>?
 
-    func wait() async -> Bool {
+    func wait() async -> LocalRefreshResult {
         if let result { return result }
         return await withCheckedContinuation { continuation in
             if let result = self.result {
@@ -16,7 +16,7 @@ private actor RefreshCompletion {
         }
     }
 
-    func finish(_ result: Bool) {
+    func finish(_ result: LocalRefreshResult) {
         guard self.result == nil else { return }
         self.result = result
         continuation?.resume(returning: result)
@@ -33,16 +33,11 @@ final class BackgroundRefreshManager {
     static let taskIdentifier = "com.otterpia.oshireader.feed-refresh"
     static let minimumInterval: TimeInterval = 30 * 60
     private static let operationDeadline: TimeInterval = 25
-    private static let maxConcurrentTerms = 2
-
-    private(set) var isRefreshing = false
-    private var activeRefreshTask: Task<Void, Never>?
-    private var activeRefreshGeneration: UUID?
 
     private init() {}
 
     static var lastCompletedAt: Date? {
-        let timestamp = UserDefaults.standard.double(forKey: "background_refresh.last_completed_at")
+        let timestamp = UserDefaults.standard.double(forKey: LocalProfileStore.defaultsKey("background_refresh.last_completed_at"))
         return timestamp > 0 ? Date(timeIntervalSince1970: timestamp) : nil
     }
 
@@ -72,126 +67,35 @@ final class BackgroundRefreshManager {
     }
 
     func refreshNow() async -> Bool {
-        guard !isRefreshing, activeRefreshTask == nil else { return false }
         guard !ProcessInfo.processInfo.arguments.contains("--uitesting") else { return false }
-
-        isRefreshing = true
-        defer { isRefreshing = false }
-
-        let completion = RefreshCompletion()
-        let generation = UUID()
-        activeRefreshGeneration = generation
+        let waiter = BackgroundRefreshWaiter()
         let worker = Task { @MainActor in
-            defer { self.finishRefresh(generation: generation) }
-            let result: Bool
-            do {
-                result = try await self.performRefresh(generation: generation)
-            } catch {
-                result = false
-            }
-            await completion.finish(result)
+            let result = await LocalRefreshCoordinator.shared.refreshIfIdle(.background)
+                ?? LocalRefreshResult(completion: .cancelled, addedCount: 0, sourceStatuses: [], customRefreshCompleted: false)
+            await waiter.finish(result)
         }
-        activeRefreshTask = worker
-        let timeout = Task { [completion] in
+        let timeout = Task {
             do {
                 try await Task.sleep(nanoseconds: UInt64(Self.operationDeadline * 1_000_000_000))
-                await completion.finish(false)
+                await waiter.finish(LocalRefreshResult(completion: .expired, addedCount: 0, sourceStatuses: [], customRefreshCompleted: false))
             } catch {
-                // The worker completed before the deadline.
+                // The refresh completed before the deadline.
             }
         }
-        return await withTaskCancellationHandler(operation: {
-            let result = await completion.wait()
-            timeout.cancel()
-            if !result {
-                self.invalidateRefresh(generation: generation)
-                worker.cancel()
-            }
-            return result
-        }, onCancel: {
+        let result = await waiter.wait()
+        timeout.cancel()
+        if result.completion == .expired {
+            LocalRefreshCoordinator.shared.cancel()
             worker.cancel()
-            timeout.cancel()
-            Task { @MainActor in
-                self.invalidateRefresh(generation: generation)
-                await completion.finish(false)
-            }
-        })
-    }
-
-    private func invalidateRefresh(generation: UUID) {
-        guard activeRefreshGeneration == generation else { return }
-        activeRefreshGeneration = nil
-    }
-
-    private func finishRefresh(generation: UUID) {
-        guard activeRefreshGeneration == generation || activeRefreshTask != nil else { return }
-        activeRefreshGeneration = nil
-        activeRefreshTask = nil
+            return false
+        }
+        guard result.completion == .completed else { return false }
+        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: LocalProfileStore.defaultsKey("background_refresh.last_completed_at"))
+        return result.succeeded
     }
 
     private func cancelActiveRefresh() {
-        activeRefreshTask?.cancel()
-    }
-
-    private func performRefresh(generation: UUID) async throws -> Bool {
-        try Task.checkCancellation()
-        let activeTerms = LocalDB.shared.terms.filter(\.is_active)
-        let platforms = Set(LocalDB.shared.subscribedPlatforms.filter { $0 != "custom" })
-        let sourceRevision = LocalDB.shared.dataRevision
-
-        if !activeTerms.isEmpty && !platforms.isEmpty {
-            try await withThrowingTaskGroup(of: [FeedItem].self) { group in
-                var iterator = activeTerms.makeIterator()
-                var running = 0
-                var batches = [[FeedItem]]()
-                while running < Self.maxConcurrentTerms, let term = iterator.next() {
-                    group.addTask {
-                        await IngestionService.shared.ingest(term: term, platforms: platforms)
-                    }
-                    running += 1
-                }
-                do {
-                    for try await items in group {
-                        try Task.checkCancellation()
-                        guard activeRefreshGeneration == generation else { throw CancellationError() }
-                        if !items.isEmpty {
-                            batches.append(items)
-                        }
-                        running -= 1
-                        if let term = iterator.next() {
-                            group.addTask {
-                                await IngestionService.shared.ingest(term: term, platforms: platforms)
-                            }
-                            running += 1
-                        }
-                    }
-                } catch {
-                    // Keep completed term results when the refresh is cancelled or invalidated.
-                    if !batches.isEmpty {
-                        _ = LocalDB.shared.mergeItemsBatched(newItemsBatches: batches, sourceRevision: sourceRevision)
-                    }
-                    throw error
-                }
-                if !batches.isEmpty {
-                    _ = LocalDB.shared.mergeItemsBatched(newItemsBatches: batches, sourceRevision: sourceRevision)
-                }
-            }
-        }
-
-        try Task.checkCancellation()
-        guard activeRefreshGeneration == generation else { throw CancellationError() }
-        let customItems = await NetworkManager.shared.scrapeCustomUrls(LocalDB.shared.customUrls)
-        try Task.checkCancellation()
-        guard activeRefreshGeneration == generation else { throw CancellationError() }
-        if !customItems.isEmpty {
-            _ = LocalDB.shared.mergeItems(newItems: customItems, sourceRevision: sourceRevision)
-        }
-
-        LocalDB.shared.flushPendingFeedItemsSave()
-
-        guard activeRefreshGeneration == generation else { throw CancellationError() }
-        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "background_refresh.last_completed_at")
-        return true
+        LocalRefreshCoordinator.shared.cancel()
     }
 
     private func handle(_ task: BGAppRefreshTask) async {

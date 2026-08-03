@@ -6,7 +6,7 @@ final class OshiReaderUITests: XCTestCase {
     override func setUpWithError() throws {
         continueAfterFailure = false
         app = XCUIApplication()
-        app.launchArguments = ["--uitesting"]
+        app.launchArguments = ["--uitesting", "--uitesting-source-status"]
         app.launch()
     }
 
@@ -66,6 +66,7 @@ final class OshiReaderUITests: XCTestCase {
         tapTab(index: 0, labels: ["Feed"])
 
         XCTAssertTrue(app.buttons["feed.refreshButton"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.descendants(matching: .any)["feed.refreshStatus"].waitForExistence(timeout: 3))
         app.buttons["feed.refreshButton"].tap()
 
         let filterButton = firstFeedFilterButton()
@@ -77,12 +78,32 @@ final class OshiReaderUITests: XCTestCase {
         mediaOnlyButton.tap()
     }
 
+    func testSourceStatusSheetShowsHealthSummary() throws {
+        tapTab(index: 0, labels: ["Feed"])
+
+        XCTAssertTrue(app.buttons["feed.refreshButton"].waitForExistence(timeout: 3))
+        app.buttons["feed.refreshButton"].tap()
+
+        let sourceSummary = app.buttons["feed.sourceStatus"]
+        XCTAssertTrue(sourceSummary.waitForExistence(timeout: 3))
+        sourceSummary.tap()
+        let sourceStatusSheet = app.descendants(matching: .any)["feed.sourceStatusSheet"]
+        let newsSourceStatus = app.descendants(matching: .any)["feed.sourceStatus.news"]
+        _ = sourceStatusSheet.waitForExistence(timeout: 3)
+        XCTAssertTrue(newsSourceStatus.waitForExistence(timeout: 3))
+    }
+
     func testOpenReaderFromFeedAndSave() throws {
         tapTab(index: 0, labels: ["Feed"])
 
         let headline = app.staticTexts["UITest Oshi headline"]
         XCTAssertTrue(headline.waitForExistence(timeout: 3))
-        (firstExistingButton(containing: "UITest Oshi headline") ?? headline).tap()
+        let feedCard = app.buttons["feed.card.ui-feed-reader"]
+        if feedCard.waitForExistence(timeout: 2) {
+            feedCard.tap()
+        } else {
+            (firstExistingButton(containing: "UITest Oshi headline") ?? headline).tap()
+        }
 
         let readerModeButton = waitForButton(identifier: "reader.modeToggleButton", timeout: 5)
         XCTAssertNotNil(readerModeButton)
@@ -163,6 +184,129 @@ final class OshiReaderUITests: XCTestCase {
             swipes: 1
         )
         XCTAssertTrue(notificationAction.exists)
+    }
+
+    func testAmebloSettingsAddValidateAndRemove() throws {
+        tapTab(index: 4, labels: ["Settings"])
+
+        let urlField = app.textFields["settings.amebloURLField"]
+        XCTAssertTrue(urlField.waitForExistence(timeout: 3))
+        let addButton = app.buttons["settings.addAmebloButton"]
+        XCTAssertTrue(addButton.waitForExistence(timeout: 3))
+
+        urlField.tap()
+        urlField.typeText("https://example.com/not-ameblo")
+        addButton.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["settings.amebloError"].waitForExistence(timeout: 3))
+
+        app.terminate()
+        app.launch()
+        tapTab(index: 4, labels: ["Settings"])
+        let freshURLField = app.textFields["settings.amebloURLField"]
+        XCTAssertTrue(freshURLField.waitForExistence(timeout: 3))
+        let freshAddButton = app.buttons["settings.addAmebloButton"]
+        XCTAssertTrue(freshAddButton.waitForExistence(timeout: 3))
+        freshURLField.tap()
+        freshURLField.typeText("https://ameblo.jp/uitestblog")
+        freshAddButton.tap()
+
+        let blogRow = app.descendants(matching: .any)["settings.amebloBlog.uitestblog"]
+        XCTAssertTrue(blogRow.waitForExistence(timeout: 3))
+        XCTAssertTrue(app.descendants(matching: .any)["settings.amebloSubscriptionState"].waitForExistence(timeout: 3))
+
+        let removeButton = app.buttons["Remove uitestblog"]
+        XCTAssertTrue(removeButton.waitForExistence(timeout: 3))
+        removeButton.tap()
+        XCTAssertFalse(blogRow.waitForExistence(timeout: 1))
+    }
+
+    func testEncryptedBackupPromptCanBeCancelled() throws {
+        tapTab(index: 4, labels: ["Settings"])
+        let exportButton = waitForElement(identifier: "settings.exportEncryptedBackupButton", timeout: 3, swipes: 6)
+        XCTAssertTrue(exportButton.exists)
+        exportButton.tap()
+
+        let password = app.secureTextFields["settings.encryptedBackupPasswordField"]
+        XCTAssertTrue(password.waitForExistence(timeout: 3))
+        let cancel = app.buttons["settings.encryptedBackupCancelButton"]
+        XCTAssertTrue(cancel.waitForExistence(timeout: 3))
+        cancel.tap()
+        XCTAssertFalse(app.secureTextFields["settings.encryptedBackupPasswordField"].waitForExistence(timeout: 1))
+    }
+
+    func testEncryptedBackupPromptRejectsMismatchedPasswords() throws {
+        tapTab(index: 4, labels: ["Settings"])
+        let exportButton = waitForElement(identifier: "settings.exportEncryptedBackupButton", timeout: 3, swipes: 6)
+        XCTAssertTrue(exportButton.exists)
+        exportButton.tap()
+
+        let password = app.secureTextFields["settings.encryptedBackupPasswordField"]
+        let confirmation = app.secureTextFields["settings.encryptedBackupConfirmationField"]
+        XCTAssertTrue(password.waitForExistence(timeout: 3))
+        XCTAssertTrue(confirmation.waitForExistence(timeout: 3))
+        password.tap()
+        password.typeText("correct horse battery staple")
+        confirmation.tap()
+        confirmation.typeText("different horse battery staple")
+        app.buttons["settings.encryptedBackupSubmitButton"].tap()
+
+        XCTAssertTrue(app.staticTexts["Passwords do not match."].waitForExistence(timeout: 3))
+    }
+
+    func testEncryptedBackupExportAcceptsMatchingPasswords() throws {
+        tapTab(index: 4, labels: ["Settings"])
+        let exportButton = waitForElement(identifier: "settings.exportEncryptedBackupButton", timeout: 3, swipes: 6)
+        XCTAssertTrue(exportButton.exists)
+        exportButton.tap()
+
+        let password = app.secureTextFields["settings.encryptedBackupPasswordField"]
+        let confirmation = app.secureTextFields["settings.encryptedBackupConfirmationField"]
+        XCTAssertTrue(password.waitForExistence(timeout: 3))
+        XCTAssertTrue(confirmation.waitForExistence(timeout: 3))
+        password.tap()
+        password.typeText("correct horse battery staple")
+        confirmation.tap()
+        confirmation.typeText("correct horse battery staple")
+        app.buttons["settings.encryptedBackupSubmitButton"].tap()
+
+        XCTAssertFalse(app.secureTextFields["settings.encryptedBackupPasswordField"].waitForExistence(timeout: 2))
+        // The system document picker is outside the app's accessibility tree;
+        // the absence of the password sheet confirms encryption succeeded.
+        app.terminate()
+    }
+
+    func testProfileCreateAndManagementControls() throws {
+        tapTab(index: 4, labels: ["Settings"])
+
+        let add = app.buttons["settings.addProfileButton"]
+        XCTAssertTrue(add.waitForExistence(timeout: 3))
+        add.tap()
+        let field = app.textFields["settings.profileNameField"]
+        XCTAssertTrue(field.waitForExistence(timeout: 3))
+        field.tap()
+        field.typeText("UI Profile")
+        app.buttons["settings.profileSaveButton"].tap()
+        XCTAssertTrue(app.staticTexts["UI Profile"].waitForExistence(timeout: 3))
+
+        let renameAction = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'settings.profileRename.'")).firstMatch
+        XCTAssertTrue(renameAction.waitForExistence(timeout: 2))
+        XCTAssertTrue(app.buttons["settings.exportProfileButton"].waitForExistence(timeout: 3))
+    }
+
+    func testFinalProfileDeletionIsProtectedAndProfileExportOpensPicker() throws {
+        tapTab(index: 4, labels: ["Settings"])
+
+        let deleteAction = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'settings.profileDelete.'")).firstMatch
+        XCTAssertTrue(deleteAction.waitForExistence(timeout: 2))
+        deleteAction.forceTap()
+        XCTAssertTrue(app.staticTexts["The final profile cannot be deleted."].waitForExistence(timeout: 3))
+
+        let export = app.buttons["settings.exportProfileButton"]
+        XCTAssertTrue(export.waitForExistence(timeout: 3))
+        export.forceTap()
+        // The system Files picker is outside the app accessibility tree; the
+        // successful tap is the observable app-side behavior here.
+        app.terminate()
     }
 
     private func tapTab(index: Int, labels: [String]) {

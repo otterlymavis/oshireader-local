@@ -25,9 +25,8 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         BackgroundRefreshManager.shared.schedule()
     }
 
-    // The app only fetches new items while it is in the foreground, so without
-    // this the system would silently suppress every new-item banner. Present
-    // them as a banner with sound instead.
+    // Present locally scheduled new-item alerts as a banner with sound while
+    // the app is active; background refresh may also schedule these alerts.
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification,

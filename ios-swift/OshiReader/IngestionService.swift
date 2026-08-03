@@ -1,5 +1,64 @@
 import Foundation
 
+enum SourceRefreshFailure: String, Codable, Equatable, CaseIterable, Error {
+    case timeout
+    case networkUnavailable
+    case authenticationRequired
+    case rateLimited
+    case httpFailure
+    case invalidResponse
+    case invalidPayload
+    case missingCredential
+
+    var displayName: String {
+        switch self {
+        case .timeout: return "Timed out"
+        case .networkUnavailable: return "Network unavailable"
+        case .authenticationRequired: return "Authentication required"
+        case .rateLimited: return "Rate limited"
+        case .httpFailure: return "HTTP failure"
+        case .invalidResponse: return "Invalid response"
+        case .invalidPayload: return "Invalid data"
+        case .missingCredential: return "Credential missing"
+        }
+    }
+}
+
+enum SourceRefreshOutcome: Equatable {
+    case received
+    case noResults
+    case failed(SourceRefreshFailure)
+}
+
+struct SourceRefreshStatus: Identifiable, Equatable {
+    let id: String
+    var outcome: SourceRefreshOutcome
+    var itemCount: Int
+    var queryCount: Int
+}
+
+struct IngestionReport {
+    let items: [FeedItem]
+    let sourceStatuses: [SourceRefreshStatus]
+}
+
+private enum TransportResult {
+    case success(Data, HTTPURLResponse)
+    case failure(SourceRefreshFailure)
+}
+
+private actor SourceFailureRecorder {
+    private var failures: [String: SourceRefreshFailure] = [:]
+
+    func record(_ failure: SourceRefreshFailure, for sourceID: String) {
+        failures[sourceID] = failure
+    }
+
+    func failure(for sourceID: String) -> SourceRefreshFailure? {
+        failures[sourceID]
+    }
+}
+
 /// On-device ingestion for public RSS feeds, JSON APIs, and pages.
 ///
 /// Each `fetch*` method reads directly from the phone.
@@ -7,7 +66,28 @@ import Foundation
 /// flat `FeedItem`s ready for `LocalDB.mergeItems`.
 final class IngestionService {
     static let shared = IngestionService()
-    private init() {}
+    typealias RequestExecutor = @Sendable (URLRequest) async throws -> (Data, URLResponse)
+    typealias RetrySleeper = @Sendable (UInt64) async -> Void
+
+    private let requestExecutor: RequestExecutor
+    private let retrySleeper: RetrySleeper
+    private static let maximumTransportAttempts = 2
+    private static let retryDelayNanoseconds: UInt64 = 100_000_000
+
+    init(
+        requestExecutor: @escaping RequestExecutor = { request in
+            try await URLSession.shared.data(for: request)
+        },
+        retrySleeper: @escaping RetrySleeper = { nanoseconds in
+            try? await Task.sleep(nanoseconds: nanoseconds)
+        }
+    ) {
+        self.requestExecutor = requestExecutor
+        self.retrySleeper = retrySleeper
+    }
+
+    @TaskLocal private static var sourceFailureRecorder: SourceFailureRecorder?
+    @TaskLocal private static var sourceID: String?
 
     private let browserUA = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
 
@@ -16,6 +96,36 @@ final class IngestionService {
     /// Caps all source requests across foreground and background ingestion.
     private static let sourceRequestLimiter = RequestLimiter(limit: 4)
     static let maximumAliasesPerTerm = 5
+
+    /// Removes common analytics parameters only for deduplication. The
+    /// original URL remains untouched in FeedItem so reader navigation keeps
+    /// the source-provided link.
+    static func canonicalURLForDedup(_ raw: String) -> String {
+        guard var components = URLComponents(string: raw.trimmingCharacters(in: .whitespacesAndNewlines)),
+              components.scheme != nil,
+              components.host != nil else {
+            return raw
+        }
+
+        let trackingKeys = Set([
+            "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
+            "fbclid", "gclid", "dclid", "mc_cid", "mc_eid", "igshid"
+        ])
+        components.queryItems = components.queryItems?.filter {
+            !trackingKeys.contains($0.name.lowercased())
+        }
+        if components.queryItems?.isEmpty == true {
+            components.queryItems = nil
+        }
+        components.fragment = nil
+        components.scheme = components.scheme?.lowercased()
+        components.host = components.host?.lowercased()
+        if components.path.count > 1 {
+            components.path = components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                .isEmpty ? "/" : components.path.replacingOccurrences(of: "/+$", with: "", options: .regularExpression)
+        }
+        return components.string ?? raw
+    }
 
     // MARK: - Orchestration
 
@@ -40,26 +150,39 @@ final class IngestionService {
     /// Fetch every subscribed source for one watch term. Network errors in any
     /// single source are swallowed (that source just contributes no items).
     func ingest(term: WatchTerm, platforms: Set<String>) async -> [FeedItem] {
+        await ingestReport(term: term, platforms: platforms).items
+    }
+
+    func ingestReport(term: WatchTerm, platforms: Set<String>) async -> IngestionReport {
         let primaryKeyword = term.keyword.trimmingCharacters(in: .whitespacesAndNewlines)
         let searchKeywords = Self.searchKeywords(for: term)
-        guard !primaryKeyword.isEmpty, !searchKeywords.isEmpty else { return [] }
+        guard !primaryKeyword.isEmpty, !searchKeywords.isEmpty else {
+            return IngestionReport(items: [], sourceStatuses: [])
+        }
         let mediaOnly = term.collection_mode == "media_only"
         let effectivePlatforms = Self.effectivePlatforms(for: term, available: platforms)
-        guard !effectivePlatforms.isEmpty else { return [] }
+        guard !effectivePlatforms.isEmpty else {
+            return IngestionReport(items: [], sourceStatuses: [])
+        }
 
-        return await withTaskGroup(of: [FeedItem].self) { group in
+        let recorder = SourceFailureRecorder()
+        return await withTaskGroup(of: (String, [FeedItem]).self) { group in
             func add(_ id: String, _ work: @escaping (String) async -> [FeedItem]) {
                 guard effectivePlatforms.contains(id) else { return }
                 for searchKeyword in searchKeywords {
                     group.addTask {
-                        guard await Self.sourceRequestLimiter.acquire() else { return [] }
+                        guard await Self.sourceRequestLimiter.acquire() else { return (id, []) }
                         guard !Task.isCancelled else {
                             await Self.sourceRequestLimiter.release()
-                            return []
+                            return (id, [])
                         }
-                        let items = await work(searchKeyword)
+                        let items = await Self.$sourceFailureRecorder.withValue(recorder) {
+                            await Self.$sourceID.withValue(id) {
+                                await work(searchKeyword)
+                            }
+                        }
                         await Self.sourceRequestLimiter.release()
-                        return items.map { self.withWatchTermKeyword($0, keyword: primaryKeyword) }
+                        return (id, items.map { self.withWatchTermKeyword($0, keyword: primaryKeyword) })
                     }
                 }
             }
@@ -72,6 +195,20 @@ final class IngestionService {
             add("yahoonews")   { await self.fetchYahooNews(keyword: $0, mediaOnly: mediaOnly) }
             add("niconico")    { await self.fetchNiconico(keyword: $0) }
             add("note")        { await self.fetchNote(keyword: $0, mediaOnly: mediaOnly) }
+            add("ameblo")     {
+                let blogs = LocalDB.shared.amebloBlogs
+                if blogs.isEmpty {
+                    return await self.fetchGoogleNews(keyword: $0, query: "\($0) site:ameblo.jp", platform: "ameblo", mediaType: "article", mediaOnly: mediaOnly)
+                }
+                return await self.fetchAmeblo(keyword: $0, blogs: blogs, mediaOnly: mediaOnly)
+            }
+            add("natalie")     { await self.fetchDedicatedRSSSource(sourceID: "natalie", keyword: $0, feedURLs: Self.dedicatedRSSFeeds["natalie"] ?? [], mediaOnly: mediaOnly) }
+            add("barks")       { await self.fetchDedicatedRSSSource(sourceID: "barks", keyword: $0, feedURLs: Self.dedicatedRSSFeeds["barks"] ?? [], mediaOnly: mediaOnly) }
+            add("aera")        { await self.fetchDedicatedRSSSource(sourceID: "aera", keyword: $0, feedURLs: Self.dedicatedRSSFeeds["aera"] ?? [], mediaOnly: mediaOnly) }
+            add("hochi")       { await self.fetchDedicatedRSSSource(sourceID: "hochi", keyword: $0, feedURLs: Self.dedicatedRSSFeeds["hochi"] ?? [], mediaOnly: mediaOnly) }
+            add("realsound")   { await self.fetchDedicatedRSSSource(sourceID: "realsound", keyword: $0, feedURLs: Self.dedicatedRSSFeeds["realsound"] ?? [], mediaOnly: mediaOnly) }
+            add("cinemacafe")  { await self.fetchDedicatedRSSSource(sourceID: "cinemacafe", keyword: $0, feedURLs: Self.dedicatedRSSFeeds["cinemacafe"] ?? [], mediaOnly: mediaOnly) }
+            add("billboardjapan") { await self.fetchDedicatedRSSSource(sourceID: "billboardjapan", keyword: $0, feedURLs: Self.dedicatedRSSFeeds["billboardjapan"] ?? [], mediaOnly: mediaOnly) }
             // Togetter via Google News so items carry real publish dates (the
             // search-page scrape doesn't expose reliable dates).
             add("togetter")    { await self.fetchGoogleNews(keyword: $0, query: "\($0) site:togetter.com", platform: "togetter", mediaType: "article", mediaOnly: mediaOnly) }
@@ -83,7 +220,7 @@ final class IngestionService {
             // above win, while the remaining reference sources use dated RSS
             // results from Google News until they warrant a dedicated parser.
             for source in PlatformRegistry.googleNewsSources where
-                !["5ch", "girlschannel", "mdpr", "oricon", "yahoonews", "togetter", "twitter"].contains(source.id) {
+                !["5ch", "girlschannel", "mdpr", "oricon", "yahoonews", "togetter", "twitter", "ameblo", "natalie", "barks", "aera", "hochi", "realsound", "cinemacafe", "billboardjapan"].contains(source.id) {
                 add(source.id) {
                     await self.fetchGoogleNews(
                         keyword: $0,
@@ -97,8 +234,35 @@ final class IngestionService {
             }
 
             var all = [FeedItem]()
-            for await items in group { all.append(contentsOf: items) }
-            return all
+            var counts: [String: (items: Int, queries: Int)] = [:]
+            var seenItemIDsBySource: [String: Set<String>] = [:]
+            for await (sourceID, items) in group {
+                var seenItemIDs = seenItemIDsBySource[sourceID] ?? []
+                let uniqueItems = items.filter { seenItemIDs.insert($0.id).inserted }
+                seenItemIDsBySource[sourceID] = seenItemIDs
+                all.append(contentsOf: uniqueItems)
+                let current = counts[sourceID] ?? (items: 0, queries: 0)
+                counts[sourceID] = (current.items + uniqueItems.count, current.queries + 1)
+            }
+            var statuses = [SourceRefreshStatus]()
+            for sourceID in counts.keys.sorted() {
+                let count = counts[sourceID] ?? (items: 0, queries: 0)
+                let outcome: SourceRefreshOutcome
+                if count.items > 0 {
+                    outcome = .received
+                } else if let failure = await recorder.failure(for: sourceID) {
+                    outcome = .failed(failure)
+                } else {
+                    outcome = .noResults
+                }
+                statuses.append(SourceRefreshStatus(
+                    id: sourceID,
+                    outcome: outcome,
+                    itemCount: count.items,
+                    queryCount: count.queries
+                ))
+            }
+            return IngestionReport(items: all, sourceStatuses: statuses)
         }
     }
 
@@ -124,9 +288,37 @@ final class IngestionService {
     // augmented by a couple of general entertainment feeds filtered client-side.
     // "news" items are also keyword-filtered at display time in LocalDB.queryFeed.
     private static let curatedFeeds = [
-        "https://natalie.mu/music/feed/news",
-        "https://natalie.mu/tv/feed/news",
         "https://www3.nhk.or.jp/rss/news/cat7.xml",
+    ]
+
+    private static let dedicatedRSSFeeds: [String: [String]] = [
+        // Publisher-documented RSS feeds verified against the live official
+        // domains. Sponichi remains on the Google News fallback until it
+        // exposes a stable official RSS endpoint.
+        "aera": [
+            "https://dot.asahi.com/list/feed/rss4provider-all",
+        ],
+        "hochi": [
+            "https://hochi.news/rss/index.xml",
+        ],
+        "realsound": [
+            "https://realsound.jp/atom.xml",
+        ],
+        "cinemacafe": [
+            "https://www.cinemacafe.net/rss20/index.rdf",
+        ],
+        "billboardjapan": [
+            "https://www.billboard-japan.com/d_news/doc.xml",
+        ],
+        "natalie": [
+            "https://natalie.mu/music/feed/news",
+            "https://natalie.mu/tv/feed/news",
+        ],
+        // Use HTTPS for iOS App Transport Security while retaining the
+        // documented BARKS RSS endpoint path.
+        "barks": [
+            "https://www.barks.jp/about/?m=rss",
+        ],
     ]
 
     private func fetchCuratedNews(keyword: String, mediaOnly: Bool) async -> [FeedItem] {
@@ -140,7 +332,7 @@ final class IngestionService {
             for feedURL in Self.curatedFeeds {
                 group.addTask {
                     guard let url = URL(string: feedURL) else { return [] }
-                    let entries = await self.parseRSS(url)
+                    guard case .success(let entries) = await self.parseRSS(url) else { return [] }
                     return entries.compactMap { entry -> FeedItem? in
                         guard !entry.link.isEmpty else { return nil }
                         guard self.matchesKeyword(title: entry.title, desc: entry.description, kw: keyword) else { return nil }
@@ -166,6 +358,111 @@ final class IngestionService {
         }
     }
 
+    private func fetchDedicatedRSSSource(
+        sourceID: String,
+        keyword: String,
+        feedURLs: [String],
+        mediaOnly: Bool
+    ) async -> [FeedItem] {
+        guard !mediaOnly, !feedURLs.isEmpty else { return [] }
+
+        return await withTaskGroup(of: [FeedItem].self) { group in
+            for feedURL in feedURLs {
+                group.addTask {
+                    guard let url = URL(string: feedURL),
+                          case .success(let entries) = await self.parseRSS(url) else {
+                        return []
+                    }
+
+                    var seen = Set<String>()
+                    return entries.compactMap { entry -> FeedItem? in
+                        guard !entry.link.isEmpty,
+                              self.matchesKeyword(title: entry.title, desc: entry.description, kw: keyword) else {
+                            return nil
+                        }
+                        let canonical = Self.canonicalURLForDedup(entry.link)
+                        guard seen.insert(canonical).inserted else { return nil }
+                        return FeedItem(
+                            id: "\(sourceID):\(self.stableId(entry.link))",
+                            platform: sourceID,
+                            url: entry.link,
+                            title: entry.title.isEmpty ? nil : entry.title,
+                            content_text: entry.description.isEmpty ? nil : entry.description,
+                            author: nil,
+                            thumbnail_url: entry.thumbnailUrl,
+                            media_type: "article",
+                            published_at: entry.pubDate ?? self.nowISO(),
+                            watch_term_keyword: keyword,
+                            fetched_at: self.nowISO()
+                        )
+                    }
+                }
+            }
+
+            var all = [FeedItem]()
+            for await items in group {
+                all.append(contentsOf: items)
+            }
+
+            var seen = Set<String>()
+            return all.filter { seen.insert($0.id).inserted }.prefix(25).map { $0 }
+        }
+    }
+
+    private func fetchAmeblo(keyword: String, blogs: [AmebloBlog], mediaOnly: Bool) async -> [FeedItem] {
+        guard !mediaOnly, !blogs.isEmpty else { return [] }
+
+        let results = await withTaskGroup(of: (Int, [FeedItem], SourceRefreshFailure?).self, returning: [(Int, [FeedItem], SourceRefreshFailure?)].self) { group in
+            for (index, blog) in blogs.enumerated() {
+                group.addTask {
+                    guard let feedURL = blog.rssURL else { return (index, [], .invalidResponse) }
+                    let entries: [RssItem]
+                    switch await self.parseRSS(feedURL) {
+                    case .success(let parsed):
+                        entries = parsed
+                    case .failure(let failure):
+                        return (index, [], failure)
+                    }
+                    var seen = Set<String>()
+                    let items = entries.compactMap { entry -> FeedItem? in
+                        guard !entry.link.isEmpty,
+                              self.matchesKeyword(title: entry.title, desc: entry.description, kw: keyword) else { return nil }
+                        let canonical = Self.canonicalURLForDedup(entry.link)
+                        guard seen.insert(canonical).inserted else { return nil }
+                        return FeedItem(
+                            id: "ameblo:\(self.stableId(entry.link))",
+                            platform: "ameblo",
+                            url: entry.link,
+                            title: entry.title.isEmpty ? nil : entry.title,
+                            content_text: entry.description.isEmpty ? nil : entry.description,
+                            author: blog.title ?? blog.amebaID,
+                            thumbnail_url: entry.thumbnailUrl,
+                            media_type: "article",
+                            published_at: entry.pubDate ?? self.nowISO(),
+                            watch_term_keyword: keyword,
+                            fetched_at: self.nowISO()
+                        )
+                    }
+                    return (index, items, nil)
+                }
+            }
+
+            var results = [(Int, [FeedItem], SourceRefreshFailure?)]()
+            for await result in group { results.append(result) }
+            return results.sorted { $0.0 < $1.0 }
+        }
+
+        if let firstFailure = results.compactMap({ $0.2 }).first {
+            await recordFailure(firstFailure)
+        }
+        var seen = Set<String>()
+        return results
+            .flatMap(\.1)
+            .filter { seen.insert($0.id).inserted }
+            .prefix(25)
+            .map { $0 }
+    }
+
     // MARK: - Google News site-filtered RSS (5ch, girlschannel, mdpr, oricon, yahoonews, niconico fallback)
 
     private func fetchGoogleNews(
@@ -188,7 +485,14 @@ final class IngestionService {
             await Self.googleNewsLimiter.release()
             return []
         }
-        let entries = await parseRSS(url, headers: ["Accept-Language": locale.acceptLanguage])
+        let entries: [RssItem]
+        switch await parseRSS(url, headers: ["Accept-Language": locale.acceptLanguage]) {
+        case .success(let value):
+            entries = value
+        case .failure:
+            await Self.googleNewsLimiter.release()
+            return []
+        }
         await Self.googleNewsLimiter.release()
 
         var seen = Set<String>()
@@ -237,38 +541,43 @@ final class IngestionService {
             URLQueryItem(name: "_sort", value: "-startTime"),
             URLQueryItem(name: "_limit", value: "25"),
         ]
-        if let url = comps.url,
-           let (data, _) = await httpGET(url, headers: ["Accept": "application/json"], timeout: 10),
-           let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-           let rows = json["data"] as? [[String: Any]], !rows.isEmpty {
-            var items = [FeedItem]()
-            for raw in rows {
-                guard let contentId = raw["contentId"] as? String else { continue }
-                let published = (raw["startTime"] as? String).flatMap(parseISO8601Date).map(isoString) ?? nowISO()
-                // userId/channelId may be a number, a string, or JSON null — stringify
-                // only real values so we never emit "<null>".
-                let author = [raw["userId"], raw["channelId"]]
-                    .compactMap { v -> String? in
-                        guard let v, !(v is NSNull) else { return nil }
-                        let s = "\(v)"
-                        return s.isEmpty ? nil : s
+        if let url = comps.url {
+            if case .success(let data, _) = await httpGET(url, headers: ["Accept": "application/json"], timeout: 10) {
+                guard let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+                    await recordFailure(.invalidPayload)
+                    return await fetchGoogleNews(keyword: keyword, query: "\(keyword) site:nicovideo.jp", platform: "niconico", mediaType: "video", mediaOnly: false)
+                }
+                if let rows = json["data"] as? [[String: Any]], !rows.isEmpty {
+                    var items = [FeedItem]()
+                    for raw in rows {
+                        guard let contentId = raw["contentId"] as? String else { continue }
+                        let published = (raw["startTime"] as? String).flatMap(parseISO8601Date).map(isoString) ?? nowISO()
+                        // userId/channelId may be a number, a string, or JSON null — stringify
+                        // only real values so we never emit "<null>".
+                        let author = [raw["userId"], raw["channelId"]]
+                            .compactMap { v -> String? in
+                                guard let v, !(v is NSNull) else { return nil }
+                                let s = "\(v)"
+                                return s.isEmpty ? nil : s
+                            }
+                            .first
+                        items.append(FeedItem(
+                            id: "niconico:\(contentId)",
+                            platform: "niconico",
+                            url: "https://www.nicovideo.jp/watch/\(contentId)",
+                            title: raw["title"] as? String,
+                            content_text: raw["description"] as? String,
+                            author: author,
+                            thumbnail_url: raw["thumbnailUrl"] as? String,
+                            media_type: "video",
+                            published_at: published,
+                            watch_term_keyword: keyword,
+                            fetched_at: nowISO()
+                        ))
                     }
-                    .first
-                items.append(FeedItem(
-                    id: "niconico:\(contentId)",
-                    platform: "niconico",
-                    url: "https://www.nicovideo.jp/watch/\(contentId)",
-                    title: raw["title"] as? String,
-                    content_text: raw["description"] as? String,
-                    author: author,
-                    thumbnail_url: raw["thumbnailUrl"] as? String,
-                    media_type: "video",
-                    published_at: published,
-                    watch_term_keyword: keyword,
-                    fetched_at: nowISO()
-                ))
+                    if !items.isEmpty { return items }
+                }
             }
-            if !items.isEmpty { return items }
         }
         // Fallback: Google News filtered to nicovideo.jp
         return await fetchGoogleNews(keyword: keyword, query: "\(keyword) site:nicovideo.jp", platform: "niconico", mediaType: "video", mediaOnly: false)
@@ -289,7 +598,8 @@ final class IngestionService {
         for tag in tags {
             guard let encoded = tag.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
                   let url = URL(string: "https://note.com/hashtag/\(encoded)/rss") else { continue }
-            entries = await parseRSS(url)
+            guard case .success(let parsed) = await parseRSS(url) else { continue }
+            entries = parsed
             if !entries.isEmpty { break }
         }
         return entries.prefix(25).compactMap { entry -> FeedItem? in
@@ -328,8 +638,8 @@ final class IngestionService {
         createReq.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         createReq.httpBody = "device_type=pc".data(using: .utf8)
 
-        guard let (cData, cResp) = try? await URLSession.shared.data(for: createReq),
-              (cResp as? HTTPURLResponse)?.statusCode == 200,
+        guard case .success(let cData, let cResp) = await request(createReq),
+              cResp.statusCode == 200,
               let cJson = (try? JSONSerialization.jsonObject(with: cData)) as? [String: Any],
               let result = cJson["result"] as? [String: Any],
               let uid = result["platform_uid"] as? String,
@@ -353,7 +663,7 @@ final class IngestionService {
             "x-tver-platform-type": "web",
             "x-clientplatform": "web",
         ]) { _, new in new }
-        guard let (data, _) = await httpGET(searchURL, headers: searchHeaders, timeout: 15),
+        guard case .success(let data, _) = await httpGET(searchURL, headers: searchHeaders, timeout: 15),
               let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
             return []
         }
@@ -491,7 +801,7 @@ final class IngestionService {
             "query": keyword
         ]
         guard let body = try? JSONSerialization.data(withJSONObject: payload),
-              let (data, _) = await httpPOST(url, body: body, headers: [
+              case .success(let data, _) = await httpPOST(url, body: body, headers: [
                 "Content-Type": "application/json",
                 "User-Agent": browserUA,
                 "Accept-Language": "ja,ja-JP;q=0.9,en;q=0.8"
@@ -513,7 +823,7 @@ final class IngestionService {
               let url = URL(string: "https://www.youtube.com/results?search_query=\(encoded)") else {
             return []
         }
-        guard let (data, _) = await httpGET(url, headers: ["User-Agent": browserUA, "Accept-Language": "ja,ja-JP;q=0.9,en;q=0.8"], timeout: 15) else {
+        guard case .success(let data, _) = await httpGET(url, headers: ["User-Agent": browserUA, "Accept-Language": "ja,ja-JP;q=0.9,en;q=0.8"], timeout: 15) else {
             return []
         }
         guard let html = String(data: data, encoding: .utf8) else {
@@ -819,7 +1129,10 @@ final class IngestionService {
     // MARK: - Twitter / X (API v2 recent search, requires stored bearer token)
 
     private func fetchTwitter(keyword: String, mediaOnly: Bool) async -> [FeedItem] {
-        guard let bearer = KeychainHelper.read(.twitterBearerToken) else { return [] }
+        guard let bearer = KeychainHelper.read(.twitterBearerToken) else {
+            await recordFailure(.missingCredential)
+            return []
+        }
         let query = mediaOnly ? "\(keyword) has:media" : keyword
         var comps = URLComponents(string: "https://api.twitter.com/2/tweets/search/recent")!
         comps.queryItems = [
@@ -831,7 +1144,7 @@ final class IngestionService {
             URLQueryItem(name: "media.fields", value: "preview_image_url,url"),
         ]
         guard let url = comps.url,
-              let (data, resp) = await httpGET(url, headers: ["Authorization": "Bearer \(bearer)"], timeout: 10),
+              case .success(let data, let resp) = await httpGET(url, headers: ["Authorization": "Bearer \(bearer)"], timeout: 10),
               resp.statusCode == 200,
               let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
             return []
@@ -877,43 +1190,121 @@ final class IngestionService {
 
     // MARK: - Shared helpers
 
-    private func httpGET(_ url: URL, headers: [String: String] = [:], timeout: TimeInterval = 12) async -> (Data, HTTPURLResponse)? {
+    private func httpGET(_ url: URL, headers: [String: String] = [:], timeout: TimeInterval = 12) async -> TransportResult {
         var request = URLRequest(url: url)
         request.timeoutInterval = timeout
         for (k, v) in headers { request.setValue(v, forHTTPHeaderField: k) }
-        guard let (data, response) = try? await URLSession.shared.data(for: request),
-              let http = response as? HTTPURLResponse,
-              (200...299).contains(http.statusCode) else {
-            return nil
-        }
-        return (data, http)
+        return await execute(request)
     }
 
-    private func httpPOST(_ url: URL, body: Data, headers: [String: String] = [:], timeout: TimeInterval = 12) async -> (Data, HTTPURLResponse)? {
+    private func httpPOST(_ url: URL, body: Data, headers: [String: String] = [:], timeout: TimeInterval = 12) async -> TransportResult {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.httpBody = body
         request.timeoutInterval = timeout
         for (k, v) in headers { request.setValue(v, forHTTPHeaderField: k) }
-        guard let (data, response) = try? await URLSession.shared.data(for: request),
-              let http = response as? HTTPURLResponse,
-              (200...299).contains(http.statusCode) else {
-            return nil
-        }
-        return (data, http)
+        return await execute(request)
     }
 
-    private func parseRSS(_ url: URL, headers: [String: String] = [:]) async -> [RssItem] {
+    private func request(_ request: URLRequest) async -> TransportResult {
+        return await execute(request)
+    }
+
+    private func execute(_ request: URLRequest) async -> TransportResult {
+        for attempt in 0..<Self.maximumTransportAttempts {
+            let result: TransportResult
+            do {
+                let (data, response) = try await requestExecutor(request)
+                guard let http = response as? HTTPURLResponse else {
+                    result = .failure(.invalidResponse)
+                    return await finish(result)
+                }
+                if (200...299).contains(http.statusCode) {
+                    return .success(data, http)
+                }
+                result = .failure(Self.failure(forHTTPStatus: http.statusCode))
+            } catch let error as URLError {
+                result = .failure(Self.failure(for: error))
+            } catch {
+                result = .failure(.networkUnavailable)
+            }
+
+            guard case .failure(let failure) = result,
+                  Self.isRetryable(failure),
+                  attempt + 1 < Self.maximumTransportAttempts,
+                  !Task.isCancelled else {
+                return await finish(result)
+            }
+            await retrySleeper(Self.retryDelayNanoseconds * UInt64(attempt + 1))
+            if Task.isCancelled {
+                return .failure(.networkUnavailable)
+            }
+        }
+        return await finish(.failure(.networkUnavailable))
+    }
+
+    private func finish(_ result: TransportResult) async -> TransportResult {
+        if case .failure(let failure) = result {
+            await recordFailure(failure)
+        }
+        return result
+    }
+
+    private func parseRSS(_ url: URL, headers: [String: String] = [:]) async -> Result<[RssItem], SourceRefreshFailure> {
         // Send a browser User-Agent — news.google.com and note.com throttle/deny
         // the default URLSession agent, which made some sources return nothing.
         var allHeaders = ["User-Agent": browserUA, "Accept-Language": "ja,en;q=0.9"]
         allHeaders.merge(headers) { _, override in override }
-        guard let (data, _) = await httpGET(url, headers: allHeaders, timeout: 12) else { return [] }
+        guard case .success(let data, _) = await httpGET(url, headers: allHeaders, timeout: 12) else {
+            return .failure(await currentFailure() ?? .invalidResponse)
+        }
         let parser = XMLParser(data: data)
         let delegate = RSSParserDelegate()
         parser.delegate = delegate
-        parser.parse()
-        return delegate.items
+        guard parser.parse() else {
+            await recordFailure(.invalidPayload)
+            return .failure(SourceRefreshFailure.invalidPayload)
+        }
+        return .success(delegate.items)
+    }
+
+    private func recordFailure(_ failure: SourceRefreshFailure) async {
+        guard let recorder = Self.sourceFailureRecorder, let sourceID = Self.sourceID else { return }
+        await recorder.record(failure, for: sourceID)
+    }
+
+    private func currentFailure() async -> SourceRefreshFailure? {
+        guard let recorder = Self.sourceFailureRecorder, let sourceID = Self.sourceID else { return nil }
+        return await recorder.failure(for: sourceID)
+    }
+
+    private static func failure(forHTTPStatus status: Int) -> SourceRefreshFailure {
+        switch status {
+        case 401, 403: return .authenticationRequired
+        case 429: return .rateLimited
+        default: return .httpFailure
+        }
+    }
+
+    private static func failure(for error: URLError) -> SourceRefreshFailure {
+        switch error.code {
+        case .timedOut: return .timeout
+        case .notConnectedToInternet, .networkConnectionLost, .cannotFindHost,
+             .cannotConnectToHost, .dnsLookupFailed:
+            return .networkUnavailable
+        default: return .networkUnavailable
+        }
+    }
+
+    private static func isRetryable(_ failure: SourceRefreshFailure) -> Bool {
+        switch failure {
+        case .timeout, .networkUnavailable, .rateLimited:
+            return true
+        case .httpFailure:
+            return true
+        case .authenticationRequired, .invalidResponse, .invalidPayload, .missingCredential:
+            return false
+        }
     }
 
     private func googleNewsURL(_ query: String, locale: PlatformDefinition.NewsLocale = .japan) -> URL? {
@@ -949,8 +1340,9 @@ final class IngestionService {
     /// Stable FNV-1a hash so the same article URL yields the same FeedItem id
     /// across refreshes (lets LocalDB dedup it).
     private func stableId(_ input: String) -> String {
+        let canonical = Self.canonicalURLForDedup(input)
         var v: UInt64 = 14695981039346656037
-        for b in input.utf8 {
+        for b in canonical.utf8 {
             v ^= UInt64(b)
             v = v &* 1099511628211
         }

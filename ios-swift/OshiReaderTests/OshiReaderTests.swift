@@ -4,6 +4,40 @@ import UIKit
 import UserNotifications
 @testable import OshiReader
 
+private actor RequestCapture {
+    private(set) var urls: [String] = []
+
+    func record(_ url: String) {
+        urls.append(url)
+    }
+
+    func count() -> Int {
+        urls.count
+    }
+
+    func firstURL() -> String? {
+        urls.first
+    }
+
+    func contains(_ predicate: (String) -> Bool) -> Bool {
+        urls.contains(where: predicate)
+    }
+}
+
+private actor RetryGate {
+    private var entered = false
+
+    func enter() {
+        entered = true
+    }
+
+    func waitUntilEntered() async {
+        while !entered {
+            await Task.yield()
+        }
+    }
+}
+
 final class OshiReaderTests: XCTestCase {
     
     private var db: LocalDB!
@@ -16,6 +50,7 @@ final class OshiReaderTests: XCTestCase {
         db.feedItems.removeAll()
         db.savedPages.removeAll()
         db.customUrls.removeAll()
+        db.amebloBlogs.removeAll()
         db.hiddenItems.removeAll()
         db.compositions.removeAll()
         db.setSubscribedPlatforms(platforms: ["news", "tver", "youtube", "yahoonews", "custom"])
@@ -73,6 +108,936 @@ final class OshiReaderTests: XCTestCase {
         XCTAssertEqual(IngestionService.searchKeywords(for: term), [
             "Primary Oshi", "Alias Oshi", "Alias 3", "Alias 4", "Alias 5", "Alias 6"
         ])
+    }
+
+    func testCanonicalURLForDedupRemovesTrackingParametersOnly() {
+        XCTAssertEqual(
+            IngestionService.canonicalURLForDedup(
+                "HTTPS://Example.COM/article/123/?utm_source=news&ref=homepage&gclid=abc#comments"
+            ),
+            "https://example.com/article/123?ref=homepage"
+        )
+        XCTAssertEqual(
+            IngestionService.canonicalURLForDedup(
+                "https://example.com/video?id=123&utm_campaign=spring"
+            ),
+            "https://example.com/video?id=123"
+        )
+        XCTAssertEqual(
+            IngestionService.canonicalURLForDedup("not a URL"),
+            "not a URL"
+        )
+    }
+
+    func testNatalieDedicatedRSSProducesNatalieItemsAcrossBothFeeds() async {
+        let rss = """
+        <rss version="2.0"><channel><item>
+        <title>Natalie Oshi music update</title>
+        <link>https://natalie.mu/music/news/123?utm_source=rss</link>
+        <description>Natalie Oshi news</description>
+        </item></channel></rss>
+        """.data(using: .utf8)!
+        let capture = RequestCapture()
+        let service = IngestionService { request in
+            await capture.record(request.url?.absoluteString ?? "")
+            return (
+                rss,
+                try XCTUnwrap(HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: nil
+                ))
+            )
+        }
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "Natalie Oshi"),
+            platforms: ["natalie"]
+        )
+
+        let requestCount = await capture.count()
+        XCTAssertEqual(requestCount, 2)
+        XCTAssertEqual(Set(report.items.map(\.platform)), Set(["natalie"]))
+        XCTAssertTrue(report.items.allSatisfy { $0.id.hasPrefix("natalie:") })
+        XCTAssertEqual(report.sourceStatuses.first?.outcome, .received)
+    }
+
+    func testBarksDedicatedRSSProducesBarksItemsAndPreservesOriginalURL() async {
+        let originalURL = "https://www.barks.jp/news/123?utm_campaign=feed"
+        let rss = """
+        <rss version="2.0"><channel><item>
+        <title>BARKS Oshi feature</title>
+        <link>\(originalURL)</link>
+        <description>BARKS Oshi feature description</description>
+        </item></channel></rss>
+        """.data(using: .utf8)!
+        let capture = RequestCapture()
+        let service = IngestionService { request in
+            await capture.record(request.url?.absoluteString ?? "")
+            return (
+                rss,
+                try XCTUnwrap(HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: nil
+                ))
+            )
+        }
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "BARKS Oshi"),
+            platforms: ["barks"]
+        )
+
+        let requestCount = await capture.count()
+        let firstURL = await capture.firstURL()
+        XCTAssertEqual(requestCount, 1)
+        XCTAssertTrue(firstURL?.contains("barks.jp/about") == true)
+        XCTAssertEqual(report.items.first?.platform, "barks")
+        XCTAssertEqual(report.items.first?.url, originalURL)
+    }
+
+    func testJapaneseDedicatedRSSSourcesUsePublisherFeedsAndPreserveSourceIDs() async {
+        let rss = Data("""
+        <rss version="2.0"><channel>
+          <item><title>Alias Oshi publisher update</title><link>https://publisher.example/article-1?utm_source=rss</link><description>Publisher detail</description></item>
+          <item><title>Alias Oshi duplicate</title><link>https://publisher.example/article-1?utm_medium=email</link></item>
+        </channel></rss>
+        """.utf8)
+        let atom = Data("""
+        <feed xmlns="http://www.w3.org/2005/Atom"><entry>
+          <title>Alias Oshi Real Sound update</title><link rel="alternate" href="https://realsound.jp/2026/08/post-1.html"/><summary>Music detail</summary><published>2026-08-02T12:00:00Z</published>
+        </entry></feed>
+        """.utf8)
+        let capture = RequestCapture()
+        let service = IngestionService(
+            requestExecutor: { request in
+                let url = request.url?.absoluteString ?? ""
+                await capture.record(url)
+                let body = url.contains("realsound.jp") ? atom : rss
+                return (body, try XCTUnwrap(HTTPURLResponse(
+                    url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                )))
+            },
+            retrySleeper: { _ in }
+        )
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "Primary Oshi", aliases: ["Alias Oshi"]),
+            platforms: ["aera", "hochi", "realsound"]
+        )
+
+        let urls = await capture.urls
+        XCTAssertEqual(Set(urls), Set([
+            "https://dot.asahi.com/list/feed/rss4provider-all",
+            "https://hochi.news/rss/index.xml",
+            "https://realsound.jp/atom.xml"
+        ]))
+        XCTAssertEqual(Set(report.sourceStatuses.map(\.id)), Set(["aera", "hochi", "realsound"]))
+        XCTAssertTrue(report.sourceStatuses.allSatisfy { $0.outcome == .received && $0.queryCount == 2 })
+        XCTAssertEqual(report.items.filter { $0.platform == "aera" }.count, 1)
+        XCTAssertEqual(report.items.filter { $0.platform == "hochi" }.count, 1)
+        XCTAssertEqual(report.items.filter { $0.platform == "realsound" }.count, 1)
+        XCTAssertTrue(report.items.allSatisfy { $0.watch_term_keyword == "Primary Oshi" })
+    }
+
+    func testSponichiRemainsOnGenericGoogleNewsFallback() async {
+        let capture = RequestCapture()
+        let service = IngestionService(requestExecutor: { request in
+            await capture.record(request.url?.absoluteString ?? "")
+            return (Data("<rss version=\"2.0\"><channel></channel></rss>".utf8), try XCTUnwrap(HTTPURLResponse(
+                url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+            )))
+        })
+
+        _ = await service.ingestReport(term: WatchTerm(keyword: "Sponichi Oshi"), platforms: ["sponichi"])
+
+        let usedGoogleNews = await capture.contains { $0.contains("news.google.com") }
+        let usedSponichiRSS = await capture.contains { $0.contains("sponichi.co.jp/rss") }
+        XCTAssertTrue(usedGoogleNews)
+        XCTAssertFalse(usedSponichiRSS)
+    }
+
+    func testJapaneseDedicatedRSSMediaOnlySkipsAllRequests() async {
+        let capture = RequestCapture()
+        let service = IngestionService(requestExecutor: { request in
+            await capture.record(request.url?.absoluteString ?? "")
+            return (Data(), try XCTUnwrap(HTTPURLResponse(
+                url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+            )))
+        })
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "Media Oshi", collection_mode: "media_only"),
+            platforms: ["aera", "hochi", "realsound"]
+        )
+
+        XCTAssertTrue(report.items.isEmpty)
+        let requestCount = await capture.count()
+        XCTAssertEqual(requestCount, 0)
+    }
+
+    func testJapaneseDedicatedRSSFailureStaysAttachedToPublisher() async {
+        let rss = Data("<rss version=\"2.0\"><channel><item><title>Hochi Oshi update</title><link>https://hochi.news/articles/1</link></item></channel></rss>".utf8)
+        let service = IngestionService(
+            requestExecutor: { request in
+                if request.url?.host == "dot.asahi.com" {
+                    return (Data(), try XCTUnwrap(HTTPURLResponse(
+                        url: request.url!, statusCode: 429, httpVersion: nil, headerFields: nil
+                    )))
+                }
+                return (rss, try XCTUnwrap(HTTPURLResponse(
+                    url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                )))
+            },
+            retrySleeper: { _ in }
+        )
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "Oshi"),
+            platforms: ["aera", "hochi"]
+        )
+
+        XCTAssertEqual(report.sourceStatuses.first { $0.id == "aera" }?.outcome, .failed(.rateLimited))
+        XCTAssertEqual(report.sourceStatuses.first { $0.id == "hochi" }?.outcome, .received)
+        XCTAssertEqual(report.items.first?.platform, "hochi")
+    }
+
+    func testCinemaCafeAndBillboardDedicatedRSSSourcesPreserveIDsAndDeduplicate() async {
+        let cinemaURL = "https://www.cinemacafe.net/article/1.html?utm_source=rss"
+        let billboardURL = "https://www.billboard-japan.com/d_news/detail/1?utm_medium=email"
+        let cinemaRSS = Data("""
+        <rss version="2.0"><channel>
+          <item><title>Alias Oshi CinemaCafe update</title><link>\(cinemaURL)</link><description>Film detail</description></item>
+          <item><title>Alias Oshi duplicate</title><link>https://www.cinemacafe.net/article/1.html?utm_medium=email</link></item>
+        </channel></rss>
+        """.utf8)
+        let billboardRSS = Data("""
+        <rss version="2.0"><channel>
+          <item><title>Alias Oshi Billboard update</title><link>\(billboardURL)</link><description>Music detail</description></item>
+          <item><title>Alias Oshi duplicate</title><link>https://www.billboard-japan.com/d_news/detail/1?utm_source=rss</link></item>
+        </channel></rss>
+        """.utf8)
+        let capture = RequestCapture()
+        let service = IngestionService(
+            requestExecutor: { request in
+                let url = request.url?.absoluteString ?? ""
+                await capture.record(url)
+                let body = url.contains("cinemacafe.net") ? cinemaRSS : billboardRSS
+                return (body, try XCTUnwrap(HTTPURLResponse(
+                    url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                )))
+            },
+            retrySleeper: { _ in }
+        )
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "Primary Oshi", aliases: ["Alias Oshi"]),
+            platforms: ["cinemacafe", "billboardjapan"]
+        )
+
+        let requestCount = await capture.count()
+        XCTAssertEqual(requestCount, 4)
+        XCTAssertEqual(Set(report.sourceStatuses.map(\.id)), Set(["cinemacafe", "billboardjapan"]))
+        XCTAssertTrue(report.sourceStatuses.allSatisfy { $0.outcome == .received && $0.queryCount == 2 })
+        XCTAssertEqual(report.items.filter { $0.platform == "cinemacafe" }.count, 1)
+        XCTAssertEqual(report.items.filter { $0.platform == "billboardjapan" }.count, 1)
+        XCTAssertEqual(report.items.first { $0.platform == "cinemacafe" }?.url, cinemaURL)
+        XCTAssertEqual(report.items.first { $0.platform == "billboardjapan" }?.url, billboardURL)
+    }
+
+    func testCinemaCafeAndBillboardMediaOnlySkipRequests() async {
+        let capture = RequestCapture()
+        let service = IngestionService(requestExecutor: { request in
+            await capture.record(request.url?.absoluteString ?? "")
+            return (Data(), try XCTUnwrap(HTTPURLResponse(
+                url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+            )))
+        })
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "Media Oshi", collection_mode: "media_only"),
+            platforms: ["cinemacafe", "billboardjapan"]
+        )
+
+        let requestCount = await capture.count()
+        XCTAssertTrue(report.items.isEmpty)
+        XCTAssertEqual(requestCount, 0)
+    }
+
+    func testCinemaCafeFailureAndBillboardSuccessRemainSourceSpecific() async {
+        let billboardRSS = Data("<rss version=\"2.0\"><channel><item><title>Oshi Billboard update</title><link>https://www.billboard-japan.com/d_news/detail/2</link></item></channel></rss>".utf8)
+        let service = IngestionService(
+            requestExecutor: { request in
+                if request.url?.host == "www.cinemacafe.net" {
+                    return (Data(), try XCTUnwrap(HTTPURLResponse(
+                        url: request.url!, statusCode: 503, httpVersion: nil, headerFields: nil
+                    )))
+                }
+                return (billboardRSS, try XCTUnwrap(HTTPURLResponse(
+                    url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                )))
+            },
+            retrySleeper: { _ in }
+        )
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "Oshi"),
+            platforms: ["cinemacafe", "billboardjapan"]
+        )
+
+        XCTAssertEqual(report.sourceStatuses.first { $0.id == "cinemacafe" }?.outcome, .failed(.httpFailure))
+        XCTAssertEqual(report.sourceStatuses.first { $0.id == "billboardjapan" }?.outcome, .received)
+        XCTAssertEqual(report.items.first?.platform, "billboardjapan")
+    }
+
+    func testDeferredJapaneseSourcesRemainOnGoogleNewsFallback() async {
+        let capture = RequestCapture()
+        let service = IngestionService(requestExecutor: { request in
+            await capture.record(request.url?.absoluteString ?? "")
+            return (Data("<rss version=\"2.0\"><channel></channel></rss>".utf8), try XCTUnwrap(HTTPURLResponse(
+                url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+            )))
+        })
+
+        for sourceID in ["livedoor", "mantanweb", "thetv"] {
+            _ = await service.ingestReport(
+                term: WatchTerm(keyword: "Fallback Oshi"),
+                platforms: [sourceID]
+            )
+        }
+
+        let urls = await capture.urls
+        XCTAssertEqual(urls.count, 3)
+        XCTAssertTrue(urls.allSatisfy { $0.contains("news.google.com") })
+    }
+
+    func testDedicatedRSSMatchesAliasAndFiltersNonmatchingEntries() async {
+        let rss = """
+        <rss version="2.0"><channel><item>
+        <title>Alias Oshi exclusive</title>
+        <link>https://natalie.mu/music/news/alias</link>
+        </item><item>
+        <title>Unrelated headline</title>
+        <link>https://natalie.mu/music/news/unrelated</link>
+        </item></channel></rss>
+        """.data(using: .utf8)!
+        let service = IngestionService { request in
+            (
+                rss,
+                try XCTUnwrap(HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: nil
+                ))
+            )
+        }
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "Primary Oshi", aliases: ["Alias Oshi"]),
+            platforms: ["natalie"]
+        )
+
+        XCTAssertFalse(report.items.isEmpty)
+        XCTAssertTrue(report.items.allSatisfy { $0.title?.contains("Alias Oshi") == true })
+        XCTAssertTrue(report.items.allSatisfy { $0.watch_term_keyword == "Primary Oshi" })
+    }
+
+    func testDedicatedRSSNoResultsAndMediaOnlyAvoidsRequests() async {
+        let emptyRSS = Data("<rss version=\"2.0\"><channel></channel></rss>".utf8)
+        let capture = RequestCapture()
+        let service = IngestionService { request in
+            await capture.record(request.url?.absoluteString ?? "")
+            return (
+                emptyRSS,
+                try XCTUnwrap(HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: nil
+                ))
+            )
+        }
+
+        let noResults = await service.ingestReport(
+            term: WatchTerm(keyword: "No Match"),
+            platforms: ["barks"]
+        )
+        XCTAssertEqual(noResults.sourceStatuses.first?.outcome, .noResults)
+
+        let beforeMediaOnly = await capture.count()
+        let mediaOnly = await service.ingestReport(
+            term: WatchTerm(keyword: "Media Oshi", collection_mode: "media_only"),
+            platforms: ["natalie"]
+        )
+        XCTAssertTrue(mediaOnly.items.isEmpty)
+        let afterMediaOnly = await capture.count()
+        XCTAssertEqual(afterMediaOnly, beforeMediaOnly)
+    }
+
+    func testAmebloRemainsOnGenericGoogleNewsFallback() async {
+        let capture = RequestCapture()
+        let service = IngestionService { request in
+            await capture.record(request.url?.absoluteString ?? "")
+            return (
+                Data("<rss version=\"2.0\"><channel></channel></rss>".utf8),
+                try XCTUnwrap(HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: nil
+                ))
+            )
+        }
+
+        _ = await service.ingestReport(
+            term: WatchTerm(keyword: "Ameblo Oshi"),
+            platforms: ["ameblo"]
+        )
+
+        let usedGoogleNews = await capture.contains { $0.contains("news.google.com") }
+        let usedAmeblo = await capture.contains { $0.contains("ameblo.jp") }
+        XCTAssertTrue(usedGoogleNews)
+        XCTAssertTrue(usedAmeblo)
+    }
+
+    func testAmebloBlogNormalizesURLAndBuildsOfficialRSSURL() {
+        let blog = AmebloBlog(
+            url: " http://www.ameblo.jp/example_id/?utm_source=test#top ",
+            title: "Example",
+            addedAt: "2026-01-01T00:00:00Z"
+        )
+
+        XCTAssertEqual(blog?.url, "https://ameblo.jp/example_id")
+        XCTAssertEqual(blog?.amebaID, "example_id")
+        XCTAssertEqual(blog?.rssURL?.absoluteString, "https://rssblog.ameba.jp/example_id/rss20.xml")
+        XCTAssertNil(AmebloBlog(url: "https://example.com/example_id"))
+        XCTAssertNil(AmebloBlog(url: "https://ameblo.jp/example_id/posts"))
+        XCTAssertNil(AmebloBlog(url: "https://ameblo.jp/"))
+    }
+
+    func testAmebloBlogLimitDuplicateAndAutomaticSubscription() {
+        let originalBlogs = db.amebloBlogs
+        let originalPlatforms = db.subscribedPlatforms
+        defer {
+            db.amebloBlogs = originalBlogs
+            db.setSubscribedPlatforms(platforms: originalPlatforms)
+        }
+
+        db.amebloBlogs = []
+        db.setSubscribedPlatforms(platforms: ["news"])
+        XCTAssertEqual(db.addAmebloBlog(url: "https://ameblo.jp/first", title: ""), .added)
+        XCTAssertTrue(db.subscribedPlatforms.contains("ameblo"))
+        XCTAssertEqual(db.addAmebloBlog(url: "https://www.ameblo.jp/first/?x=1", title: ""), .duplicate)
+
+        db.amebloBlogs = (0..<AmebloBlog.maximumCount).compactMap {
+            AmebloBlog(url: "https://ameblo.jp/blog\($0)", addedAt: "2026-01-01T00:00:00Z")
+        }
+        XCTAssertEqual(db.addAmebloBlog(url: "https://ameblo.jp/too-many", title: ""), .limitReached)
+    }
+
+    func testAmebloDedicatedRSSMatchesAliasPreservesURLAndDeduplicates() async {
+        let originalBlogs = db.amebloBlogs
+        defer { db.amebloBlogs = originalBlogs }
+        db.amebloBlogs = [
+            AmebloBlog(url: "https://ameblo.jp/first", addedAt: "2026-01-01T00:00:00Z")!
+        ]
+
+        let originalURL = "https://ameblo.jp/first/entry-1?utm_source=rss"
+        let rss = Data("""
+        <rss version="2.0"><channel>
+          <item><title>Alias Oshi diary</title><link>\(originalURL)</link><description>daily update</description></item>
+          <item><title>Alias Oshi duplicate</title><link>https://ameblo.jp/first/entry-1?utm_medium=email</link></item>
+          <item><title>Unrelated</title><link>https://ameblo.jp/first/entry-2</link></item>
+        </channel></rss>
+        """.utf8)
+        let capture = RequestCapture()
+        let service = IngestionService(
+            requestExecutor: { request in
+                await capture.record(request.url?.absoluteString ?? "")
+                return (rss, try XCTUnwrap(HTTPURLResponse(
+                    url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                )))
+            },
+            retrySleeper: { _ in }
+        )
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "Primary Oshi", aliases: ["Alias Oshi"]),
+            platforms: ["ameblo"]
+        )
+
+        let requestCount = await capture.count()
+        let firstURL = await capture.firstURL()
+        XCTAssertEqual(requestCount, 2)
+        XCTAssertEqual(firstURL, "https://rssblog.ameba.jp/first/rss20.xml")
+        XCTAssertEqual(report.items.count, 1)
+        XCTAssertEqual(report.items.first?.platform, "ameblo")
+        XCTAssertEqual(report.items.first?.url, originalURL)
+        XCTAssertEqual(report.sourceStatuses.first?.outcome, .received)
+        XCTAssertEqual(report.sourceStatuses.first?.queryCount, 2)
+    }
+
+    func testAmebloMediaOnlySkipsConfiguredRSSRequests() async {
+        let originalBlogs = db.amebloBlogs
+        defer { db.amebloBlogs = originalBlogs }
+        db.amebloBlogs = [AmebloBlog(url: "https://ameblo.jp/media-only")!]
+        let capture = RequestCapture()
+        let service = IngestionService(requestExecutor: { request in
+            await capture.record(request.url?.absoluteString ?? "")
+            return (Data(), try XCTUnwrap(HTTPURLResponse(
+                url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+            )))
+        })
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "Video Oshi", collection_mode: "media_only"),
+            platforms: ["ameblo"]
+        )
+
+        XCTAssertTrue(report.items.isEmpty)
+        let requestCount = await capture.count()
+        XCTAssertEqual(requestCount, 0)
+    }
+
+    func testAmebloPartialFailurePreservesReceivedItemsAndStatus() async {
+        let originalBlogs = db.amebloBlogs
+        defer { db.amebloBlogs = originalBlogs }
+        db.amebloBlogs = [
+            AmebloBlog(url: "https://ameblo.jp/failing")!,
+            AmebloBlog(url: "https://ameblo.jp/succeeding")!
+        ]
+        let rss = Data("<rss version=\"2.0\"><channel><item><title>Oshi update</title><link>https://ameblo.jp/succeeding/entry-1</link></item></channel></rss>".utf8)
+        let service = IngestionService(
+            requestExecutor: { request in
+                if request.url?.host == "rssblog.ameba.jp" && request.url?.path.contains("failing") == true {
+                    return (Data(), try XCTUnwrap(HTTPURLResponse(
+                        url: request.url!, statusCode: 503, httpVersion: nil, headerFields: nil
+                    )))
+                }
+                return (rss, try XCTUnwrap(HTTPURLResponse(
+                    url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                )))
+            },
+            retrySleeper: { _ in }
+        )
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "Oshi"),
+            platforms: ["ameblo"]
+        )
+
+        XCTAssertEqual(report.items.count, 1)
+        XCTAssertEqual(report.sourceStatuses.first?.outcome, .received)
+        XCTAssertEqual(report.sourceStatuses.first?.itemCount, 1)
+        XCTAssertEqual(report.sourceStatuses.first?.queryCount, 1)
+    }
+
+    @MainActor
+    func testAmebloBlogsRoundTripThroughBackup() throws {
+        let originalBlogs = db.amebloBlogs
+        let originalPlatforms = db.subscribedPlatforms
+        defer {
+            db.amebloBlogs = originalBlogs
+            db.setSubscribedPlatforms(platforms: originalPlatforms)
+        }
+
+        db.amebloBlogs = [AmebloBlog(url: "https://ameblo.jp/backup-blog", title: "Backup")!]
+        db.setSubscribedPlatforms(platforms: ["news", "ameblo"])
+        let data = try db.exportBackupData()
+        db.amebloBlogs = []
+        db.setSubscribedPlatforms(platforms: ["news"])
+        try db.importBackupData(data)
+
+        XCTAssertEqual(db.amebloBlogs.map(\.amebaID), ["backup-blog"])
+        XCTAssertTrue(db.subscribedPlatforms.contains("ameblo"))
+    }
+
+    func testIngestionReportAggregatesSourceStatusForEmptyPlatforms() async {
+        let report = await IngestionService.shared.ingestReport(
+            term: WatchTerm(keyword: "Status Oshi", collection_mode: "media_only"),
+            platforms: ["news"]
+        )
+
+        let news = report.sourceStatuses.first { $0.id == "news" }
+        XCTAssertEqual(news?.outcome, .noResults)
+        XCTAssertGreaterThan(news?.queryCount ?? 0, 0)
+        XCTAssertTrue(report.items.isEmpty)
+    }
+
+    func testTypedTransportFailuresMapTimeoutNetworkAndHTTPStatuses() async {
+        let cases: [(SourceRefreshFailure, Int?)] = [
+            (.timeout, nil),
+            (.networkUnavailable, nil),
+            (.authenticationRequired, 401),
+            (.authenticationRequired, 403),
+            (.rateLimited, 429),
+            (.httpFailure, 500),
+        ]
+
+        for (expected, statusCode) in cases {
+            let service = IngestionService { _ in
+                if let statusCode {
+                    return (Data(), try XCTUnwrap(HTTPURLResponse(
+                        url: URL(string: "https://example.com")!,
+                        statusCode: statusCode,
+                        httpVersion: nil,
+                        headerFields: nil
+                    )))
+                }
+                throw expected == .timeout ? URLError(.timedOut) : URLError(.notConnectedToInternet)
+            }
+
+            let report = await service.ingestReport(
+                term: WatchTerm(keyword: "Transport Oshi"),
+                platforms: ["news"]
+            )
+            XCTAssertTrue(report.sourceStatuses.contains {
+                if case .failed(expected) = $0.outcome { return true }
+                return false
+            }, "Expected \(expected) in \(report.sourceStatuses)")
+        }
+    }
+
+    func testRetryTimeoutThenSuccessReturnsItemsWithoutFailure() async {
+        let rss = Data("<rss version=\"2.0\"><channel><item><title>Retry Oshi</title><link>https://example.com/retry</link></item></channel></rss>".utf8)
+        let capture = RequestCapture()
+        let service = IngestionService(
+            requestExecutor: { request in
+                await capture.record(request.url?.absoluteString ?? "")
+                if await capture.count() == 1 {
+                    throw URLError(.timedOut)
+                }
+                return (rss, try XCTUnwrap(HTTPURLResponse(
+                    url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                )))
+            },
+            retrySleeper: { _ in }
+        )
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "Retry Oshi"),
+            platforms: ["barks"]
+        )
+
+        let requestCount = await capture.count()
+        XCTAssertEqual(requestCount, 2)
+        XCTAssertFalse(report.items.isEmpty)
+        XCTAssertEqual(report.sourceStatuses.first?.outcome, .received)
+    }
+
+    func testRetryNetworkFailureThenSuccessCanReturnNoResults() async {
+        let capture = RequestCapture()
+        let service = IngestionService(
+            requestExecutor: { request in
+                await capture.record(request.url?.absoluteString ?? "")
+                if await capture.count() == 1 {
+                    throw URLError(.notConnectedToInternet)
+                }
+                return (Data("<rss version=\"2.0\"><channel></channel></rss>".utf8), try XCTUnwrap(HTTPURLResponse(
+                    url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                )))
+            },
+            retrySleeper: { _ in }
+        )
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "Retry Empty"),
+            platforms: ["barks"]
+        )
+
+        let requestCount = await capture.count()
+        XCTAssertEqual(requestCount, 2)
+        XCTAssertTrue(report.items.isEmpty)
+        XCTAssertEqual(report.sourceStatuses.first?.outcome, .noResults)
+    }
+
+    func testRetryHTTP503ThenSuccessAndHTTP429Exhaustion() async {
+        let successRSS = Data("<rss version=\"2.0\"><channel><item><title>Server Oshi</title><link>https://example.com/server</link></item></channel></rss>".utf8)
+        let serverCapture = RequestCapture()
+        let serverService = IngestionService(
+            requestExecutor: { request in
+                await serverCapture.record(request.url?.absoluteString ?? "")
+                let status = await serverCapture.count() == 1 ? 503 : 200
+                return (successRSS, try XCTUnwrap(HTTPURLResponse(
+                    url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil
+                )))
+            },
+            retrySleeper: { _ in }
+        )
+        let recovered = await serverService.ingestReport(
+            term: WatchTerm(keyword: "Server Oshi"), platforms: ["barks"]
+        )
+        let serverRequestCount = await serverCapture.count()
+        XCTAssertEqual(serverRequestCount, 2)
+        XCTAssertEqual(recovered.sourceStatuses.first?.outcome, .received)
+
+        let limitedCapture = RequestCapture()
+        let limitedService = IngestionService(
+            requestExecutor: { request in
+                await limitedCapture.record(request.url?.absoluteString ?? "")
+                return (Data(), try XCTUnwrap(HTTPURLResponse(
+                    url: request.url!, statusCode: 429, httpVersion: nil, headerFields: nil
+                )))
+            },
+            retrySleeper: { _ in }
+        )
+        let limited = await limitedService.ingestReport(
+            term: WatchTerm(keyword: "Limited Oshi"), platforms: ["barks"]
+        )
+        let limitedRequestCount = await limitedCapture.count()
+        XCTAssertEqual(limitedRequestCount, 2)
+        XCTAssertEqual(limited.sourceStatuses.first?.outcome, .failed(.rateLimited))
+    }
+
+    func testAuthenticationAndMalformedPayloadsAreNotRetried() async {
+        for status in [401, 403] {
+            let capture = RequestCapture()
+            let service = IngestionService(
+                requestExecutor: { request in
+                    await capture.record(request.url?.absoluteString ?? "")
+                    return (Data(), try XCTUnwrap(HTTPURLResponse(
+                        url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil
+                    )))
+                },
+                retrySleeper: { _ in }
+            )
+            let report = await service.ingestReport(
+                term: WatchTerm(keyword: "Auth Oshi"), platforms: ["barks"]
+            )
+            let requestCount = await capture.count()
+            XCTAssertEqual(requestCount, 1)
+            XCTAssertEqual(report.sourceStatuses.first?.outcome, .failed(.authenticationRequired))
+        }
+
+        let malformedCapture = RequestCapture()
+        let malformedService = IngestionService(
+            requestExecutor: { request in
+                await malformedCapture.record(request.url?.absoluteString ?? "")
+                return (Data("<rss><channel>".utf8), try XCTUnwrap(HTTPURLResponse(
+                    url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                )))
+            },
+            retrySleeper: { _ in }
+        )
+        let malformed = await malformedService.ingestReport(
+            term: WatchTerm(keyword: "Malformed Retry Oshi"), platforms: ["barks"]
+        )
+        let malformedRequestCount = await malformedCapture.count()
+        XCTAssertEqual(malformedRequestCount, 1)
+        XCTAssertEqual(malformed.sourceStatuses.first?.outcome, .failed(.invalidPayload))
+    }
+
+    func testRetryPolicyAppliesToPOSTTransport() async {
+        let postCapture = RequestCapture()
+        let service = IngestionService(
+            requestExecutor: { request in
+                if request.httpMethod == "POST" {
+                    await postCapture.record(request.url?.absoluteString ?? "")
+                    let status = await postCapture.count() == 1 ? 503 : 200
+                    return (Data("{}".utf8), try XCTUnwrap(HTTPURLResponse(
+                        url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil
+                    )))
+                }
+                return (Data("{}".utf8), try XCTUnwrap(HTTPURLResponse(
+                    url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                )))
+            },
+            retrySleeper: { _ in }
+        )
+
+        _ = await service.ingestReport(
+            term: WatchTerm(keyword: "POST Retry Oshi"), platforms: ["youtube"]
+        )
+
+        let postRequestCount = await postCapture.count()
+        XCTAssertEqual(postRequestCount, 2)
+    }
+
+    func testCancellationDuringBackoffDoesNotLeakRequestCapacity() async {
+        let capture = RequestCapture()
+        let gate = RetryGate()
+        let service = IngestionService(
+            requestExecutor: { request in
+                await capture.record(request.url?.absoluteString ?? "")
+                if await capture.count() == 1 {
+                    throw URLError(.timedOut)
+                }
+                return (Data("<rss version=\"2.0\"><channel></channel></rss>".utf8), try XCTUnwrap(HTTPURLResponse(
+                    url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                )))
+            },
+            retrySleeper: { _ in
+                await gate.enter()
+                while !Task.isCancelled {
+                    await Task.yield()
+                }
+            }
+        )
+
+        let cancelled = Task {
+            await service.ingestReport(
+                term: WatchTerm(keyword: "Cancelled Retry"), platforms: ["barks"]
+            )
+        }
+        await gate.waitUntilEntered()
+        cancelled.cancel()
+        _ = await cancelled.value
+
+        let followUp = await service.ingestReport(
+            term: WatchTerm(keyword: "Follow Up"), platforms: ["barks"]
+        )
+        XCTAssertEqual(followUp.sourceStatuses.first?.outcome, .noResults)
+        let requestCount = await capture.count()
+        XCTAssertEqual(requestCount, 2)
+    }
+
+    func testMalformedRSSIsReportedAsInvalidPayload() async {
+        let service = IngestionService { _ in
+            (
+                Data("<rss><channel>".utf8),
+                try XCTUnwrap(HTTPURLResponse(
+                    url: URL(string: "https://example.com")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: nil
+                ))
+            )
+        }
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "Malformed Oshi"),
+            platforms: ["news"]
+        )
+
+        XCTAssertTrue(report.sourceStatuses.contains {
+            if case .failed(.invalidPayload) = $0.outcome { return true }
+            return false
+        })
+    }
+
+    func testMalformedJSONIsReportedAsInvalidPayload() async {
+        let service = IngestionService { request in
+            (
+                Data("{malformed".utf8),
+                try XCTUnwrap(HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: nil
+                ))
+            )
+        }
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "Malformed JSON Oshi"),
+            platforms: ["niconico"]
+        )
+
+        XCTAssertTrue(report.sourceStatuses.contains {
+            if case .failed(.invalidPayload) = $0.outcome { return true }
+            return false
+        })
+    }
+
+    func testSuccessfulRSSReturnsItemsAndCompatibilityAPIStillReturnsItems() async {
+        let rss = """
+        <rss version="2.0"><channel><item>
+        <title>Transport Oshi headline</title>
+        <link>https://example.com/transport-oshi</link>
+        <description>Transport Oshi update</description>
+        <pubDate>Sun, 02 Aug 2026 08:00:00 GMT</pubDate>
+        </item></channel></rss>
+        """.data(using: .utf8)!
+        let service = IngestionService { _ in
+            (
+                rss,
+                try XCTUnwrap(HTTPURLResponse(
+                    url: URL(string: "https://example.com")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: nil
+                ))
+            )
+        }
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "Transport Oshi"),
+            platforms: ["news"]
+        )
+        let items = await service.ingest(
+            term: WatchTerm(keyword: "Transport Oshi"),
+            platforms: ["news"]
+        )
+
+        XCTAssertFalse(report.items.isEmpty)
+        XCTAssertFalse(items.isEmpty)
+        XCTAssertTrue(report.sourceStatuses.contains { $0.outcome == .received })
+    }
+
+    func testMixedSourceRefreshKeepsSuccessAndFailureTogether() async {
+        let rss = """
+        <rss version="2.0"><channel><item>
+        <title>Mixed Oshi headline</title>
+        <link>https://example.com/mixed-oshi</link>
+        </item></channel></rss>
+        """.data(using: .utf8)!
+        let service = IngestionService { request in
+            if request.url?.absoluteString.contains("soompi") == true {
+                return (
+                    Data(),
+                    try XCTUnwrap(HTTPURLResponse(
+                        url: request.url!,
+                        statusCode: 429,
+                        httpVersion: nil,
+                        headerFields: nil
+                    ))
+                )
+            }
+            return (
+                rss,
+                try XCTUnwrap(HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: nil
+                ))
+            )
+        }
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "Mixed Oshi"),
+            platforms: ["news", "soompi"]
+        )
+
+        XCTAssertTrue(report.sourceStatuses.contains { $0.id == "news" && $0.outcome == .received })
+        XCTAssertTrue(report.sourceStatuses.contains {
+            $0.id == "soompi" && $0.outcome == .failed(.rateLimited)
+        })
+        XCTAssertFalse(report.items.isEmpty)
+    }
+
+    func testMissingTwitterCredentialIsReported() async {
+        let existing = KeychainHelper.read(.twitterBearerToken)
+        KeychainHelper.save(.twitterBearerToken, nil)
+        defer { KeychainHelper.save(.twitterBearerToken, existing) }
+
+        let report = await IngestionService(
+            requestExecutor: { _ in
+                XCTFail("Twitter should not make a request without credentials")
+                throw URLError(.cancelled)
+            }
+        ).ingestReport(
+            term: WatchTerm(keyword: "Credential Oshi"),
+            platforms: ["twitter"]
+        )
+
+        XCTAssertTrue(report.sourceStatuses.contains {
+            $0.outcome == .failed(.missingCredential)
+        })
     }
 
     func testWatchTermDecodesLegacyBackupWithoutSourceSelection() throws {
@@ -152,6 +1117,226 @@ final class OshiReaderTests: XCTestCase {
         let nextAcquire = await limiter.acquire()
         XCTAssertTrue(nextAcquire)
         await limiter.release()
+    }
+
+    @MainActor
+    func testRefreshDiagnosticsPersistsSuccessfulRefreshSummary() {
+        let diagnostics = RefreshDiagnostics.shared
+        diagnostics.begin()
+        XCTAssertTrue(diagnostics.isRefreshing)
+
+        diagnostics.finish(succeeded: true, addedCount: 3)
+
+        XCTAssertFalse(diagnostics.isRefreshing)
+        XCTAssertEqual(diagnostics.lastSucceeded, true)
+        XCTAssertEqual(diagnostics.lastAddedCount, 3)
+        XCTAssertNotNil(diagnostics.lastStartedAt)
+        XCTAssertNotNil(diagnostics.lastCompletedAt)
+        XCTAssertTrue(diagnostics.statusText.contains("3 new"))
+    }
+
+    func testRefreshResultReportsCustomURLFailure() {
+        let result = LocalRefreshResult(
+            completion: .completed,
+            addedCount: 0,
+            sourceStatuses: [],
+            customRefreshCompleted: false
+        )
+
+        XCTAssertFalse(result.succeeded)
+    }
+
+    @MainActor
+    func testRefreshDiagnosticsUsesInjectedDefaultsForLifecycleMetadata() {
+        let suiteName = "OshiReaderTests.lifecycle.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let diagnostics = RefreshDiagnostics(defaults: defaults)
+        diagnostics.begin()
+        diagnostics.finish(succeeded: false)
+
+        XCTAssertGreaterThan(defaults.double(forKey: "refresh_diagnostics.last_started_at"), 0)
+        XCTAssertGreaterThan(defaults.double(forKey: "refresh_diagnostics.last_completed_at"), 0)
+        XCTAssertFalse(defaults.bool(forKey: "refresh_diagnostics.last_succeeded"))
+    }
+
+    @MainActor
+    func testRecentTermUsagePrioritizesNotificationsAndPreservesStableOrder() {
+        let suiteName = "OshiReaderTests.recent.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = RecentTermUsageStore(defaults: defaults)
+        let first = WatchTerm(id: "first", keyword: "First", notify_on_new: false)
+        let second = WatchTerm(id: "second", keyword: "Second", notify_on_new: true)
+        let third = WatchTerm(id: "third", keyword: "Third", notify_on_new: true)
+
+        store.markUsed(termID: first.id)
+        store.markUsed(termID: third.id)
+
+        XCTAssertEqual(store.priorityOrdered([first, second, third]).map(\.id), ["third", "second", "first"])
+    }
+
+    @MainActor
+    func testRecentTermUsageIsBoundedAndDeletionRemovesTimestamp() {
+        let suiteName = "OshiReaderTests.recent.bound.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = RecentTermUsageStore(defaults: defaults)
+
+        for index in 0..<(RecentTermUsageStore.maximumEntries + 5) {
+            store.markUsed(termID: "term-\(index)")
+        }
+
+        XCTAssertEqual(store.timestamps.count, RecentTermUsageStore.maximumEntries)
+        store.remove(termID: "term-104")
+        XCTAssertNil(store.timestamps["term-104"])
+    }
+
+    @MainActor
+    func testRefreshDiagnosticsMarksPartialSourceFailure() {
+        let diagnostics = RefreshDiagnostics.shared
+        diagnostics.resetSourceStatuses()
+        diagnostics.recordSourceStatuses([
+            SourceRefreshStatus(id: "natalie", outcome: .received, itemCount: 2, queryCount: 1),
+            SourceRefreshStatus(id: "barks", outcome: .failed(.timeout), itemCount: 0, queryCount: 1),
+        ])
+
+        XCTAssertTrue(diagnostics.hasSourceFailures)
+        XCTAssertTrue(diagnostics.sourceSummaryText.contains("1 failed"))
+    }
+
+    @MainActor
+    func testRefreshDiagnosticsShowsCurrentStatusesBeforeHistoryIsPersisted() {
+        let suiteName = "OshiReaderTests.health.current.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let diagnostics = RefreshDiagnostics(defaults: defaults)
+
+        diagnostics.recordSourceStatuses([
+            SourceRefreshStatus(id: "news", outcome: .received, itemCount: 1, queryCount: 1),
+            SourceRefreshStatus(id: "barks", outcome: .failed(.timeout), itemCount: 0, queryCount: 1),
+        ])
+
+        XCTAssertEqual(diagnostics.visibleSourceHealthSummaries.map(\.id), ["barks", "news"])
+        XCTAssertEqual(diagnostics.visibleSourceHealthSummaries.first { $0.id == "barks" }?.failedCount, 1)
+    }
+
+    @MainActor
+    func testRefreshDiagnosticsMergesCurrentSourcesIntoExistingHistory() {
+        let suiteName = "OshiReaderTests.health.merge.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let diagnostics = RefreshDiagnostics(defaults: defaults)
+
+        diagnostics.recordCompletedSourceStatuses([
+            SourceRefreshStatus(id: "news", outcome: .received, itemCount: 2, queryCount: 1)
+        ])
+        diagnostics.recordSourceStatuses([
+            SourceRefreshStatus(id: "barks", outcome: .failed(.timeout), itemCount: 0, queryCount: 1)
+        ])
+
+        XCTAssertEqual(diagnostics.visibleSourceHealthSummaries.map(\.id), ["barks", "news"])
+        XCTAssertEqual(diagnostics.visibleSourceHealthSummaries.first { $0.id == "barks" }?.currentStatus?.outcome, .failed(.timeout))
+    }
+
+    @MainActor
+    func testSourceHealthHistoryPersistsAndReloadsAggregatedSummary() {
+        let suiteName = "OshiReaderTests.health.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let checkedAt = Date(timeIntervalSinceNow: -3600)
+        let diagnostics = RefreshDiagnostics(defaults: defaults)
+
+        diagnostics.recordCompletedSourceStatuses([
+            SourceRefreshStatus(id: "natalie", outcome: .received, itemCount: 3, queryCount: 1),
+            SourceRefreshStatus(id: "barks", outcome: .noResults, itemCount: 0, queryCount: 1),
+        ], completedAt: checkedAt)
+
+        let reloaded = RefreshDiagnostics(defaults: defaults)
+        let natalie = reloaded.sourceHealthSummaries.first { $0.id == "natalie" }
+        let barks = reloaded.sourceHealthSummaries.first { $0.id == "barks" }
+        XCTAssertEqual(natalie?.receivedCount, 1)
+        XCTAssertEqual(natalie?.totalItemCount, 3)
+        XCTAssertEqual(natalie?.currentStatus?.outcome, .received)
+        XCTAssertEqual(barks?.emptyCount, 1)
+        XCTAssertEqual(barks?.currentStatus?.outcome, .noResults)
+    }
+
+    @MainActor
+    func testSourceHealthHistoryPrunesRecordsOlderThanSevenDays() {
+        let suiteName = "OshiReaderTests.health.prune.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let diagnostics = RefreshDiagnostics(defaults: defaults)
+        let now = Date()
+
+        diagnostics.recordCompletedSourceStatuses([
+            SourceRefreshStatus(id: "old", outcome: .received, itemCount: 9, queryCount: 1),
+        ], completedAt: now.addingTimeInterval(-(RefreshDiagnostics.healthHistoryRetention + 1)))
+        diagnostics.recordCompletedSourceStatuses([
+            SourceRefreshStatus(id: "recent", outcome: .received, itemCount: 2, queryCount: 1),
+        ], completedAt: now)
+
+        XCTAssertNil(diagnostics.sourceHealthSummaries.first { $0.id == "old" })
+        XCTAssertNotNil(diagnostics.sourceHealthSummaries.first { $0.id == "recent" })
+    }
+
+    @MainActor
+    func testSourceHealthHistoryUsesReceivedPrecedenceAndKeepsLatestFailure() {
+        let suiteName = "OshiReaderTests.health.precedence.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let diagnostics = RefreshDiagnostics(defaults: defaults)
+        let first = Date(timeIntervalSinceNow: -7200)
+        let second = Date(timeIntervalSinceNow: -3600)
+
+        diagnostics.recordSourceStatuses([
+            SourceRefreshStatus(id: "barks", outcome: .failed(.timeout), itemCount: 0, queryCount: 1),
+            SourceRefreshStatus(id: "barks", outcome: .noResults, itemCount: 0, queryCount: 1),
+            SourceRefreshStatus(id: "barks", outcome: .received, itemCount: 2, queryCount: 1),
+        ])
+        XCTAssertEqual(diagnostics.sourceStatuses.first?.outcome, .received)
+
+        diagnostics.recordCompletedSourceStatuses([
+            SourceRefreshStatus(id: "barks", outcome: .failed(.timeout), itemCount: 0, queryCount: 1),
+        ], completedAt: first)
+        diagnostics.recordCompletedSourceStatuses([
+            SourceRefreshStatus(id: "barks", outcome: .failed(.rateLimited), itemCount: 0, queryCount: 1),
+        ], completedAt: second)
+
+        let summary = diagnostics.sourceHealthSummaries.first { $0.id == "barks" }
+        XCTAssertEqual(summary?.failedCount, 2)
+        XCTAssertEqual(summary?.lastFailure, .rateLimited)
+        XCTAssertEqual(summary?.currentStatus?.outcome, .failed(.rateLimited))
+    }
+
+    @MainActor
+    func testSourceHealthHistoryRetryAttemptsRemainOneLogicalRecord() {
+        let suiteName = "OshiReaderTests.health.retry.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let diagnostics = RefreshDiagnostics(defaults: defaults)
+
+        diagnostics.recordCompletedSourceStatuses([
+            SourceRefreshStatus(id: "natalie", outcome: .received, itemCount: 1, queryCount: 1),
+        ])
+
+        let summary = diagnostics.sourceHealthSummaries.first { $0.id == "natalie" }
+        XCTAssertEqual(summary?.receivedCount, 1)
+        XCTAssertEqual(summary?.totalItemCount, 1)
+        XCTAssertEqual(summary?.currentStatus?.queryCount, 1)
+    }
+
+    @MainActor
+    func testSourceHealthHistoryEmptyStoreIsSafe() {
+        let suiteName = "OshiReaderTests.health.empty.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let diagnostics = RefreshDiagnostics(defaults: defaults)
+
+        XCTAssertTrue(diagnostics.sourceHealthSummaries.isEmpty)
+        XCTAssertTrue(diagnostics.sourceStatuses.isEmpty)
     }
 
     @MainActor
@@ -453,6 +1638,66 @@ final class OshiReaderTests: XCTestCase {
     }
 
     @MainActor
+    func testRepeatedTermDigestReplacesPendingNotification() async throws {
+        let center = MockNotificationCenter(status: .authorized)
+        let manager = NotificationManager(center: center)
+        let nowString = ISO8601DateFormatter().string(from: Date())
+        let term = WatchTerm(id: "digest", keyword: "Digest Oshi", notify_on_new: true)
+        let item = FeedItem(
+            id: "news:digest", platform: "news", url: "https://example.com/digest",
+            title: "Digest", content_text: nil, author: nil, thumbnail_url: nil,
+            media_type: "article", published_at: nowString, watch_term_keyword: term.keyword,
+            fetched_at: nowString
+        )
+
+        await manager.notifyForNewItems([item], terms: [term])
+        await manager.notifyForNewItems([item], terms: [term])
+
+        XCTAssertEqual(center.requests.count, 1)
+        XCTAssertEqual(center.requests.first?.identifier, "oshireader-new-term-digest")
+        XCTAssertEqual(center.removedPendingIdentifiers.count, 2)
+    }
+
+    @MainActor
+    func testRenamedTermKeepsStableNotificationIdentifier() async throws {
+        let center = MockNotificationCenter(status: .authorized)
+        let manager = NotificationManager(center: center)
+        let nowString = ISO8601DateFormatter().string(from: Date())
+        let original = WatchTerm(id: "stable-term", keyword: "Original Oshi", notify_on_new: true)
+        let renamed = WatchTerm(id: original.id, keyword: "Renamed Oshi", notify_on_new: true)
+
+        let originalItem = FeedItem(
+            id: "news:original", platform: "news", url: "https://example.com/original",
+            title: "Original", content_text: nil, author: nil, thumbnail_url: nil,
+            media_type: "article", published_at: nowString, watch_term_keyword: original.keyword,
+            fetched_at: nowString
+        )
+        let renamedItem = FeedItem(
+            id: "news:renamed", platform: "news", url: "https://example.com/renamed",
+            title: "Renamed", content_text: nil, author: nil, thumbnail_url: nil,
+            media_type: "article", published_at: nowString, watch_term_keyword: renamed.keyword,
+            fetched_at: nowString
+        )
+
+        await manager.notifyForNewItems([originalItem], terms: [original])
+        await manager.notifyForNewItems([renamedItem], terms: [renamed])
+
+        XCTAssertEqual(center.requests.count, 1)
+        XCTAssertEqual(center.requests.first?.identifier, "oshireader-new-term-stable-term")
+    }
+
+    @MainActor
+    func testTermNotificationCanBeClearedByStableID() {
+        let center = MockNotificationCenter(status: .authorized)
+        let manager = NotificationManager(center: center)
+
+        manager.clearNotification(forTermID: "term-to-clear")
+
+        XCTAssertEqual(center.removedPendingIdentifiers, [["oshireader-new-term-term-to-clear"]])
+        XCTAssertEqual(center.removedDeliveredIdentifiers, [["oshireader-new-term-term-to-clear"]])
+    }
+
+    @MainActor
     func testClearDuringNotificationSchedulingDropsStaleRequests() async throws {
         let center = MockNotificationCenter(status: .authorized)
         let manager = NotificationManager(center: center)
@@ -619,6 +1864,221 @@ final class OshiReaderTests: XCTestCase {
         XCTAssertEqual(db.feedItems, [item])
         XCTAssertEqual(db.savedPages.count, 1)
         XCTAssertEqual(db.customUrls.count, 1)
+    }
+
+    @MainActor
+    func testEncryptedBackupRoundTripPreservesLocalData() throws {
+        let now = ISO8601DateFormatter().string(from: Date())
+        let term = WatchTerm(id: "encrypted-term", keyword: "Encrypted Oshi", notify_on_new: true)
+        let item = FeedItem(
+            id: "news:encrypted", platform: "news", url: "https://example.com/encrypted",
+            title: "Encrypted item", content_text: "Private local content", author: "Author",
+            thumbnail_url: nil, media_type: "article", published_at: now,
+            watch_term_keyword: term.keyword, fetched_at: now
+        )
+        db.terms = [term]
+        db.feedItems = [item]
+        db.customUrls = [CustomUrl(id: "custom:encrypted", url: "https://example.com/feed.xml", title: "Feed", added_at: now)]
+        db.amebloBlogs = [AmebloBlog(url: "https://ameblo.jp/encrypted", title: "Blog", addedAt: now)!]
+
+        let encrypted = try db.exportEncryptedBackupData(password: "correct horse battery staple")
+        XCTAssertNotEqual(encrypted, try db.exportBackupData())
+
+        db.terms = []
+        db.feedItems = []
+        db.customUrls = []
+        db.amebloBlogs = []
+        try db.importEncryptedBackupData(encrypted, password: "correct horse battery staple")
+
+        XCTAssertEqual(db.terms.map(\.keyword), ["Encrypted Oshi"])
+        XCTAssertEqual(db.feedItems.map(\.id), ["news:encrypted"])
+        XCTAssertEqual(db.customUrls.map(\.id), ["custom:encrypted"])
+        XCTAssertEqual(db.amebloBlogs.map(\.amebaID), ["encrypted"])
+    }
+
+    @MainActor
+    func testEncryptedBackupWrongPasswordLeavesCurrentDataUntouched() throws {
+        let term = db.saveTerm(keyword: "Protected Oshi")
+        let encrypted = try db.exportEncryptedBackupData(password: "correct horse battery staple")
+        let beforeTerms = db.terms
+        let beforeItems = db.feedItems
+
+        XCTAssertThrowsError(try db.importEncryptedBackupData(encrypted, password: "wrong password here")) { error in
+            XCTAssertEqual(error as? EncryptedBackupError, .authenticationFailed)
+        }
+        XCTAssertEqual(db.terms, beforeTerms)
+        XCTAssertEqual(db.feedItems, beforeItems)
+        XCTAssertEqual(db.terms.first?.id, term.id)
+    }
+
+    @MainActor
+    func testEncryptedBackupTamperAndTruncationLeaveCurrentDataUntouched() throws {
+        _ = db.saveTerm(keyword: "Untouched Oshi")
+        let encrypted = try db.exportEncryptedBackupData(password: "correct horse battery staple")
+        let before = db.terms
+
+        var tampered = encrypted
+        tampered[tampered.count - 1] ^= 1
+        XCTAssertThrowsError(try db.importEncryptedBackupData(tampered, password: "correct horse battery staple"))
+        XCTAssertThrowsError(try db.importEncryptedBackupData(Data(encrypted.prefix(10)), password: "correct horse battery staple"))
+        XCTAssertEqual(db.terms, before)
+    }
+
+    func testEncryptedBackupRejectsUnsupportedAndInvalidEnvelopeVersions() throws {
+        XCTAssertThrowsError(try EncryptedBackupCodec.decrypt(Data("not an encrypted backup".utf8), password: "correct horse battery staple")) { error in
+            XCTAssertEqual(error as? EncryptedBackupError, .invalidEnvelope)
+        }
+
+        let encrypted = try EncryptedBackupCodec.encrypt(Data("payload".utf8), password: "correct horse battery staple")
+        var unsupported = encrypted
+        unsupported[EncryptedBackupCodec.magic.count] = 99
+        XCTAssertThrowsError(try EncryptedBackupCodec.decrypt(unsupported, password: "correct horse battery staple")) { error in
+            XCTAssertEqual(error as? EncryptedBackupError, .unsupportedVersion)
+        }
+    }
+
+    func testEncryptedBackupUsesRandomSaltAndNonce() throws {
+        let first = try EncryptedBackupCodec.encrypt(Data("same payload".utf8), password: "correct horse battery staple")
+        let second = try EncryptedBackupCodec.encrypt(Data("same payload".utf8), password: "correct horse battery staple")
+        XCTAssertNotEqual(first, second)
+        XCTAssertEqual(try EncryptedBackupCodec.decrypt(first, password: "correct horse battery staple"), Data("same payload".utf8))
+    }
+
+    func testEncryptedBackupPasswordValidation() {
+        XCTAssertThrowsError(try EncryptedBackupCodec.validatePassword("short")) { error in
+            XCTAssertEqual(error as? EncryptedBackupError, .invalidPassword)
+        }
+        XCTAssertNoThrow(try EncryptedBackupCodec.validatePassword(String(repeating: "🙂", count: 12)))
+        XCTAssertThrowsError(try EncryptedBackupCodec.validatePassword(String(repeating: "a", count: 257)))
+    }
+
+    @MainActor
+    func testProfilesIsolateDataAndProtectLastProfile() throws {
+        db.clearAllData()
+        let originalID = db.activeProfile.id
+        for profile in db.profiles where profile.id != originalID {
+            try? db.deleteProfile(id: profile.id)
+        }
+        let profile = try db.createProfile(name: "Profile \(UUID().uuidString)")
+
+        try db.switchProfile(to: profile.id)
+        XCTAssertTrue(db.terms.isEmpty)
+        _ = db.saveTerm(keyword: "Second profile term")
+        UserDefaults.standard.set("dark", forKey: LocalProfileStore.defaultsKey("app_theme_mode", profileID: profile.id))
+        XCTAssertEqual(db.terms.count, 1)
+
+        try db.switchProfile(to: originalID)
+        XCTAssertTrue(db.terms.isEmpty)
+        XCTAssertThrowsError(try db.renameProfile(id: originalID, name: profile.name)) { error in
+            XCTAssertEqual(error as? LocalProfileError, .duplicateName)
+        }
+
+        try db.deleteProfile(id: profile.id)
+        XCTAssertEqual(db.profiles.count, 1)
+        XCTAssertNil(UserDefaults.standard.object(forKey: LocalProfileStore.defaultsKey("app_theme_mode", profileID: profile.id)))
+        XCTAssertThrowsError(try db.deleteProfile(id: originalID)) { error in
+            XCTAssertEqual(error as? LocalProfileError, .cannotDeleteLastProfile)
+        }
+    }
+
+    @MainActor
+    func testProfilesIsolateAppearanceAndLanguageSettings() throws {
+        let originalID = db.activeProfile.id
+        let theme = ThemeManager.shared
+        let appearance = AppearanceManager.shared
+        let i18n = I18nManager.shared
+        let originalTheme = theme.mode
+        let originalStyle = theme.style
+        let originalFont = appearance.fontChoice
+        let originalFontSize = appearance.fontSizeChoice
+        let originalLanguage = i18n.lang
+        let profile = try db.createProfile(name: "Settings \(UUID().uuidString)")
+
+        theme.mode = .dark
+        theme.style = .standard
+        appearance.fontChoice = .comicSans
+        appearance.fontSizeChoice = .extraLarge
+        i18n.setLanguage("en")
+
+        try db.switchProfile(to: profile.id)
+        XCTAssertEqual(theme.mode, .light)
+        XCTAssertEqual(theme.style, .colourful)
+        XCTAssertEqual(appearance.fontChoice, .normal)
+        XCTAssertEqual(appearance.fontSizeChoice, .normal)
+        XCTAssertEqual(i18n.lang, "ja")
+
+        try db.switchProfile(to: originalID)
+        XCTAssertEqual(theme.mode, .dark)
+        XCTAssertEqual(theme.style, .standard)
+        XCTAssertEqual(appearance.fontChoice, .comicSans)
+        XCTAssertEqual(appearance.fontSizeChoice, .extraLarge)
+        XCTAssertEqual(i18n.lang, "en")
+
+        theme.mode = originalTheme
+        theme.style = originalStyle
+        appearance.fontChoice = originalFont
+        appearance.fontSizeChoice = originalFontSize
+        i18n.setLanguage(originalLanguage)
+        try db.deleteProfile(id: profile.id)
+    }
+
+    @MainActor
+    func testProfileTransferCreatesNewProfileAndKeepsActiveProfile() throws {
+        let originalID = db.activeProfile.id
+        _ = db.saveTerm(keyword: "Transferred term")
+        let data = try db.exportProfileTransferData()
+
+        let imported = try db.importProfileTransferData(data)
+        XCTAssertEqual(db.activeProfile.id, originalID)
+        XCTAssertNotEqual(imported.id, originalID)
+        XCTAssertTrue(db.profiles.contains(where: { $0.id == imported.id }))
+
+        try db.switchProfile(to: imported.id)
+        XCTAssertEqual(db.terms.map(\.keyword), ["Transferred term"])
+        try db.switchProfile(to: originalID)
+        try db.deleteProfile(id: imported.id)
+
+        let repeatedImports = try (0..<3).map { _ in
+            try db.importProfileTransferData(data)
+        }
+        XCTAssertEqual(Set(repeatedImports.map(\.name)).count, 3)
+        for profile in repeatedImports {
+            try db.deleteProfile(id: profile.id)
+        }
+    }
+
+    @MainActor
+    func testProfileTransferRejectsMalformedAndUnsupportedPackages() throws {
+        XCTAssertThrowsError(try db.importProfileTransferData(Data("not a profile".utf8))) { error in
+            XCTAssertEqual(error as? LocalProfileError, .invalidPackage)
+        }
+
+        let transfer = LocalProfileTransfer(profile: db.activeProfile, backup: LocalBackup(
+            exportedAt: "",
+            terms: [],
+            feedItems: [],
+            savedPages: [],
+            customUrls: [],
+            subscribedPlatforms: [],
+            wallpaper: nil,
+            sourcesOrder: nil,
+            oshiAvatars: [:],
+            compositions: [:],
+            hiddenItems: []
+        ))
+        let encoded = try JSONEncoder().encode(transfer)
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        object["version"] = 99
+        let data = try JSONSerialization.data(withJSONObject: object)
+        XCTAssertThrowsError(try db.importProfileTransferData(data)) { error in
+            XCTAssertEqual(error as? LocalProfileError, .unsupportedPackageVersion)
+        }
+
+        object["version"] = 0
+        let legacyVersionData = try JSONSerialization.data(withJSONObject: object)
+        XCTAssertThrowsError(try db.importProfileTransferData(legacyVersionData)) { error in
+            XCTAssertEqual(error as? LocalProfileError, .unsupportedPackageVersion)
+        }
     }
 
     @MainActor

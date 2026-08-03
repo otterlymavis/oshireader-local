@@ -11,20 +11,22 @@ private struct LocalRestoreManifest: Codable {
 class LocalDB: ObservableObject {
     static let shared = LocalDB()
     static let maximumBackupBytes = 20 * 1024 * 1024
+    static let maximumProfileTransferBytes = 22 * 1024 * 1024
     
     // Published states for views
     @Published var terms: [WatchTerm] = []
     @Published var feedItems: [FeedItem] = []
     @Published var savedPages: [SavedPage] = []
     @Published var customUrls: [CustomUrl] = []
+    @Published var amebloBlogs: [AmebloBlog] = []
     @Published var subscribedPlatforms: [String] = []
     @Published var wallpaper: String? = nil
     @Published var sourcesOrder: [String]? = nil
     @Published var oshiAvatars: [String: String] = [:]
     @Published var compositions: [String: [AvatarLayer]] = [:]
     @Published var hiddenItems: Set<String> = []
-    @Published private(set) var contentCacheGeneration: Int = UserDefaults.standard.integer(forKey: "content_cache_generation")
-    @Published private(set) var dataRevision: Int = UserDefaults.standard.integer(forKey: "local_data_revision")
+    @Published private(set) var contentCacheGeneration: Int = 0
+    @Published private(set) var dataRevision: Int = 0
     
     private let queue = DispatchQueue(label: "com.otterlymavis.oshireader.db", qos: .userInitiated)
     private let pendingWritesLock = NSLock()
@@ -32,19 +34,71 @@ class LocalDB: ObservableObject {
     private var pendingWrites = 0
     private var feedItemsSaveGeneration = 0
     private var pendingFeedItemsSaveWorkItem: DispatchWorkItem?
-    private var contentCacheGenerationValue = UserDefaults.standard.integer(forKey: "content_cache_generation")
+    private var contentCacheGenerationValue = 0
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
+    private let profileStore: LocalProfileStore
     
     private init() {
+        self.profileStore = LocalProfileStore.shared
         recoverPendingRestoreIfNeeded()
         loadAll()
     }
     
     // MARK: - File Paths
     private func fileURL(for name: String) -> URL {
-        let paths = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)
-        return paths[0].appendingPathComponent("\(name).json")
+        return profileStore.fileURL(for: name)
+    }
+
+    var activeProfile: LocalProfile { profileStore.activeProfile }
+    var profiles: [LocalProfile] { profileStore.profiles }
+
+    @MainActor
+    func switchProfile(to profileID: UUID) throws {
+        guard profileID != profileStore.activeProfileID else { return }
+        LocalRefreshCoordinator.shared.cancel()
+        flushPendingWrites()
+        NotificationManager.shared.clearLocalNotifications()
+        try profileStore.activateProfile(id: profileID)
+        loadAll()
+        RecentTermUsageStore.shared.configure(profileID: profileID)
+        RefreshDiagnostics.shared.configure(profileID: profileID)
+        ThemeManager.shared.configure(profileID: profileID)
+        AppearanceManager.shared.configure(profileID: profileID)
+        I18nManager.shared.configure(profileID: profileID)
+    }
+
+    @MainActor
+    func createProfile(name: String) throws -> LocalProfile {
+        try profileStore.createProfile(name: name)
+    }
+
+    @MainActor
+    func renameProfile(id: UUID, name: String) throws {
+        try profileStore.renameProfile(id: id, name: name)
+    }
+
+    @MainActor
+    func deleteProfile(id: UUID) throws {
+        let wasActive = id == profileStore.activeProfileID
+        if wasActive {
+            guard profileStore.profiles.count > 1 else { throw LocalProfileError.cannotDeleteLastProfile }
+            let replacement = profileStore.profiles.first { $0.id != id }!
+            try switchProfile(to: replacement.id)
+        } else {
+            clearNotificationsForProfile(id)
+        }
+        try profileStore.deleteProfile(id: id)
+    }
+
+    @MainActor
+    private func clearNotificationsForProfile(_ profileID: UUID) {
+        let termsURL = profileStore.fileURL(for: "terms", profileID: profileID)
+        guard let data = try? Data(contentsOf: termsURL),
+              let terms = try? decoder.decode([WatchTerm].self, from: data) else { return }
+        for term in terms {
+            NotificationManager.shared.clearNotification(forTermID: term.id)
+        }
     }
     
     // MARK: - Load and Save Helpers
@@ -57,6 +111,7 @@ class LocalDB: ObservableObject {
         self.feedItems = loadFromFile(name: "feed_items", defaultValue: [])
         self.savedPages = loadFromFile(name: "saved_pages", defaultValue: [])
         self.customUrls = loadFromFile(name: "custom_urls", defaultValue: [])
+        self.amebloBlogs = loadFromFile(name: "ameblo_blogs", defaultValue: [])
         let subscribedPlatformsURL = fileURL(for: "subscribed_platforms")
         let hasSavedSubscribedPlatforms = FileManager.default.fileExists(atPath: subscribedPlatformsURL.path)
         let loadedSubscribedPlatforms: [String] = loadFromFile(
@@ -70,12 +125,19 @@ class LocalDB: ObservableObject {
         if hasSavedSubscribedPlatforms, self.subscribedPlatforms != loadedSubscribedPlatforms {
             saveToFile(name: "subscribed_platforms", value: self.subscribedPlatforms)
         }
-        self.wallpaper = UserDefaults.standard.string(forKey: "wallpaper_url")
-        self.sourcesOrder = UserDefaults.standard.stringArray(forKey: "sources_order")
+        self.wallpaper = UserDefaults.standard.string(forKey: profileKey("wallpaper_url"))
+        self.sourcesOrder = UserDefaults.standard.stringArray(forKey: profileKey("sources_order"))
         self.oshiAvatars = loadFromFile(name: "oshi_avatars", defaultValue: [:])
         self.compositions = loadFromFile(name: "oshi_compositions", defaultValue: [:])
         let hiddenArray: [String] = loadFromFile(name: "hidden_items", defaultValue: [])
         self.hiddenItems = Set(hiddenArray)
+        contentCacheGenerationValue = UserDefaults.standard.integer(forKey: profileKey("content_cache_generation"))
+        contentCacheGeneration = contentCacheGenerationValue
+        dataRevision = UserDefaults.standard.integer(forKey: profileKey("local_data_revision"))
+    }
+
+    private func profileKey(_ key: String) -> String {
+        LocalProfileStore.defaultsKey(key, profileID: profileStore.activeProfileID)
     }
     
     private func loadFromFile<T: Decodable>(name: String, defaultValue: T) -> T {
@@ -180,7 +242,7 @@ class LocalDB: ObservableObject {
         wallpaper: String?,
         sourcesOrder: [String]?
     ) throws {
-        let docsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let docsDirectory = profileStore.directoryURL(for: profileStore.activeProfileID)
         let stagingName = ".oshireader-restore-\(UUID().uuidString)"
         let stagingDirectory = docsDirectory.appendingPathComponent(stagingName, isDirectory: true)
         try FileManager.default.createDirectory(at: stagingDirectory, withIntermediateDirectories: true)
@@ -218,13 +280,14 @@ class LocalDB: ObservableObject {
     }
 
     private func applyPendingRestore() throws {
-        let docsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let docsDirectory = profileStore.directoryURL(for: profileStore.activeProfileID)
         let manifestURL = docsDirectory.appendingPathComponent("restore_manifest.json")
         guard FileManager.default.fileExists(atPath: manifestURL.path) else { return }
         let manifest = try JSONDecoder().decode(LocalRestoreManifest.self, from: Data(contentsOf: manifestURL))
         let expectedFiles: Set<String> = [
             "terms", "feed_items", "saved_pages", "custom_urls",
-            "subscribed_platforms", "oshi_avatars", "oshi_compositions", "hidden_items"
+            "subscribed_platforms", "oshi_avatars", "oshi_compositions", "hidden_items",
+            "ameblo_blogs"
         ]
         guard Set(manifest.files) == expectedFiles,
               manifest.stagingDirectory.hasPrefix(".oshireader-restore-"),
@@ -249,10 +312,10 @@ class LocalDB: ObservableObject {
             }
         }
 
-        if let wallpaper = manifest.wallpaper { UserDefaults.standard.set(wallpaper, forKey: "wallpaper_url") }
-        else { UserDefaults.standard.removeObject(forKey: "wallpaper_url") }
-        if let sourcesOrder = manifest.sourcesOrder { UserDefaults.standard.set(sourcesOrder, forKey: "sources_order") }
-        else { UserDefaults.standard.removeObject(forKey: "sources_order") }
+        if let wallpaper = manifest.wallpaper { UserDefaults.standard.set(wallpaper, forKey: profileKey("wallpaper_url")) }
+        else { UserDefaults.standard.removeObject(forKey: profileKey("wallpaper_url")) }
+        if let sourcesOrder = manifest.sourcesOrder { UserDefaults.standard.set(sourcesOrder, forKey: profileKey("sources_order")) }
+        else { UserDefaults.standard.removeObject(forKey: profileKey("sources_order")) }
 
         try? FileManager.default.removeItem(at: stagingDirectory)
         try FileManager.default.removeItem(at: manifestURL)
@@ -270,7 +333,7 @@ class LocalDB: ObservableObject {
 
     private func advanceDataRevision() {
         dataRevision &+= 1
-        UserDefaults.standard.set(dataRevision, forKey: "local_data_revision")
+        UserDefaults.standard.set(dataRevision, forKey: profileKey("local_data_revision"))
     }
 
     private static func normalizedTerm(_ term: WatchTerm) -> WatchTerm {
@@ -323,7 +386,14 @@ class LocalDB: ObservableObject {
                     term.source_mode = term.source_mode == .selected && !normalized.isEmpty ? .selected : .all
                     term.selected_platforms = term.source_mode == .selected ? normalized : []
                 }
-                if let notifyOnNew = notifyOnNew { term.notify_on_new = notifyOnNew }
+                if let notifyOnNew = notifyOnNew {
+                    term.notify_on_new = notifyOnNew
+                    if !notifyOnNew {
+                        Task { @MainActor in
+                            NotificationManager.shared.clearNotification(forTermID: id)
+                        }
+                    }
+                }
                 if let aliases = aliases { term.aliases = aliases }
                 self.terms[idx] = term
                 self.saveToFile(name: "terms", value: self.terms)
@@ -337,6 +407,10 @@ class LocalDB: ObservableObject {
                 let keyword = self.terms[term].keyword
                 self.advanceDataRevision()
                 self.terms.remove(at: term)
+                Task { @MainActor in
+                    RecentTermUsageStore.shared.remove(termID: id)
+                    NotificationManager.shared.clearNotification(forTermID: id)
+                }
                 self.saveToFile(name: "terms", value: self.terms)
                 
                 // Also clean up items containing that watch term keyword
@@ -596,6 +670,29 @@ class LocalDB: ObservableObject {
         }
     }
 
+    // MARK: - Ameblo blogs
+    func addAmebloBlog(url: String, title: String) -> AmebloBlogAddResult {
+        guard let blog = AmebloBlog(url: url, title: title) else { return .invalidURL }
+        guard !amebloBlogs.contains(where: { $0.id == blog.id }) else { return .duplicate }
+        guard amebloBlogs.count < AmebloBlog.maximumCount else { return .limitReached }
+
+        amebloBlogs.insert(blog, at: 0)
+        saveToFile(name: "ameblo_blogs", value: amebloBlogs)
+        if !subscribedPlatforms.contains("ameblo") {
+            subscribedPlatforms.append("ameblo")
+            saveToFile(name: "subscribed_platforms", value: subscribedPlatforms)
+        }
+        advanceDataRevision()
+        return .added
+    }
+
+    func removeAmebloBlog(id: String) {
+        guard amebloBlogs.contains(where: { $0.id == id }) else { return }
+        amebloBlogs.removeAll { $0.id == id }
+        saveToFile(name: "ameblo_blogs", value: amebloBlogs)
+        advanceDataRevision()
+    }
+
     // MARK: - Data Reset
     @MainActor
     func clearAllData() {
@@ -604,6 +701,7 @@ class LocalDB: ObservableObject {
             "feed_items",
             "saved_pages",
             "custom_urls",
+            "ameblo_blogs",
             "subscribed_platforms",
             "oshi_avatars",
             "oshi_compositions",
@@ -612,13 +710,15 @@ class LocalDB: ObservableObject {
 
         flushPendingWrites()
         dataRevision += 1
-        UserDefaults.standard.set(dataRevision, forKey: "local_data_revision")
+        UserDefaults.standard.set(dataRevision, forKey: profileKey("local_data_revision"))
         invalidateContentCaches()
         NotificationManager.shared.clearLocalNotifications()
         terms = []
+        RecentTermUsageStore.shared.removeAll()
         feedItems = []
         savedPages = []
         customUrls = []
+        amebloBlogs = []
         subscribedPlatforms = PlatformRegistry.defaultSubscribedIDs
         wallpaper = nil
         sourcesOrder = nil
@@ -633,7 +733,7 @@ class LocalDB: ObservableObject {
             }
         }
         // Delete wallpaper files separately from content caches.
-        let docsDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let docsDir = profileStore.directoryURL(for: profileStore.activeProfileID)
         if let contents = try? FileManager.default.contentsOfDirectory(
             at: docsDir, includingPropertiesForKeys: nil
         ) {
@@ -641,8 +741,8 @@ class LocalDB: ObservableObject {
                 try? FileManager.default.removeItem(at: cacheUrl)
             }
         }
-        UserDefaults.standard.removeObject(forKey: "wallpaper_url")
-        UserDefaults.standard.removeObject(forKey: "sources_order")
+        UserDefaults.standard.removeObject(forKey: profileKey("wallpaper_url"))
+        UserDefaults.standard.removeObject(forKey: profileKey("sources_order"))
         saveToFile(name: "subscribed_platforms", value: subscribedPlatforms)
     }
     
@@ -651,9 +751,9 @@ class LocalDB: ObservableObject {
         runOnMain {
             self.wallpaper = url
             if let url = url {
-                UserDefaults.standard.set(url, forKey: "wallpaper_url")
+                UserDefaults.standard.set(url, forKey: self.profileKey("wallpaper_url"))
             } else {
-                UserDefaults.standard.removeObject(forKey: "wallpaper_url")
+                UserDefaults.standard.removeObject(forKey: self.profileKey("wallpaper_url"))
             }
         }
     }
@@ -661,7 +761,7 @@ class LocalDB: ObservableObject {
     func setSourcesOrder(order: [String]) {
         runOnMain {
             self.sourcesOrder = order
-            UserDefaults.standard.set(order, forKey: "sources_order")
+            UserDefaults.standard.set(order, forKey: self.profileKey("sources_order"))
         }
     }
     
@@ -690,6 +790,7 @@ class LocalDB: ObservableObject {
             feedItems: feedItems,
             savedPages: savedPages,
             customUrls: customUrls,
+            amebloBlogs: amebloBlogs,
             subscribedPlatforms: subscribedPlatforms,
             wallpaper: wallpaper,
             sourcesOrder: sourcesOrder,
@@ -700,6 +801,11 @@ class LocalDB: ObservableObject {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         return try encoder.encode(backup)
+    }
+
+    @MainActor
+    func exportEncryptedBackupData(password: String) throws -> Data {
+        try EncryptedBackupCodec.encrypt(exportBackupData(), password: password)
     }
 
     @MainActor
@@ -716,6 +822,7 @@ class LocalDB: ObservableObject {
               backup.feed_items.count <= 2_000,
               backup.saved_pages.count <= 2_000,
               backup.custom_urls.count <= 200,
+              backup.ameblo_blogs.count <= AmebloBlog.maximumCount,
               backup.oshi_avatars.count <= 200,
               backup.compositions.count <= 200,
               backup.compositions.values.allSatisfy({ $0.count <= 100 }),
@@ -728,7 +835,13 @@ class LocalDB: ObservableObject {
             normalized.aliases = Array(IngestionService.searchKeywords(for: term).dropFirst())
             return normalized
         }
-        let normalizedSubscribedPlatforms = Self.normalizePlatformIDs(backup.subscribed_platforms)
+        let normalizedAmebloBlogs = Array(backup.ameblo_blogs.compactMap {
+            AmebloBlog(url: $0.url, title: $0.title, addedAt: $0.added_at)
+        }.prefix(AmebloBlog.maximumCount))
+        var normalizedSubscribedPlatforms = Self.normalizePlatformIDs(backup.subscribed_platforms)
+        if !normalizedAmebloBlogs.isEmpty && !normalizedSubscribedPlatforms.contains("ameblo") {
+            normalizedSubscribedPlatforms.append("ameblo")
+        }
         let normalizedSourcesOrder = backup.sources_order.map(Self.normalizePlatformIDs)
 
         let encodedFiles: [(String, Data)] = try [
@@ -736,6 +849,7 @@ class LocalDB: ObservableObject {
             ("feed_items", encoder.encode(Array(backup.feed_items.sorted { $0.published_at > $1.published_at }.prefix(600)))),
             ("saved_pages", encoder.encode(backup.saved_pages)),
             ("custom_urls", encoder.encode(backup.custom_urls)),
+            ("ameblo_blogs", encoder.encode(normalizedAmebloBlogs)),
             ("subscribed_platforms", encoder.encode(normalizedSubscribedPlatforms)),
             ("oshi_avatars", encoder.encode(backup.oshi_avatars)),
             ("oshi_compositions", encoder.encode(backup.compositions)),
@@ -748,7 +862,7 @@ class LocalDB: ObservableObject {
         )
 
         dataRevision += 1
-        UserDefaults.standard.set(dataRevision, forKey: "local_data_revision")
+        UserDefaults.standard.set(dataRevision, forKey: profileKey("local_data_revision"))
         invalidateContentCaches()
         NotificationManager.shared.clearLocalNotifications()
 
@@ -756,6 +870,7 @@ class LocalDB: ObservableObject {
         feedItems = Array(backup.feed_items.sorted { $0.published_at > $1.published_at }.prefix(600))
         savedPages = backup.saved_pages
         customUrls = backup.custom_urls
+        amebloBlogs = normalizedAmebloBlogs
         subscribedPlatforms = normalizedSubscribedPlatforms
         wallpaper = backup.wallpaper
         sourcesOrder = normalizedSourcesOrder
@@ -763,6 +878,84 @@ class LocalDB: ObservableObject {
         compositions = backup.compositions
         hiddenItems = Set(backup.hidden_items)
 
+    }
+
+    @MainActor
+    func importEncryptedBackupData(_ data: Data, password: String) throws {
+        let plaintext = try EncryptedBackupCodec.decrypt(data, password: password)
+        try importBackupData(plaintext)
+    }
+
+    @MainActor
+    func exportProfileTransferData() throws -> Data {
+        let backupData = try exportBackupData()
+        let backup = try JSONDecoder().decode(LocalBackup.self, from: backupData)
+        let transfer = LocalProfileTransfer(
+            profile: activeProfile,
+            backup: backup,
+            settings: LocalProfileSettings.load(profileID: profileStore.activeProfileID)
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let data = try encoder.encode(transfer)
+        guard data.count <= Self.maximumProfileTransferBytes else {
+            throw NSError(domain: "OshiReaderProfile", code: 5, userInfo: [NSLocalizedDescriptionKey: "Profile package is too large"])
+        }
+        return data
+    }
+
+    @MainActor
+    @discardableResult
+    func importProfileTransferData(_ data: Data) throws -> LocalProfile {
+        guard data.count <= Self.maximumProfileTransferBytes else { throw LocalProfileError.invalidPackage }
+        guard let packageObject = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let packageVersion = packageObject["version"] as? Int else {
+            throw LocalProfileError.invalidPackage
+        }
+        if packageVersion < 1 || packageVersion > LocalProfileTransfer.currentVersion {
+            throw LocalProfileError.unsupportedPackageVersion
+        }
+        let transfer: LocalProfileTransfer
+        do {
+            transfer = try JSONDecoder().decode(LocalProfileTransfer.self, from: data)
+        } catch {
+            throw LocalProfileError.invalidPackage
+        }
+        guard !transfer.profile.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw LocalProfileError.invalidPackage
+        }
+
+        let originalProfileID = profileStore.activeProfileID
+        let importedName = uniqueImportedProfileName(transfer.profile.name)
+        let imported = try profileStore.createProfile(name: importedName)
+        do {
+            try switchProfile(to: imported.id)
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            try importBackupData(encoder.encode(transfer.backup))
+            if let settings = transfer.settings {
+                settings.apply(to: imported.id)
+                ThemeManager.shared.configure(profileID: imported.id)
+                AppearanceManager.shared.configure(profileID: imported.id)
+                I18nManager.shared.configure(profileID: imported.id)
+            }
+            try switchProfile(to: originalProfileID)
+            return imported
+        } catch {
+            if profileStore.activeProfileID != originalProfileID {
+                try? switchProfile(to: originalProfileID)
+            }
+            try? profileStore.deleteProfile(id: imported.id)
+            throw error
+        }
+    }
+
+    private func uniqueImportedProfileName(_ requested: String) -> String {
+        let base = requested.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Imported profile" : requested.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard profileStore.profile(named: base) != nil else { return base }
+        var index = 2
+        while profileStore.profile(named: "\(base) \(index)") != nil { index += 1 }
+        return "\(base) \(index)"
     }
 
     static func subscribedPlatformsForLoadedValue(_ ids: [String], hasSavedFile: Bool) -> [String] {
@@ -784,11 +977,11 @@ class LocalDB: ObservableObject {
         contentCacheGenerationValue += 1
         let nextGeneration = contentCacheGenerationValue
         contentCacheGeneration = nextGeneration
-        UserDefaults.standard.set(nextGeneration, forKey: "content_cache_generation")
+        UserDefaults.standard.set(nextGeneration, forKey: profileKey("content_cache_generation"))
         contentCacheGenerationLock.unlock()
 
         queue.sync {
-            let docsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            let docsDirectory = profileStore.directoryURL(for: profileStore.activeProfileID)
             if let contents = try? FileManager.default.contentsOfDirectory(at: docsDirectory, includingPropertiesForKeys: nil) {
                 for url in contents where url.lastPathComponent.hasPrefix("cache_") {
                     try? FileManager.default.removeItem(at: url)
@@ -800,6 +993,8 @@ class LocalDB: ObservableObject {
     // MARK: - UI Test Fixture
     func resetForUITesting() {
         guard ProcessInfo.processInfo.arguments.contains("--uitesting") else { return }
+
+        profileStore.resetForUITesting()
 
         let now = ISO8601DateFormatter().string(from: Date())
         let term = WatchTerm(id: "ui-term-oshitest", keyword: "UITest Oshi", collection_mode: "all_info", is_active: true, created_at: now)
@@ -843,6 +1038,7 @@ class LocalDB: ObservableObject {
             self.feedItems = [feedItem]
             self.savedPages = [savedPage]
             self.customUrls = [customUrl]
+            self.amebloBlogs = []
             self.subscribedPlatforms = ["news", "youtube", "tver", "custom"]
             self.wallpaper = nil
             self.sourcesOrder = nil
@@ -851,8 +1047,8 @@ class LocalDB: ObservableObject {
             self.hiddenItems = []
             // Do NOT persist fixture data — only seed in-memory so nothing stains the
             // container after the test process exits.
-            UserDefaults.standard.removeObject(forKey: "wallpaper_url")
-            UserDefaults.standard.removeObject(forKey: "sources_order")
+            UserDefaults.standard.removeObject(forKey: self.profileKey("wallpaper_url"))
+            UserDefaults.standard.removeObject(forKey: self.profileKey("sources_order"))
         }
     }
     

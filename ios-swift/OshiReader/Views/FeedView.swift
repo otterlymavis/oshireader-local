@@ -73,18 +73,21 @@ struct FeedView: View {
     @StateObject private var db = LocalDB.shared
     @StateObject private var theme = ThemeManager.shared
     @StateObject private var i18n = I18nManager.shared
+    @StateObject private var refreshDiagnostics = RefreshDiagnostics.shared
+    @StateObject private var refreshCoordinator = LocalRefreshCoordinator.shared
+    @StateObject private var recentTermUsage = RecentTermUsageStore.shared
     
     @State private var selectedKeyword: String? = nil
     @State private var selectedPlatform: String? = nil
     @State private var mediaFilter: String = "all" // "all" | "media_only"
     @State private var daysFilter: Int = 30
     
-    @State private var isRefreshing = false
     @State private var hasLoadedOnce = false
     @State private var displayedCount: Int = 20
     @State private var showFilterSheet = false
     @State private var showAddUrlSheet = false
     @State private var showReorderSheet = false
+    @State private var showSourceStatusSheet = false
     
     @State private var customUrlString = ""
     @State private var customUrlTitle = ""
@@ -330,9 +333,42 @@ struct FeedView: View {
                         alignment: .bottom
                     )
                 }
+
+                HStack(spacing: 7) {
+                    Image(systemName: refreshDiagnostics.lastSucceeded == false ? "exclamationmark.triangle" : "arrow.triangle.2.circlepath")
+                        .font(.caption)
+                    Text(refreshDiagnostics.statusText)
+                        .font(.caption)
+                        .lineLimit(1)
+                    Spacer()
+                }
+                .foregroundColor(refreshDiagnostics.lastSucceeded == false ? .orange : theme.colors.textMuted)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 6)
+                .accessibilityIdentifier("feed.refreshStatus")
+
+                if !refreshDiagnostics.visibleSourceHealthSummaries.isEmpty {
+                    Button {
+                        showSourceStatusSheet = true
+                    } label: {
+                        HStack {
+                            Text(refreshDiagnostics.sourceSummaryText)
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption2)
+                        }
+                        .font(.caption2)
+                        .foregroundColor(theme.colors.textMuted)
+                        .padding(.horizontal, 14)
+                        .padding(.bottom, 5)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("feed.sourceStatus")
+                }
                 
                 // Main Feed List
-                if isRefreshing && filteredItems.isEmpty {
+                if refreshCoordinator.isRefreshing && filteredItems.isEmpty {
                     Spacer()
                     ProgressView()
                         .tint(theme.colors.primary)
@@ -356,7 +392,7 @@ struct FeedView: View {
                     List {
                         ForEach(visibleItems) { item in
                             if horizontalSizeClass == .regular {
-                                Button(action: { selectedItem = item }) {
+                                Button(action: { openFeedItem(item) }) {
                                     FeedCard(item: item, isSaved: savedItemIds.contains(item.id), theme: theme)
                                         .overlay(
                                             RoundedRectangle(cornerRadius: 12)
@@ -364,6 +400,7 @@ struct FeedView: View {
                                         )
                                 }
                                 .buttonStyle(PlainButtonStyle())
+                                .accessibilityIdentifier("feed.card.\(item.id)")
                                 .listRowInsets(EdgeInsets(top: 4, leading: 14, bottom: 4, trailing: 14))
                                 .listRowBackground(Color.clear)
                                 .listRowSeparator(.hidden)
@@ -385,10 +422,12 @@ struct FeedView: View {
                                     .tint(theme.colors.primary)
                                 }
                             } else {
-                                NavigationLink(destination: ReaderView(feedItem: item)) {
+                                NavigationLink(destination: ReaderView(feedItem: item)
+                                    .onAppear { markRecentUse(for: item) }) {
                                     FeedCard(item: item, isSaved: savedItemIds.contains(item.id), theme: theme)
                                 }
                                 .buttonStyle(PlainButtonStyle())
+                                .accessibilityIdentifier("feed.card.\(item.id)")
                                 .listRowInsets(EdgeInsets(top: 4, leading: 14, bottom: 4, trailing: 14))
                                 .listRowBackground(Color.clear)
                                 .listRowSeparator(.hidden)
@@ -453,7 +492,7 @@ struct FeedView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
-                if isRefreshing {
+                if refreshCoordinator.isRefreshing {
                     ProgressView()
                         .tint(theme.colors.primary)
                 } else {
@@ -492,7 +531,15 @@ struct FeedView: View {
         .sheet(isPresented: $showReorderSheet) {
             ReorderSourcesSheet(theme: theme, i18n: i18n)
         }
-        .onChange(of: selectedKeyword) { _, _ in displayedCount = 20 }
+        .sheet(isPresented: $showSourceStatusSheet) {
+            SourceStatusSheet(summaries: refreshDiagnostics.visibleSourceHealthSummaries, theme: theme)
+        }
+        .onChange(of: selectedKeyword) { _, keyword in
+            displayedCount = 20
+            if let keyword {
+                recentTermUsage.markUsed(keyword: keyword, terms: db.terms)
+            }
+        }
         .onChange(of: selectedPlatform) { _, _ in displayedCount = 20 }
         .onChange(of: daysFilter) { _, newDays in
             displayedCount = 20
@@ -522,66 +569,39 @@ struct FeedView: View {
     }
     
     private func refreshFeed() async {
-        guard !isRefreshing else { return }
-        isRefreshing = true
-        defer { isRefreshing = false }
+        guard !refreshCoordinator.isRefreshing else { return }
 
         // Skip live network during UI tests (fixtures are seeded in LocalDB).
-        if ProcessInfo.processInfo.arguments.contains("--uitesting") { return }
-
-        // Fetch every subscribed source for each active watch term, entirely
-        // on-device. LocalDB.mergeItems handles dedup, the 600-item cap, and
-        // new-item notifications; the days/keyword/platform filtering happens at
-        // query time in LocalDB.queryFeed.
-        let activeTerms = db.terms.filter { $0.is_active }
-        let subscribed = Set(db.subscribedPlatforms.filter { $0 != "custom" })
-        let sourceRevision = db.dataRevision
-        await ingestTerms(activeTerms, platforms: subscribed, sourceRevision: sourceRevision)
-
-        // Refresh custom URL cards.
-        let customItems = await NetworkManager.shared.scrapeCustomUrls(db.customUrls)
-        if !customItems.isEmpty {
-            _ = db.mergeItems(newItems: customItems, sourceRevision: sourceRevision)
+        if ProcessInfo.processInfo.arguments.contains("--uitesting") {
+            if ProcessInfo.processInfo.arguments.contains("--uitesting-source-status") {
+                refreshDiagnostics.resetSourceStatuses()
+                refreshDiagnostics.recordSourceStatuses([
+                    SourceRefreshStatus(id: "news", outcome: .received, itemCount: 1, queryCount: 1),
+                    SourceRefreshStatus(id: "barks", outcome: .noResults, itemCount: 0, queryCount: 1),
+                ])
+                refreshDiagnostics.recordCompletedSourceStatuses(refreshDiagnostics.sourceStatuses)
+            }
+            refreshDiagnostics.finish(succeeded: true, partial: false)
+            return
         }
+
+        _ = await refreshCoordinator.refresh(.foreground)
     }
 
     /// On-demand ingest of a single source (used when a platform chip is tapped
     /// and we have no cached items for it yet).
     private func ingestPlatform(_ platformId: String) async {
         if ProcessInfo.processInfo.arguments.contains("--uitesting") { return }
-        await ingestTerms(
-            db.terms.filter { $0.is_active },
-            platforms: [platformId],
-            sourceRevision: db.dataRevision
-        )
+        _ = await refreshCoordinator.refresh(.platform(platformId))
     }
 
-    /// Ingest a set of terms, capping how many run at once so a large watch
-    /// list doesn't fire hundreds of simultaneous requests (each term already
-    /// fans out across ~12 sources). Results merge as they arrive.
-    private func ingestTerms(_ terms: [WatchTerm], platforms: Set<String>, sourceRevision: Int) async {
-        guard !terms.isEmpty, !platforms.isEmpty else { return }
-        let maxConcurrentTerms = 3
-        await withTaskGroup(of: [FeedItem].self) { group in
-            var iterator = terms.makeIterator()
-            var running = 0
-            var batches = [[FeedItem]]()
-            while running < maxConcurrentTerms, let term = iterator.next() {
-                group.addTask { await IngestionService.shared.ingest(term: term, platforms: platforms) }
-                running += 1
-            }
-            for await items in group {
-                if !items.isEmpty {
-                    batches.append(items)
-                }
-                if let term = iterator.next() {
-                    group.addTask { await IngestionService.shared.ingest(term: term, platforms: platforms) }
-                }
-            }
-            if !batches.isEmpty {
-                _ = db.mergeItemsBatched(newItemsBatches: batches, sourceRevision: sourceRevision)
-            }
-        }
+    private func markRecentUse(for item: FeedItem) {
+        recentTermUsage.markUsed(keyword: item.watch_term_keyword, terms: db.terms)
+    }
+
+    private func openFeedItem(_ item: FeedItem) {
+        markRecentUse(for: item)
+        selectedItem = item
     }
 
     private func hasItems(for platformId: String) -> Bool {
@@ -600,9 +620,86 @@ struct FeedView: View {
         }
         return item.platform == platformId
     }
+
+    private func sourceStatusText(_ status: SourceRefreshStatus) -> String {
+        switch status.outcome {
+        case .received:
+            return "\(status.itemCount) items · \(status.queryCount) queries"
+        case .noResults:
+            return "No matching items · \(status.queryCount) queries"
+        case .failed(let failure):
+            return "\(failure.displayName) · \(status.queryCount) queries"
+        }
+    }
+
 }
 
 // MARK: - Subviews
+
+private struct SourceStatusSheet: View {
+    let summaries: [SourceHealthSummary]
+    let theme: ThemeManager
+
+    var body: some View {
+        NavigationStack {
+            if summaries.isEmpty {
+                ContentUnavailableView("No source history yet", systemImage: "chart.bar.xaxis")
+            } else {
+                List(summaries) { summary in
+                    SourceStatusRow(summary: summary, theme: theme)
+                }
+            }
+        }
+        .navigationTitle("Source status")
+        .navigationBarTitleDisplayMode(.inline)
+        .presentationDetents([.medium, .large])
+        .accessibilityIdentifier("feed.sourceStatusSheet")
+    }
+}
+
+private struct SourceStatusRow: View {
+    let summary: SourceHealthSummary
+    let theme: ThemeManager
+
+    var body: some View {
+        HStack(spacing: 10) {
+            let metadata = theme.metadata(for: summary.id)
+            Text(metadata.icon)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(metadata.name)
+                    .font(.subheadline.weight(.semibold))
+                Text(summaryText)
+                    .font(.caption)
+                    .foregroundColor(theme.colors.textMuted)
+            }
+            Spacer()
+            Text("\(summary.currentStatus?.itemCount ?? 0)")
+                .font(.caption.monospacedDigit())
+                .foregroundColor(theme.colors.textMuted)
+        }
+        .accessibilityIdentifier("feed.sourceStatus.\(summary.id)")
+    }
+
+    private var summaryText: String {
+        let current = summary.currentStatus.map(statusText) ?? "Not checked"
+        let lastFailure = summary.lastFailure.map { " · last \($0.displayName)" } ?? ""
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .short
+        let checked = formatter.localizedString(for: summary.lastCheckedAt, relativeTo: Date())
+        return "\(current) · 7d: \(summary.receivedCount) received, \(summary.emptyCount) empty, \(summary.failedCount) failed · \(summary.totalItemCount) total items · checked \(checked)\(lastFailure)"
+    }
+
+    private func statusText(_ status: SourceRefreshStatus) -> String {
+        switch status.outcome {
+        case .received:
+            return "\(status.itemCount) items · \(status.queryCount) queries"
+        case .noResults:
+            return "No matching items · \(status.queryCount) queries"
+        case .failed(let failure):
+            return "\(failure.displayName) · \(status.queryCount) queries"
+        }
+    }
+}
 
 struct PillView: View {
     let text: String
@@ -712,7 +809,6 @@ struct FeedCard: View {
         .background(theme.colors.card)
         .cornerRadius(12)
         .shadow(color: Color.black.opacity(theme.mode == .dark ? 0.2 : 0.04), radius: 5, x: 0, y: 2)
-        .accessibilityIdentifier("feed.card.\(item.id)")
     }
     
     private func relativeTime(from isoDate: String) -> String {

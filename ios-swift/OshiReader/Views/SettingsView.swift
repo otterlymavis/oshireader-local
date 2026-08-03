@@ -20,12 +20,59 @@ struct LocalBackupDocument: FileDocument {
     }
 }
 
+struct EncryptedBackupDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.oshiReaderEncryptedBackup, .data] }
+    static var writableContentTypes: [UTType] { [.oshiReaderEncryptedBackup] }
+
+    var data: Data
+
+    init(data: Data = Data()) {
+        self.data = data
+    }
+
+    init(configuration: ReadConfiguration) throws {
+        data = configuration.file.regularFileContents ?? Data()
+    }
+
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: data)
+    }
+}
+
+struct LocalProfileTransferDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.oshiReaderProfile, .data] }
+    static var writableContentTypes: [UTType] { [.oshiReaderProfile] }
+
+    var data: Data
+
+    init(data: Data = Data()) { self.data = data }
+    init(configuration: ReadConfiguration) throws {
+        data = configuration.file.regularFileContents ?? Data()
+    }
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: data)
+    }
+}
+
+private enum EncryptedBackupOperation: String, Identifiable {
+    case export
+    case `import`
+
+    var id: String { rawValue }
+}
+
+private enum ProfileNameMode {
+    case create
+    case rename
+}
+
 struct SettingsView: View {
     @StateObject private var db = LocalDB.shared
     @StateObject private var theme = ThemeManager.shared
     @StateObject private var i18n = I18nManager.shared
     @StateObject private var appearance = AppearanceManager.shared
     @StateObject private var notifications = NotificationManager.shared
+    @StateObject private var profiles = LocalProfileStore.shared
     
     @State private var showingAddKeywordAlert = false
     @State private var showingClearAllAlert = false
@@ -37,13 +84,34 @@ struct SettingsView: View {
     @State private var newAliasText = ""
     // API token lives in the Keychain now that ingestion runs on-device.
     @State private var twitterBearerToken = KeychainHelper.read(.twitterBearerToken) ?? ""
-    @AppStorage("auto_translate_reader") private var autoTranslateReader = false
+    @State private var autoTranslateReader = UserDefaults.standard.bool(
+        forKey: LocalProfileStore.defaultsKey("auto_translate_reader")
+    )
     @State private var backupDocument = LocalBackupDocument()
     @State private var showingBackupExporter = false
     @State private var showingBackupImporter = false
+    @State private var encryptedBackupDocument = EncryptedBackupDocument()
+    @State private var showingEncryptedBackupExporter = false
+    @State private var showingEncryptedBackupImporter = false
+    @State private var encryptedBackupOperation: EncryptedBackupOperation?
+    @State private var encryptedBackupPassword = ""
+    @State private var encryptedBackupConfirmation = ""
+    @State private var encryptedBackupError = ""
+    @State private var pendingEncryptedBackupData: Data?
     @State private var backupMessage = ""
     @State private var showingBackupMessage = false
+    @State private var profileTransferDocument = LocalProfileTransferDocument()
+    @State private var showingProfileExporter = false
+    @State private var showingProfileImporter = false
+    @State private var profileName = ""
+    @State private var profileError = ""
+    @State private var showingProfileNameSheet = false
+    @State private var profileNameMode: ProfileNameMode = .create
+    @State private var profileToRename: UUID?
     @State private var showingAliasLimitMessage = false
+    @State private var amebloURL = ""
+    @State private var amebloTitle = ""
+    @State private var amebloError = ""
     
     var allPlatforms: [(String, String)] {
         PlatformRegistry.all.map { ($0.id, "\($0.icon) \($0.name)") }
@@ -59,6 +127,144 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
+                Section(header: Text("Profiles"), footer: Text("Profiles stay on this device. Imported profile packages create a new profile.")) {
+                    ForEach(profiles.profiles) { profile in
+                        HStack {
+                            Button {
+                                do { try db.switchProfile(to: profile.id) }
+                                catch { profileError = error.localizedDescription }
+                            } label: {
+                                HStack {
+                                    Image(systemName: profile.id == profiles.activeProfileID ? "checkmark.circle.fill" : "circle")
+                                    VStack(alignment: .leading) {
+                                        Text(profile.name)
+                                        if profile.id == profiles.activeProfileID { Text("Active").font(.caption).foregroundStyle(.secondary) }
+                                    }
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityIdentifier("settings.profile.\(profile.id.uuidString)")
+
+                            Spacer()
+                            Button {
+                                profileNameMode = .rename
+                                profileToRename = profile.id
+                                profileName = profile.name
+                                profileError = ""
+                                showingProfileNameSheet = true
+                            } label: {
+                                Image(systemName: "pencil")
+                            }
+                            .accessibilityIdentifier("settings.profileRename.\(profile.id.uuidString)")
+
+                            Button(role: .destructive) {
+                                do { try db.deleteProfile(id: profile.id) }
+                                catch { profileError = error.localizedDescription }
+                            } label: {
+                                Image(systemName: "trash")
+                            }
+                            .accessibilityIdentifier("settings.profileDelete.\(profile.id.uuidString)")
+                        }
+                    }
+                    Button {
+                        profileNameMode = .create
+                        profileToRename = nil
+                        profileName = ""
+                        profileError = ""
+                        showingProfileNameSheet = true
+                    } label: {
+                        Label("Add profile", systemImage: "plus")
+                    }
+                    .accessibilityIdentifier("settings.addProfileButton")
+
+                    Button {
+                        do {
+                            profileTransferDocument = LocalProfileTransferDocument(data: try db.exportProfileTransferData())
+                            showingProfileExporter = true
+                        } catch { profileError = error.localizedDescription }
+                    } label: {
+                        Label("Export profile", systemImage: "square.and.arrow.up")
+                    }
+                    .accessibilityIdentifier("settings.exportProfileButton")
+
+                    Button { showingProfileImporter = true } label: {
+                        Label("Import profile", systemImage: "square.and.arrow.down")
+                    }
+                    .accessibilityIdentifier("settings.importProfileButton")
+                }
+
+                Section(header: Text("Ameblo blogs"), footer: Text("Add Ameba blog URLs to search their RSS feeds for every active watch term. Up to 20 blogs.")) {
+                    TextField("https://ameblo.jp/blog-id", text: $amebloURL)
+                        .keyboardType(.URL)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .accessibilityIdentifier("settings.amebloURLField")
+
+                    TextField("Blog title (optional)", text: $amebloTitle)
+                        .accessibilityIdentifier("settings.amebloTitleField")
+
+                    Button {
+                        switch db.addAmebloBlog(url: amebloURL, title: amebloTitle) {
+                        case .added:
+                            amebloURL = ""
+                            amebloTitle = ""
+                            amebloError = ""
+                        case .invalidURL:
+                            amebloError = "Enter an Ameblo blog URL such as https://ameblo.jp/blog-id."
+                        case .duplicate:
+                            amebloError = "This Ameblo blog is already configured."
+                        case .limitReached:
+                            amebloError = "You can configure up to 20 Ameblo blogs."
+                        }
+                    } label: {
+                        Label("Add Ameblo blog", systemImage: "plus.circle.fill")
+                    }
+                    .disabled(amebloURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .accessibilityIdentifier("settings.addAmebloButton")
+
+                    if db.subscribedPlatforms.contains("ameblo") {
+                        Text("Ameblo is enabled")
+                            .font(.caption)
+                            .foregroundColor(theme.colors.textMuted)
+                            .accessibilityIdentifier("settings.amebloSubscriptionState")
+                    }
+
+                    if !amebloError.isEmpty {
+                        Text(amebloError)
+                            .font(.caption)
+                            .foregroundColor(.red)
+                            .accessibilityIdentifier("settings.amebloError")
+                    }
+
+                    ForEach(db.amebloBlogs) { blog in
+                        HStack(spacing: 10) {
+                            Text("✏️")
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(blog.title ?? blog.amebaID)
+                                    .font(.subheadline.weight(.semibold))
+                                Text(blog.url)
+                                    .font(.caption)
+                                    .foregroundColor(theme.colors.textMuted)
+                            }
+                            Spacer()
+                            Button(role: .destructive) {
+                                db.removeAmebloBlog(id: blog.id)
+                            } label: {
+                                Image(systemName: "trash")
+                            }
+                            .accessibilityLabel("Remove \(blog.amebaID)")
+                            .accessibilityIdentifier("settings.removeAmeblo.\(blog.amebaID)")
+                        }
+                        .accessibilityIdentifier("settings.amebloBlog.\(blog.amebaID)")
+                        .accessibilityElement(children: .contain)
+                    }
+                    .onDelete { offsets in
+                        for index in offsets {
+                            db.removeAmebloBlog(id: db.amebloBlogs[index].id)
+                        }
+                    }
+                }
+
                 // Section: Keywords management
                 Section(header: Text(i18n.t("watchTerms"))) {
                     ForEach(db.terms) { term in
@@ -403,6 +609,20 @@ struct SettingsView: View {
                     }
                     .accessibilityIdentifier("settings.importBackupButton")
 
+                    Button {
+                        beginEncryptedExport()
+                    } label: {
+                        Label("Export encrypted backup", systemImage: "lock.shield")
+                    }
+                    .accessibilityIdentifier("settings.exportEncryptedBackupButton")
+
+                    Button {
+                        showingEncryptedBackupImporter = true
+                    } label: {
+                        Label("Import encrypted backup", systemImage: "lock.shield.fill")
+                    }
+                    .accessibilityIdentifier("settings.importEncryptedBackupButton")
+
                     Button(role: .destructive) {
                         showingClearAllAlert = true
                     } label: {
@@ -534,6 +754,17 @@ struct SettingsView: View {
             } message: {
                 Text(i18n.t("clearAllDataMessage"))
             }
+            .sheet(item: $encryptedBackupOperation) { operation in
+                EncryptedBackupPasswordSheet(
+                    operation: operation,
+                    password: $encryptedBackupPassword,
+                    confirmation: $encryptedBackupConfirmation,
+                    errorMessage: $encryptedBackupError,
+                    onCancel: cancelEncryptedBackupPrompt,
+                    onSubmit: submitEncryptedBackupPrompt
+                )
+                .presentationDetents([.medium])
+            }
             .fileExporter(
                 isPresented: $showingBackupExporter,
                 document: backupDocument,
@@ -565,16 +796,166 @@ struct SettingsView: View {
                 }
                 showingBackupMessage = true
             }
+            .fileExporter(
+                isPresented: $showingEncryptedBackupExporter,
+                document: encryptedBackupDocument,
+                contentType: .oshiReaderEncryptedBackup,
+                defaultFilename: "oshireader-backup.oshireader"
+            ) { result in
+                if case .failure(let error) = result {
+                    backupMessage = error.localizedDescription
+                    showingBackupMessage = true
+                }
+            }
+            .fileImporter(
+                isPresented: $showingEncryptedBackupImporter,
+                allowedContentTypes: [.oshiReaderEncryptedBackup, .data]
+            ) { result in
+                do {
+                    let url = try result.get()
+                    let didAccess = url.startAccessingSecurityScopedResource()
+                    defer {
+                        if didAccess { url.stopAccessingSecurityScopedResource() }
+                    }
+                    let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+                    let byteCount = (attributes[.size] as? NSNumber)?.int64Value ?? 0
+                    guard byteCount <= Int64(EncryptedBackupCodec.maximumEnvelopeBytes) else {
+                        throw EncryptedBackupError.payloadTooLarge
+                    }
+                    pendingEncryptedBackupData = try Data(contentsOf: url, options: [.mappedIfSafe])
+                    encryptedBackupPassword = ""
+                    encryptedBackupConfirmation = ""
+                    encryptedBackupError = ""
+                    encryptedBackupOperation = .import
+                } catch {
+                    backupMessage = error.localizedDescription
+                    showingBackupMessage = true
+                }
+            }
             .alert(i18n.t("backupStatus"), isPresented: $showingBackupMessage) {
                 Button(i18n.t("ok"), role: .cancel) {}
             } message: {
                 Text(backupMessage)
             }
+            .sheet(isPresented: $showingProfileNameSheet) {
+                VStack(spacing: 16) {
+                    Text(profileNameMode == .create ? "Add profile" : "Rename profile")
+                        .font(.headline)
+                    TextField("Profile name", text: $profileName)
+                        .textFieldStyle(.roundedBorder)
+                        .accessibilityIdentifier("settings.profileNameField")
+                    if !profileError.isEmpty { Text(profileError).foregroundStyle(.red).font(.caption) }
+                    HStack {
+                        Button("Cancel") { showingProfileNameSheet = false }
+                            .accessibilityIdentifier("settings.profileCancelButton")
+                        Button("Save") {
+                            do {
+                                switch profileNameMode {
+                                case .create: _ = try db.createProfile(name: profileName)
+                                case .rename:
+                                    guard let profileToRename else { throw LocalProfileError.profileNotFound }
+                                    try db.renameProfile(id: profileToRename, name: profileName)
+                                }
+                                showingProfileNameSheet = false
+                                profileError = ""
+                            } catch { profileError = error.localizedDescription }
+                        }
+                        .accessibilityIdentifier("settings.profileSaveButton")
+                    }
+                }
+                .padding()
+                .presentationDetents([.medium])
+            }
+            .fileExporter(
+                isPresented: $showingProfileExporter,
+                document: profileTransferDocument,
+                contentType: .oshiReaderProfile,
+                defaultFilename: "oshireader-profile.oshireaderprofile"
+            ) { result in
+                if case .failure(let error) = result { profileError = error.localizedDescription }
+            }
+            .fileImporter(isPresented: $showingProfileImporter, allowedContentTypes: [.oshiReaderProfile, .data]) { result in
+                do {
+                    let url = try result.get()
+                    let didAccess = url.startAccessingSecurityScopedResource()
+                    defer { if didAccess { url.stopAccessingSecurityScopedResource() } }
+                    let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+                    let byteCount = (attributes[.size] as? NSNumber)?.int64Value ?? 0
+                    guard byteCount <= Int64(LocalDB.maximumProfileTransferBytes) else { throw LocalProfileError.invalidPackage }
+                    let imported = try db.importProfileTransferData(try Data(contentsOf: url, options: [.mappedIfSafe]))
+                    profileError = "Imported profile \(imported.name)."
+                } catch { profileError = error.localizedDescription }
+            }
+            .alert("Profile status", isPresented: Binding(
+                get: { !profileError.isEmpty && !showingProfileNameSheet },
+                set: { if !$0 { profileError = "" } }
+            )) {
+                Button("OK", role: .cancel) { profileError = "" }
+            } message: { Text(profileError) }
             .alert(i18n.t("addAlias"), isPresented: $showingAliasLimitMessage) {
                 Button(i18n.t("ok"), role: .cancel) {}
             } message: {
                 Text(i18n.t("aliasLimitReached"))
             }
+        }
+        .onChange(of: profiles.activeProfileID) { _, profileID in
+            autoTranslateReader = UserDefaults.standard.bool(
+                forKey: LocalProfileStore.defaultsKey("auto_translate_reader", profileID: profileID)
+            )
+        }
+        .onChange(of: autoTranslateReader) { _, enabled in
+            UserDefaults.standard.set(
+                enabled,
+                forKey: LocalProfileStore.defaultsKey("auto_translate_reader", profileID: profiles.activeProfileID)
+            )
+        }
+    }
+
+    private func beginEncryptedExport() {
+        encryptedBackupPassword = ""
+        encryptedBackupConfirmation = ""
+        encryptedBackupError = ""
+        encryptedBackupOperation = .export
+    }
+
+    private func cancelEncryptedBackupPrompt() {
+        encryptedBackupOperation = nil
+        encryptedBackupPassword = ""
+        encryptedBackupConfirmation = ""
+        encryptedBackupError = ""
+        pendingEncryptedBackupData = nil
+    }
+
+    private func submitEncryptedBackupPrompt() {
+        do {
+            try EncryptedBackupCodec.validatePassword(encryptedBackupPassword)
+            switch encryptedBackupOperation {
+            case .export:
+                guard encryptedBackupPassword == encryptedBackupConfirmation else {
+                    throw NSError(domain: "OshiReaderBackup", code: 8, userInfo: [NSLocalizedDescriptionKey: "Passwords do not match."])
+                }
+                encryptedBackupDocument = EncryptedBackupDocument(data: try db.exportEncryptedBackupData(password: encryptedBackupPassword))
+                encryptedBackupOperation = nil
+                encryptedBackupPassword = ""
+                encryptedBackupConfirmation = ""
+                DispatchQueue.main.async {
+                    showingEncryptedBackupExporter = true
+                }
+            case .import:
+                guard let data = pendingEncryptedBackupData else {
+                    throw EncryptedBackupError.invalidEnvelope
+                }
+                try db.importEncryptedBackupData(data, password: encryptedBackupPassword)
+                encryptedBackupOperation = nil
+                encryptedBackupPassword = ""
+                pendingEncryptedBackupData = nil
+                backupMessage = i18n.t("backupImported")
+                showingBackupMessage = true
+            case nil:
+                break
+            }
+        } catch {
+            encryptedBackupError = error.localizedDescription
         }
     }
 
@@ -667,6 +1048,57 @@ struct SettingsView: View {
             return i18n.t("notificationStatusNotRequested")
         @unknown default:
             return i18n.t("notificationStatusUnknown")
+        }
+    }
+}
+
+private struct EncryptedBackupPasswordSheet: View {
+    let operation: EncryptedBackupOperation
+    @Binding var password: String
+    @Binding var confirmation: String
+    @Binding var errorMessage: String
+    let onCancel: () -> Void
+    let onSubmit: () -> Void
+
+    private var isExport: Bool { operation == .export }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    SecureField("Password", text: $password)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .accessibilityIdentifier("settings.encryptedBackupPasswordField")
+
+                    if isExport {
+                        SecureField("Confirm password", text: $confirmation)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .accessibilityIdentifier("settings.encryptedBackupConfirmationField")
+                    }
+                } footer: {
+                    Text(isExport
+                         ? "Use at least 12 characters. The password is never stored."
+                         : "Enter the password used when this encrypted backup was exported.")
+                }
+
+                if !errorMessage.isEmpty {
+                    Text(errorMessage)
+                        .foregroundColor(.red)
+                        .font(.footnote)
+                        .accessibilityIdentifier("settings.encryptedBackupError")
+                }
+
+                Section {
+                    Button(isExport ? "Export encrypted backup" : "Import encrypted backup", action: onSubmit)
+                        .accessibilityIdentifier("settings.encryptedBackupSubmitButton")
+                    Button("Cancel", role: .cancel, action: onCancel)
+                        .accessibilityIdentifier("settings.encryptedBackupCancelButton")
+                }
+            }
+            .navigationTitle(isExport ? "Encrypted backup" : "Unlock backup")
+            .navigationBarTitleDisplayMode(.inline)
         }
     }
 }

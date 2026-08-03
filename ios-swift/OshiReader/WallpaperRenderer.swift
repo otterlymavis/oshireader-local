@@ -49,9 +49,9 @@ enum WallpaperRenderer {
 
     /// Resolve a stored wallpaper spec (remote URL or bare local filename) to a
     /// loadable local file URL, rebuilding the Documents path at call time.
+    @MainActor
     static func localURL(for fileName: String) -> URL {
-        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent(fileName)
+        LocalProfileStore.shared.assetURL(for: fileName)
     }
 
     /// Static, gesture-free mirror of the editor's layer layout.
