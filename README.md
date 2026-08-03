@@ -44,6 +44,15 @@ On-device ingestion currently reads these sources:
 | NicoNico | NicoNico snapshot search API |
 | TVer | TVer keyword search APIs |
 | Note | Public tag RSS feeds |
+| Ameblo | User-configured official RSS feeds, with Google News fallback when none are configured |
+| AERA dot. | Dedicated official RSS feed |
+| Hochi | Dedicated official RSS feed |
+| Real Sound | Dedicated official Atom feed |
+| CinemaCafe | Dedicated official RSS feed |
+| Billboard Japan | Dedicated official RSS feed |
+| Sponichi | Google News site-filtered fallback; official RSS endpoint deferred |
+| Natalie | Dedicated music and TV RSS feeds |
+| BARKS | Dedicated official RSS feed |
 | 5channel | Google News site-filtered results |
 | Girls Channel | Google News site-filtered results |
 | Togetter | Curation page scraping |
