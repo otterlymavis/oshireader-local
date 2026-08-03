@@ -140,7 +140,7 @@ final class OshiReaderUITests: XCTestCase {
         editButton.tap()
 
         XCTAssertTrue(app.staticTexts["✨ UITest Oshi"].waitForExistence(timeout: 5))
-        let saveButton = waitForButton(containing: "保存", timeout: 3)
+        let saveButton = waitForAnyButton(containing: ["Save", "保存", "保存する", "儲存"], timeout: 3)
         XCTAssertNotNil(saveButton)
         saveButton?.tap()
     }
