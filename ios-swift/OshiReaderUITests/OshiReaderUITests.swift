@@ -13,14 +13,14 @@ final class OshiReaderUITests: XCTestCase {
     func testAddKeywordFlow() throws {
         tapTab(index: 4, labels: ["Settings"])
 
-        let addKeywordButton = app.buttons["settings.addKeywordButton"]
-        XCTAssertTrue(addKeywordButton.waitForExistence(timeout: 3))
-        addKeywordButton.forceTap()
-        let keywordField = firstExistingTextField(labels: ["settings.keywordField", "Enter keyword..."]) ?? app.textFields.firstMatch
-        XCTAssertTrue(keywordField.waitForExistence(timeout: 3))
+        let addKeywordButton = waitForHittableButton(identifier: "settings.addKeywordButton", timeout: 5)
+        XCTAssertNotNil(addKeywordButton)
+        addKeywordButton?.tap()
+        let keywordField = waitForHittableTextField(identifier: "settings.keywordField", timeout: 5)
+        XCTAssertNotNil(keywordField)
 
-        keywordField.tap()
-        keywordField.typeText("New UI Keyword")
+        keywordField?.tap()
+        keywordField?.typeText("New UI Keyword")
         app.toolbars.buttons["Done"].tapIfExists()
         let addButton = waitForButton(identifier: "settings.confirmAddKeywordButton", timeout: 3)
         XCTAssertNotNil(addButton)
@@ -32,14 +32,14 @@ final class OshiReaderUITests: XCTestCase {
     func testAddKeywordWithSelectedSourceFlow() throws {
         tapTab(index: 4, labels: ["Settings"])
 
-        let addKeywordButton = app.buttons["settings.addKeywordButton"]
-        XCTAssertTrue(addKeywordButton.waitForExistence(timeout: 3))
-        addKeywordButton.forceTap()
+        let addKeywordButton = waitForHittableButton(identifier: "settings.addKeywordButton", timeout: 5)
+        XCTAssertNotNil(addKeywordButton)
+        addKeywordButton?.tap()
 
-        let keywordField = firstExistingTextField(labels: ["settings.keywordField", "Enter keyword..."]) ?? app.textFields.firstMatch
-        XCTAssertTrue(keywordField.waitForExistence(timeout: 3))
-        keywordField.tap()
-        keywordField.typeText("Selected Source UI Keyword")
+        let keywordField = waitForHittableTextField(identifier: "settings.keywordField", timeout: 5)
+        XCTAssertNotNil(keywordField)
+        keywordField?.tap()
+        keywordField?.typeText("Selected Source UI Keyword")
         app.toolbars.buttons["Done"].tapIfExists()
 
         let selectedMode = waitForAnyButton(containing: ["Selected", "選択", "選取", "选择"], timeout: 3)
@@ -310,30 +310,14 @@ final class OshiReaderUITests: XCTestCase {
     }
 
     private func tapTab(index: Int, labels: [String]) {
-        let tabIdentifiers = ["tab.feed", "tab.search", "tab.saved", "tab.oshi", "tab.settings"]
-        if tabIdentifiers.indices.contains(index) {
-            let tabElement = app.descendants(matching: .any)[tabIdentifiers[index]]
-            if tabElement.waitForExistence(timeout: 1) {
-                tabElement.tap()
-                return
-            }
-        }
-
-        for label in labels {
-            let button = app.tabBars.buttons[label]
-            if button.waitForExistence(timeout: 1) {
-                button.tap()
-                return
-            }
-        }
-
-        let indexedButton = app.tabBars.buttons.element(boundBy: index)
-        if indexedButton.waitForExistence(timeout: 2) {
-            indexedButton.tap()
+        guard index >= 0 && index < 5 else {
+            XCTFail("Could not find tab at index \(index) with labels \(labels)")
             return
         }
 
-        XCTFail("Could not find tab at index \(index) with labels \(labels)")
+        let tab = app.tabBars.buttons.element(boundBy: index)
+        XCTAssertTrue(tab.waitForExistence(timeout: 3), "Missing tab button for \(labels)")
+        tab.tap()
     }
 
     private func firstExistingButton(containing text: String) -> XCUIElement? {
@@ -470,6 +454,31 @@ final class OshiReaderUITests: XCTestCase {
             }
         }
         return nil
+    }
+
+    private func waitForHittableButton(identifier: String, timeout: TimeInterval) -> XCUIElement? {
+        let deadline = Date().addingTimeInterval(timeout)
+        let matches = app.buttons.matching(identifier: identifier)
+        while Date() < deadline {
+            if let button = matches.allElementsBoundByIndex.first(where: { $0.exists && $0.isHittable }) {
+                return button
+            }
+            app.swipeUp()
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        return matches.allElementsBoundByIndex.first(where: { $0.exists && $0.isHittable })
+    }
+
+    private func waitForHittableTextField(identifier: String, timeout: TimeInterval) -> XCUIElement? {
+        let deadline = Date().addingTimeInterval(timeout)
+        let matches = app.textFields.matching(identifier: identifier)
+        while Date() < deadline {
+            if let field = matches.allElementsBoundByIndex.first(where: { $0.exists && $0.isHittable }) {
+                return field
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        return matches.allElementsBoundByIndex.first(where: { $0.exists && $0.isHittable })
     }
 
     private func waitForAnyStaticText(_ labels: [String], timeout: TimeInterval) -> Bool {
