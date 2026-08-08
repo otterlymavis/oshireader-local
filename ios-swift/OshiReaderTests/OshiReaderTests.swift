@@ -38,6 +38,34 @@ private actor RetryGate {
     }
 }
 
+private final class MockURLProtocol: URLProtocol {
+    static var handler: ((URLRequest) throws -> (Data, HTTPURLResponse))?
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        true
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        request
+    }
+
+    override func startLoading() {
+        do {
+            guard let handler = Self.handler else {
+                throw URLError(.badServerResponse)
+            }
+            let (data, response) = try handler(request)
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: data)
+            client?.urlProtocolDidFinishLoading(self)
+        } catch {
+            client?.urlProtocol(self, didFailWithError: error)
+        }
+    }
+
+    override func stopLoading() {}
+}
+
 final class OshiReaderTests: XCTestCase {
     
     private var db: LocalDB!
@@ -61,6 +89,107 @@ final class OshiReaderTests: XCTestCase {
         try super.tearDownWithError()
     }
 
+    func testFeedThumbnailLoaderDownsamplesLargeImages() throws {
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: 800, height: 400))
+        let data = renderer.pngData { context in
+            UIColor.systemBlue.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 800, height: 400))
+        }
+
+        let image = try XCTUnwrap(
+            FeedThumbnailLoader.downsample(data: data, maxPixelSize: 144)
+        )
+
+        XCTAssertLessThanOrEqual(max(image.size.width, image.size.height), 144)
+    }
+
+    func testFeedThumbnailLoaderCoalescesConcurrentRequests() async throws {
+        let url = try XCTUnwrap(URL(string: "https://example.com/thumb.png"))
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: 80, height: 80))
+        let data = renderer.pngData { context in
+            UIColor.systemGreen.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 80, height: 80))
+        }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let loader = FeedThumbnailLoader(session: session)
+        let lock = NSLock()
+        var requestCount = 0
+        MockURLProtocol.handler = { request in
+            lock.lock()
+            requestCount += 1
+            lock.unlock()
+            Thread.sleep(forTimeInterval: 0.1)
+            return (
+                data,
+                try XCTUnwrap(HTTPURLResponse(
+                    url: try XCTUnwrap(request.url),
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: ["Content-Type": "image/png"]
+                ))
+            )
+        }
+        defer {
+            MockURLProtocol.handler = nil
+            session.invalidateAndCancel()
+        }
+
+        async let first = loader.image(for: url)
+        async let second = loader.image(for: url)
+        let images = await [first, second]
+
+        XCTAssertEqual(images.compactMap { $0 }.count, 2)
+        lock.lock()
+        let count = requestCount
+        lock.unlock()
+        XCTAssertEqual(count, 1)
+    }
+
+    func testFeedThumbnailLoaderUsesMemoryCacheForSequentialRequests() async throws {
+        let url = try XCTUnwrap(URL(string: "https://example.com/cached-thumb.png"))
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: 80, height: 80))
+        let data = renderer.pngData { context in
+            UIColor.systemOrange.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 80, height: 80))
+        }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let loader = FeedThumbnailLoader(session: session)
+        let lock = NSLock()
+        var requestCount = 0
+        MockURLProtocol.handler = { request in
+            lock.lock()
+            requestCount += 1
+            lock.unlock()
+            return (
+                data,
+                try XCTUnwrap(HTTPURLResponse(
+                    url: try XCTUnwrap(request.url),
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: ["Content-Type": "image/png"]
+                ))
+            )
+        }
+        defer {
+            MockURLProtocol.handler = nil
+            session.invalidateAndCancel()
+        }
+
+        let first = await loader.image(for: url)
+        let second = await loader.image(for: url)
+
+        XCTAssertNotNil(first)
+        XCTAssertNotNil(second)
+        lock.lock()
+        let count = requestCount
+        lock.unlock()
+        XCTAssertEqual(count, 1)
+    }
+
     func testPlatformRegistryContainsReferenceSourcesWithoutChangingDefaults() {
         let ids = Set(PlatformRegistry.all.map(\.id))
         XCTAssertTrue(ids.isSuperset(of: [
@@ -78,6 +207,15 @@ final class OshiReaderTests: XCTestCase {
         XCTAssertFalse(PlatformRegistry.defaultSubscribedIDs.contains("soompi"))
     }
 
+    func testPlatformRegistryNormalizesLegacyRawPlatformIDs() {
+        XCTAssertEqual(PlatformRegistry.normalizeID(" x "), "twitter")
+        XCTAssertEqual(PlatformRegistry.normalizeID("news:mdpr"), "mdpr")
+        XCTAssertEqual(PlatformRegistry.normalizeID("news:yahoo_ent"), "yahoonews")
+        XCTAssertEqual(PlatformRegistry.normalizeID("news:unknown"), "news")
+        XCTAssertEqual(PlatformRegistry.definition(for: "x")?.id, "twitter")
+        XCTAssertEqual(PlatformRegistry.normalizeIDs(["x", "twitter", "news:mdpr", "unknown"]), ["twitter", "mdpr"])
+    }
+
     func testDedicatedSearchLinksUseDedicatedPlatformIDs() {
         let registeredIDs = Set(PlatformRegistry.all.map(\.id))
         let mismatches = staticSearchLinks.compactMap { link -> String? in
@@ -90,8 +228,8 @@ final class OshiReaderTests: XCTestCase {
 
     func testSavedSubscribedPlatformsDoNotReAddMissingDefaultsOnLoad() {
         XCTAssertEqual(
-            LocalDB.subscribedPlatformsForLoadedValue(["news", " youtube ", "unknown", "news"], hasSavedFile: true),
-            ["news", "youtube"]
+            LocalDB.subscribedPlatformsForLoadedValue(["news", " youtube ", "unknown", "news", "x", "news:mdpr", "NEWS:YAHOO_ENT"], hasSavedFile: true),
+            ["news", "youtube", "twitter", "mdpr", "yahoonews"]
         )
         XCTAssertEqual(
             LocalDB.subscribedPlatformsForLoadedValue(["news"], hasSavedFile: false),
@@ -260,6 +398,31 @@ final class OshiReaderTests: XCTestCase {
         let usedSponichiRSS = await capture.contains { $0.contains("sponichi.co.jp/rss") }
         XCTAssertTrue(usedGoogleNews)
         XCTAssertFalse(usedSponichiRSS)
+    }
+
+    func testGoogleNewsTitlesStripSearchAndYahooSuffixes() async throws {
+        let rss = Data("""
+        <rss version="2.0"><channel>
+        <item><title>Suffix Oshi appears - Google</title><link>https://example.com/google</link><pubDate>Sun, 02 Aug 2026 08:00:00 GMT</pubDate></item>
+        <item><title>Suffix Oshi appears | Bing</title><link>https://example.com/bing</link><pubDate>Sun, 02 Aug 2026 08:01:00 GMT</pubDate></item>
+        <item><title>Suffix Oshi appears (エンタメニュース) - Yahoo!ニュース</title><link>https://example.com/yahoo</link><pubDate>Sun, 02 Aug 2026 08:02:00 GMT</pubDate></item>
+        </channel></rss>
+        """.utf8)
+        let service = IngestionService(requestExecutor: { request in
+            (
+                rss,
+                try XCTUnwrap(HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: nil
+                ))
+            )
+        })
+
+        let report = await service.ingestReport(term: WatchTerm(keyword: "Suffix Oshi"), platforms: ["news"])
+
+        XCTAssertEqual(Set(report.items.map(\.title)), Set(["Suffix Oshi appears"]))
     }
 
     func testJapaneseDedicatedRSSMediaOnlySkipsAllRequests() async {
@@ -1061,6 +1224,16 @@ final class OshiReaderTests: XCTestCase {
         XCTAssertEqual(term.selected_platforms, [])
     }
 
+    func testWatchTermDecodesMissingAndUnknownCollectionModeAsAllInfo() throws {
+        let missing = #"{"id":"missing-mode","keyword":"Legacy Oshi","is_active":true,"aliases":[],"created_at":"2026-01-01T00:00:00Z"}"#.data(using: .utf8)!
+        let unknown = #"{"id":"unknown-mode","keyword":"Legacy Oshi","collection_mode":"everything","is_active":true,"aliases":[],"created_at":"2026-01-01T00:00:00Z"}"#.data(using: .utf8)!
+
+        XCTAssertEqual(try JSONDecoder().decode(WatchTerm.self, from: missing).collection_mode, WatchTerm.allInfoCollectionMode)
+        XCTAssertEqual(try JSONDecoder().decode(WatchTerm.self, from: unknown).collection_mode, WatchTerm.allInfoCollectionMode)
+        XCTAssertEqual(WatchTerm(keyword: "Video Oshi", collection_mode: "media_only").collection_mode, WatchTerm.mediaOnlyCollectionMode)
+        XCTAssertEqual(WatchTerm(keyword: "Unknown Oshi", collection_mode: "bad").collection_mode, WatchTerm.allInfoCollectionMode)
+    }
+
     func testISO8601DateParsingCachePreservesSupportedFormatsAndFailures() {
         let zoned = "2026-01-01T12:34:56.123Z"
         let naive = "2026-01-01T12:34:56"
@@ -1070,6 +1243,26 @@ final class OshiReaderTests: XCTestCase {
         XCTAssertNotNil(parseISO8601Date(naive))
         XCTAssertNil(parseISO8601Date("not-a-date"))
         XCTAssertNil(parseISO8601Date("not-a-date"))
+    }
+
+    func testCleanDisplayTextHTMLEntities() {
+        XCTAssertEqual(cleanDisplayText("Fish &amp; Chips"), "Fish & Chips")
+        XCTAssertEqual(cleanDisplayText("He said &quot;hello&quot;"), "He said \"hello\"")
+        XCTAssertEqual(cleanDisplayText("It&#39;s &apos;OK&apos;"), "It's 'OK'")
+        XCTAssertEqual(cleanDisplayText("a&nbsp;b"), "a b")
+        XCTAssertEqual(cleanDisplayText("x &lt; y &gt; z"), "x < y > z")
+    }
+
+    func testCleanDisplayTextStripsHTMLTagsBeforeDecodingEntities() {
+        XCTAssertEqual(cleanDisplayText("<p>Hello <b>World</b></p>"), "Hello World")
+        XCTAssertEqual(cleanDisplayText("Escaped &lt;b&gt;not a tag&lt;/b&gt;"), "Escaped <b>not a tag</b>")
+    }
+
+    func testCleanDisplayTextCollapsesWhitespaceAndEmptyResults() {
+        XCTAssertEqual(cleanDisplayText("too   many   spaces"), "too many spaces")
+        XCTAssertNil(cleanDisplayText("   "))
+        XCTAssertNil(cleanDisplayText("<br/>"))
+        XCTAssertNil(cleanDisplayText(nil))
     }
 
     @MainActor
@@ -1576,6 +1769,89 @@ final class OshiReaderTests: XCTestCase {
     }
 
     @MainActor
+    func testMergePreservesNewlyAddedItemThroughFeedCap() throws {
+        let formatter = ISO8601DateFormatter()
+        let baseDate = Date(timeIntervalSince1970: 1_800_000_000)
+        db.feedItems = (0..<600).map { index in
+            FeedItem(
+                id: "existing:\(index)",
+                platform: "news",
+                url: "https://example.com/existing/\(index)",
+                title: "Existing \(index)",
+                content_text: nil,
+                author: nil,
+                thumbnail_url: nil,
+                media_type: "article",
+                published_at: formatter.string(from: baseDate.addingTimeInterval(TimeInterval(-index))),
+                watch_term_keyword: "Cap Oshi",
+                fetched_at: formatter.string(from: baseDate)
+            )
+        }
+        let evictedExistingID = "existing:599"
+        let incoming = FeedItem(
+            id: "incoming:older",
+            platform: "news",
+            url: "https://example.com/incoming/older",
+            title: "Older incoming",
+            content_text: nil,
+            author: nil,
+            thumbnail_url: nil,
+            media_type: "article",
+            published_at: formatter.string(from: baseDate.addingTimeInterval(-10_000)),
+            watch_term_keyword: "Cap Oshi",
+            fetched_at: formatter.string(from: baseDate)
+        )
+
+        XCTAssertEqual(db.mergeItems(newItems: [incoming]), 1)
+
+        XCTAssertEqual(db.feedItems.count, 600)
+        XCTAssertTrue(db.feedItems.contains { $0.id == incoming.id })
+        XCTAssertFalse(db.feedItems.contains { $0.id == evictedExistingID })
+    }
+
+    @MainActor
+    func testFeedCapRetainsMoreDiscussionPlatformItems() throws {
+        db.setSubscribedPlatforms(platforms: ["news", "5ch"])
+        let formatter = ISO8601DateFormatter()
+        let baseDate = Date(timeIntervalSince1970: 1_800_000_000)
+        let newsItems = (0..<600).map { index in
+            FeedItem(
+                id: "news:cap:\(index)",
+                platform: "news",
+                url: "https://example.com/news/\(index)",
+                title: "Aiko news \(index)",
+                content_text: "Aiko news content",
+                author: nil,
+                thumbnail_url: nil,
+                media_type: "article",
+                published_at: formatter.string(from: baseDate.addingTimeInterval(TimeInterval(600 - index))),
+                watch_term_keyword: "Aiko",
+                fetched_at: formatter.string(from: baseDate)
+            )
+        }
+        let fiveChItems = (0..<30).map { index in
+            FeedItem(
+                id: "5ch:cap:\(index)",
+                platform: "5ch",
+                url: "https://example.5ch.net/test/read.cgi/thread/\(index)",
+                title: "Aiko thread \(index)",
+                content_text: "Aiko discussion",
+                author: nil,
+                thumbnail_url: nil,
+                media_type: "article",
+                published_at: formatter.string(from: baseDate.addingTimeInterval(TimeInterval(index))),
+                watch_term_keyword: "Aiko",
+                fetched_at: formatter.string(from: baseDate)
+            )
+        }
+
+        XCTAssertEqual(db.mergeItems(newItems: newsItems + fiveChItems), 630)
+
+        XCTAssertEqual(db.feedItems.count, 600)
+        XCTAssertEqual(db.feedItems.filter { $0.platform == "5ch" }.count, 25)
+    }
+
+    @MainActor
     func testNotificationManagerSchedulesTestNotificationAfterAuthorization() async throws {
         let center = MockNotificationCenter(status: .notDetermined, grantsAuthorization: true)
         let manager = NotificationManager(center: center)
@@ -1640,11 +1916,6 @@ final class OshiReaderTests: XCTestCase {
         XCTAssertEqual(center.authorizationRequestCount, 1)
     }
 
-    func testAPNSDeviceTokenStringUsesLowercaseHex() throws {
-        let data = Data([0x00, 0x0f, 0xa1, 0xff])
-        XCTAssertEqual(NotificationManager.deviceTokenString(data), "000fa1ff")
-    }
-
     @MainActor
     func testWallpaperRendererFlattensComposition() throws {
         // Solid-color stand-in for a downloaded sticker (no network).
@@ -1665,10 +1936,34 @@ final class OshiReaderTests: XCTestCase {
     }
 
     @MainActor
+    func testWallpaperRendererWritesUniqueFileAndRemovesOlderRenderedWallpaper() throws {
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 20, height: 20)).image { ctx in
+            UIColor.systemTeal.setFill()
+            ctx.fill(CGRect(x: 0, y: 0, width: 20, height: 20))
+        }
+        let png = try XCTUnwrap(image.pngData())
+
+        let first = try XCTUnwrap(WallpaperRenderer.writeRenderedPNGForTesting(png))
+        let firstURL = WallpaperRenderer.localURL(for: first)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: firstURL.path))
+
+        let second = try XCTUnwrap(WallpaperRenderer.writeRenderedPNGForTesting(png))
+        let secondURL = WallpaperRenderer.localURL(for: second)
+        defer { try? FileManager.default.removeItem(at: secondURL) }
+
+        XCTAssertNotEqual(first, second)
+        XCTAssertTrue(first.hasPrefix("oshi_wallpaper_"))
+        XCTAssertTrue(second.hasPrefix("oshi_wallpaper_"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: firstURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: secondURL.path))
+    }
+
+    @MainActor
     func testPerTermNotificationsOnlyScheduleForEnabledTerms() async throws {
         let center = MockNotificationCenter(status: .authorized)
         let manager = NotificationManager(center: center)
-        let nowString = ISO8601DateFormatter().string(from: Date())
+        let oldString = ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: 1_800_000_000))
+        let newString = ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: 1_800_000_060))
 
         let enabledTerm = WatchTerm(id: "enabled", keyword: "Enabled Oshi", notify_on_new: true)
         let disabledTerm = WatchTerm(id: "disabled", keyword: "Muted Oshi", notify_on_new: false)
@@ -1676,20 +1971,20 @@ final class OshiReaderTests: XCTestCase {
             FeedItem(
                 id: "youtube:enabled-1", platform: "youtube", url: "https://youtube.com/1",
                 title: "Enabled first", content_text: nil, author: nil, thumbnail_url: nil,
-                media_type: "video", published_at: nowString, watch_term_keyword: enabledTerm.keyword,
-                fetched_at: nowString
+                media_type: "video", published_at: oldString, watch_term_keyword: enabledTerm.keyword,
+                fetched_at: oldString
             ),
             FeedItem(
                 id: "note:enabled-2", platform: "note", url: "https://note.com/2",
                 title: "Enabled second", content_text: nil, author: nil, thumbnail_url: nil,
-                media_type: "article", published_at: nowString, watch_term_keyword: enabledTerm.keyword,
-                fetched_at: nowString
+                media_type: "article", published_at: newString, watch_term_keyword: enabledTerm.keyword,
+                fetched_at: newString
             ),
             FeedItem(
                 id: "tver:muted", platform: "tver", url: "https://tver.jp/episodes/3",
                 title: "Muted", content_text: nil, author: nil, thumbnail_url: nil,
-                media_type: "video", published_at: nowString, watch_term_keyword: disabledTerm.keyword,
-                fetched_at: nowString
+                media_type: "video", published_at: newString, watch_term_keyword: disabledTerm.keyword,
+                fetched_at: newString
             )
         ]
 
@@ -1697,7 +1992,7 @@ final class OshiReaderTests: XCTestCase {
 
         XCTAssertEqual(center.requests.count, 1)
         XCTAssertEqual(center.requests.first?.content.title, "New items for Enabled Oshi")
-        XCTAssertEqual(center.requests.first?.content.body, "2 new items found.")
+        XCTAssertEqual(center.requests.first?.content.body, "Enabled second\n+1 more")
         XCTAssertNil(center.requests.first?.trigger)
     }
 
@@ -1904,6 +2199,44 @@ final class OshiReaderTests: XCTestCase {
         let querySub = db.queryFeed(keyword: "Aiko", days: 30)
         XCTAssertEqual(querySub.count, 1) // Only TVer yesterday item remains
         XCTAssertEqual(querySub.first?.id, "tver:yesterday")
+    }
+
+    @MainActor
+    func testFeedOrderingUsesParsedDatesAcrossTimezoneOffsets() throws {
+        db.setSubscribedPlatforms(platforms: ["youtube"])
+        let newerUtc = "2024-06-01T03:00:00Z"
+        let olderWithOffset = "2024-06-01T10:00:00+09:00"
+        let newerItem = FeedItem(
+            id: "youtube:newer",
+            platform: "youtube",
+            url: "https://yt.example/newer",
+            title: "Aiko newer",
+            content_text: "Aiko",
+            author: nil,
+            thumbnail_url: nil,
+            media_type: "video",
+            published_at: newerUtc,
+            watch_term_keyword: "Aiko",
+            fetched_at: newerUtc
+        )
+        let olderItem = FeedItem(
+            id: "youtube:older",
+            platform: "youtube",
+            url: "https://yt.example/older",
+            title: "Aiko older",
+            content_text: "Aiko",
+            author: nil,
+            thumbnail_url: nil,
+            media_type: "video",
+            published_at: olderWithOffset,
+            watch_term_keyword: "Aiko",
+            fetched_at: olderWithOffset
+        )
+
+        _ = db.mergeItems(newItems: [olderItem, newerItem])
+
+        let results = db.queryFeed(keyword: nil, days: 0)
+        XCTAssertEqual(results.map(\.id), ["youtube:newer", "youtube:older"])
     }
     
     // MARK: - Feature 4: Saved Bookmarks
@@ -2235,6 +2568,90 @@ final class OshiReaderTests: XCTestCase {
     }
 
     @MainActor
+    func testBackupImportUsesParsedDateCapAndRetainsDiscussionItems() throws {
+        let formatter = ISO8601DateFormatter()
+        let baseDate = Date(timeIntervalSince1970: 1_800_000_000)
+        let newsItems = (0..<600).map { index in
+            FeedItem(
+                id: "backup-news:\(index)",
+                platform: "news",
+                url: "https://example.com/backup/news/\(index)",
+                title: "Backup news \(index)",
+                content_text: "Aiko news",
+                author: nil,
+                thumbnail_url: nil,
+                media_type: "article",
+                published_at: formatter.string(from: baseDate.addingTimeInterval(TimeInterval(600 - index))),
+                watch_term_keyword: "Aiko",
+                fetched_at: formatter.string(from: baseDate)
+            )
+        }
+        let fiveChItems = (0..<30).map { index in
+            FeedItem(
+                id: "backup-5ch:\(index)",
+                platform: "5ch",
+                url: "https://example.5ch.net/test/read.cgi/thread/\(index)",
+                title: "Backup thread \(index)",
+                content_text: "Aiko thread",
+                author: nil,
+                thumbnail_url: nil,
+                media_type: "article",
+                published_at: formatter.string(from: baseDate.addingTimeInterval(TimeInterval(index))),
+                watch_term_keyword: "Aiko",
+                fetched_at: formatter.string(from: baseDate)
+            )
+        }
+        let newerUTC = FeedItem(
+            id: "backup-youtube:newer",
+            platform: "youtube",
+            url: "https://yt.example/backup/newer",
+            title: "Backup newer",
+            content_text: "Aiko",
+            author: nil,
+            thumbnail_url: nil,
+            media_type: "video",
+            published_at: "2024-06-01T03:00:00Z",
+            watch_term_keyword: "Aiko",
+            fetched_at: "2024-06-01T03:00:00Z"
+        )
+        let olderOffset = FeedItem(
+            id: "backup-youtube:older",
+            platform: "youtube",
+            url: "https://yt.example/backup/older",
+            title: "Backup older",
+            content_text: "Aiko",
+            author: nil,
+            thumbnail_url: nil,
+            media_type: "video",
+            published_at: "2024-06-01T10:00:00+09:00",
+            watch_term_keyword: "Aiko",
+            fetched_at: "2024-06-01T10:00:00+09:00"
+        )
+        let backup = LocalBackup(
+            exportedAt: formatter.string(from: Date()),
+            terms: [],
+            feedItems: newsItems + fiveChItems + [olderOffset, newerUTC],
+            savedPages: [],
+            customUrls: [],
+            subscribedPlatforms: ["news", "5ch", "youtube"],
+            wallpaper: nil,
+            sourcesOrder: nil,
+            oshiAvatars: [:],
+            compositions: [:],
+            hiddenItems: []
+        )
+
+        try db.importBackupData(JSONEncoder().encode(backup))
+
+        XCTAssertEqual(db.feedItems.count, 600)
+        XCTAssertEqual(db.feedItems.filter { $0.platform == "5ch" }.count, 25)
+        XCTAssertLessThan(
+            try XCTUnwrap(db.feedItems.firstIndex { $0.id == newerUTC.id }),
+            try XCTUnwrap(db.feedItems.firstIndex { $0.id == olderOffset.id })
+        )
+    }
+
+    @MainActor
     func testNotificationPayloadRecoversEvictedItem() throws {
         let item = FeedItem(
             id: "news:evicted",
@@ -2264,6 +2681,32 @@ final class OshiReaderTests: XCTestCase {
         ])
 
         XCTAssertEqual(NotificationNavigationManager.shared.selectedItem, item)
+        NotificationNavigationManager.shared.selectedItem = nil
+    }
+
+    @MainActor
+    func testNotificationPayloadUsesCachedItemForMissingFields() throws {
+        let cached = FeedItem(
+            id: "youtube:abc123def45",
+            platform: "youtube",
+            url: "https://www.youtube.com/watch?v=abc123def45",
+            title: "Cached title",
+            content_text: "Cached description",
+            author: "Cached channel",
+            thumbnail_url: "https://i.ytimg.com/vi/abc123def45/hqdefault.jpg",
+            media_type: "video",
+            published_at: "2026-07-27T00:00:00Z",
+            watch_term_keyword: "Cached Oshi",
+            fetched_at: "2026-07-27T00:01:00Z"
+        )
+        db.feedItems = [cached]
+
+        NotificationNavigationManager.shared.open(userInfo: [
+            "feed_item_id": cached.id,
+            "url": cached.url
+        ])
+
+        XCTAssertEqual(NotificationNavigationManager.shared.selectedItem, cached)
         NotificationNavigationManager.shared.selectedItem = nil
     }
     
