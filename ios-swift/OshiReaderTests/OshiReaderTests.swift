@@ -54,6 +54,22 @@ private final class MockURLProtocol: URLProtocol {
             guard let handler = Self.handler else {
                 throw URLError(.badServerResponse)
             }
+            var request = request
+            if request.httpBody == nil, let stream = request.httpBodyStream {
+                var body = Data()
+                stream.open()
+                var buffer = [UInt8](repeating: 0, count: 4096)
+                while stream.hasBytesAvailable {
+                    let count = stream.read(&buffer, maxLength: buffer.count)
+                    if count > 0 {
+                        body.append(buffer, count: count)
+                    } else {
+                        break
+                    }
+                }
+                stream.close()
+                request.httpBody = body
+            }
             let (data, response) = try handler(request)
             client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
             client?.urlProtocol(self, didLoad: data)
@@ -226,6 +242,43 @@ final class OshiReaderTests: XCTestCase {
         XCTAssertEqual(mismatches, [])
     }
 
+    func testCustomSearchLinkFeedItemCarriesCustomSource() {
+        let link = SearchLink(
+            id: "custom:https%3A%2F%2Fexample.com%2Ffeed.xml",
+            group: "Custom",
+            label: "Example Feed",
+            domain: "example.com",
+            platform: "custom",
+            makeUrl: { _ in "https://example.com/feed.xml" }
+        )
+
+        let item = link.feedItem(keyword: "  ignored  ", now: "2026-06-02T12:00:00Z")
+
+        XCTAssertEqual(item.id, link.id)
+        XCTAssertEqual(item.url, "https://example.com/feed.xml")
+        XCTAssertEqual(item.title, "Example Feed")
+        XCTAssertEqual(item.watch_term_keyword, "")
+        XCTAssertEqual(item.source, "custom_url")
+    }
+
+    func testOrdinarySearchLinkFeedItemDoesNotCarryCustomSource() {
+        let link = SearchLink(
+            id: "google-news",
+            group: "News",
+            label: "Google News Japan",
+            domain: "news.google.com",
+            platform: "news",
+            makeUrl: { "https://news.google.com/search?q=\($0.replacingOccurrences(of: " ", with: "+"))" }
+        )
+
+        let item = link.feedItem(keyword: "  Aiko  ", now: "2026-06-02T12:00:00Z")
+
+        XCTAssertEqual(item.id, "search:google-news:Aiko")
+        XCTAssertEqual(item.title, "Google News Japan: Aiko")
+        XCTAssertEqual(item.watch_term_keyword, "Aiko")
+        XCTAssertNil(item.source)
+    }
+
     func testSavedSubscribedPlatformsDoNotReAddMissingDefaultsOnLoad() {
         XCTAssertEqual(
             LocalDB.subscribedPlatformsForLoadedValue(["news", " youtube ", "unknown", "news", "x", "news:mdpr", "NEWS:YAHOO_ENT"], hasSavedFile: true),
@@ -235,6 +288,21 @@ final class OshiReaderTests: XCTestCase {
             LocalDB.subscribedPlatformsForLoadedValue(["news"], hasSavedFile: false),
             PlatformRegistry.defaultSubscribedIDs
         )
+    }
+
+    @MainActor
+    func testSetSourcesOrderNormalizesAliasesAndDropsUnknownIDs() {
+        db.setSourcesOrder(order: ["custom", "unknown", " news:mdpr ", "x", "custom", "NEWS:YAHOO_ENT"])
+
+        XCTAssertEqual(db.sourcesOrder, ["custom", "mdpr", "twitter", "yahoonews"])
+    }
+
+    func testLoadedSourcesOrderNormalizesAliasesAndPreservesMissingValue() {
+        XCTAssertEqual(
+            LocalDB.normalizedSourcesOrder(["unknown", " news:mdpr ", "x", "custom", "custom"]),
+            ["mdpr", "twitter", "custom"]
+        )
+        XCTAssertNil(LocalDB.normalizedSourcesOrder(nil))
     }
 
     func testIngestionSearchKeywordsIncludesTrimmedUniqueAliases() {
@@ -611,6 +679,35 @@ final class OshiReaderTests: XCTestCase {
         XCTAssertFalse(report.items.isEmpty)
         XCTAssertTrue(report.items.allSatisfy { $0.title?.contains("Alias Oshi") == true })
         XCTAssertTrue(report.items.allSatisfy { $0.watch_term_keyword == "Primary Oshi" })
+    }
+
+    func testDedicatedRSSRejectsDescriptionOnlyMatches() async {
+        let rss = """
+        <rss version="2.0"><channel><item>
+        <title>Unrelated headline</title>
+        <link>https://natalie.mu/music/news/summary-only</link>
+        <description>Alias Oshi appears only in the summary.</description>
+        <pubDate>Sun, 02 Aug 2026 08:00:00 GMT</pubDate>
+        </item></channel></rss>
+        """.data(using: .utf8)!
+        let service = IngestionService { request in
+            (
+                rss,
+                try XCTUnwrap(HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: nil
+                ))
+            )
+        }
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "Primary Oshi", aliases: ["Alias Oshi"]),
+            platforms: ["natalie"]
+        )
+
+        XCTAssertTrue(report.items.isEmpty)
     }
 
     func testDedicatedRSSNoResultsAndMediaOnlyAvoidsRequests() async {
@@ -1216,12 +1313,38 @@ final class OshiReaderTests: XCTestCase {
         })
     }
 
+    func testKeychainSaveReportsSuccessfulWrite() {
+        let existing = KeychainHelper.read(.twitterBearerToken)
+        defer { KeychainHelper.save(.twitterBearerToken, existing) }
+
+        XCTAssertTrue(KeychainHelper.save(.twitterBearerToken, "test-token-\(UUID().uuidString)"))
+        XCTAssertNotNil(KeychainHelper.read(.twitterBearerToken))
+    }
+
+    func testKeychainSaveReplacesExistingValue() {
+        let existing = KeychainHelper.read(.twitterBearerToken)
+        defer { KeychainHelper.save(.twitterBearerToken, existing) }
+
+        XCTAssertTrue(KeychainHelper.save(.twitterBearerToken, "first-token"))
+        XCTAssertEqual(KeychainHelper.read(.twitterBearerToken), "first-token")
+        XCTAssertTrue(KeychainHelper.save(.twitterBearerToken, "second-token"))
+        XCTAssertEqual(KeychainHelper.read(.twitterBearerToken), "second-token")
+    }
+
     func testWatchTermDecodesLegacyBackupWithoutSourceSelection() throws {
         let legacy = #"{"id":"legacy","keyword":"Legacy Oshi","collection_mode":"all_info","is_active":true,"notify_on_new":false,"aliases":[],"created_at":"2026-01-01T00:00:00Z"}"#.data(using: .utf8)!
         let term = try JSONDecoder().decode(WatchTerm.self, from: legacy)
 
         XCTAssertEqual(term.source_mode, .all)
         XCTAssertEqual(term.selected_platforms, [])
+    }
+
+    func testSavedPageDecodesLegacyBookmarkWithoutSource() throws {
+        let legacy = #"{"id":"legacy","url":"https://example.com/saved","title":"Saved","platform":"news","saved_at":"2026-01-01T00:00:00Z"}"#.data(using: .utf8)!
+        let page = try JSONDecoder().decode(SavedPage.self, from: legacy)
+
+        XCTAssertNil(page.source)
+        XCTAssertNil(page.toFeedItem().source)
     }
 
     func testWatchTermDecodesMissingAndUnknownCollectionModeAsAllInfo() throws {
@@ -1243,6 +1366,32 @@ final class OshiReaderTests: XCTestCase {
         XCTAssertNotNil(parseISO8601Date(naive))
         XCTAssertNil(parseISO8601Date("not-a-date"))
         XCTAssertNil(parseISO8601Date("not-a-date"))
+    }
+
+    func testISO8601DateParsingCacheHandlesConcurrentCalls() {
+        let values = [
+            "2024-06-15T10:30:00.123456Z",
+            "2024-06-15T10:30:00Z",
+            "2024-06-15T19:30:00+09:00",
+            "2024-06-15T10:30:00",
+            "not-a-date",
+            ""
+        ]
+        let lock = NSLock()
+        var mismatches: [String] = []
+
+        DispatchQueue.concurrentPerform(iterations: 500) { index in
+            let value = values[index % values.count]
+            let date = parseISO8601Date(value)
+            let shouldBeNil = value.isEmpty || value == "not-a-date"
+            if shouldBeNil != (date == nil) {
+                lock.lock()
+                mismatches.append(value)
+                lock.unlock()
+            }
+        }
+
+        XCTAssertTrue(mismatches.isEmpty, "Unexpected parse results for \(mismatches)")
     }
 
     func testCleanDisplayTextHTMLEntities() {
@@ -1281,6 +1430,17 @@ final class OshiReaderTests: XCTestCase {
             IngestionService.effectivePlatforms(for: term, available: ["youtube", "news", "tver"]),
             ["youtube"]
         )
+        XCTAssertEqual(
+            IngestionService.effectivePlatforms(for: term, available: [" x ", "news:yahoo_ent", "youtube", "unknown"]),
+            ["youtube"]
+        )
+        XCTAssertEqual(
+            IngestionService.effectivePlatforms(
+                for: WatchTerm(keyword: "All Source Oshi"),
+                available: [" x ", "news:yahoo_ent", "unknown"]
+            ),
+            ["twitter", "yahoonews"]
+        )
 
         let revisionAfterCreate = db.dataRevision
         db.updateTerm(id: term.id, sourceMode: .selected, selectedPlatforms: [])
@@ -1306,6 +1466,28 @@ final class OshiReaderTests: XCTestCase {
         let noLongerValid = try XCTUnwrap(db.terms.first(where: { $0.id == term.id }))
         XCTAssertEqual(noLongerValid.source_mode, .all)
         XCTAssertEqual(noLongerValid.selected_platforms, [])
+    }
+
+    func testLocalRefreshRequestNormalizesPlatformIDs() {
+        XCTAssertEqual(
+            LocalRefreshRequest.platform(" news:yahoo_ent ").platforms(subscribedPlatforms: ["youtube"]),
+            ["yahoonews"]
+        )
+        XCTAssertEqual(
+            LocalRefreshRequest.platform("unknown").platforms(subscribedPlatforms: ["youtube"]),
+            []
+        )
+        XCTAssertEqual(
+            LocalRefreshRequest.platform("custom").platforms(subscribedPlatforms: ["youtube", "custom"]),
+            []
+        )
+        XCTAssertEqual(
+            LocalRefreshRequest.foreground.platforms(subscribedPlatforms: ["custom", "x", "news:mdpr", "unknown", "youtube"]),
+            ["twitter", "mdpr", "youtube"]
+        )
+        XCTAssertFalse(LocalRefreshRequest.platform("youtube").refreshesCustomURLs())
+        XCTAssertTrue(LocalRefreshRequest.platform(" CUSTOM ").refreshesCustomURLs())
+        XCTAssertTrue(LocalRefreshRequest.foreground.refreshesCustomURLs())
     }
 
     func testRequestLimiterCancellationDoesNotLeakOrBlockNextAcquire() async {
@@ -1613,6 +1795,64 @@ final class OshiReaderTests: XCTestCase {
     }
 
     @MainActor
+    func testDeletingTermClearsHiddenItemsForThatKeywordOnly() throws {
+        let deletedTerm = db.saveTerm(keyword: "Deleted Oshi")
+        let keptTerm = db.saveTerm(keyword: "Kept Oshi")
+        let separatorKeptTerm = db.saveTerm(keyword: "Prefix::Deleted Oshi")
+        let nowString = ISO8601DateFormatter().string(from: Date())
+        let deletedItem = FeedItem(
+            id: "news:deleted-hidden",
+            platform: "news",
+            url: "https://example.com/deleted-hidden",
+            title: "Deleted Oshi update",
+            content_text: nil,
+            author: nil,
+            thumbnail_url: nil,
+            media_type: "article",
+            published_at: nowString,
+            watch_term_keyword: deletedTerm.keyword,
+            fetched_at: nowString
+        )
+        let keptItem = FeedItem(
+            id: "news:kept-hidden",
+            platform: "news",
+            url: "https://example.com/kept-hidden",
+            title: "Kept Oshi update",
+            content_text: nil,
+            author: nil,
+            thumbnail_url: nil,
+            media_type: "article",
+            published_at: nowString,
+            watch_term_keyword: keptTerm.keyword,
+            fetched_at: nowString
+        )
+        let separatorKeptItem = FeedItem(
+            id: "news:separator-kept-hidden",
+            platform: "news",
+            url: "https://example.com/separator-kept-hidden",
+            title: "Prefix Deleted Oshi update",
+            content_text: nil,
+            author: nil,
+            thumbnail_url: nil,
+            media_type: "article",
+            published_at: nowString,
+            watch_term_keyword: separatorKeptTerm.keyword,
+            fetched_at: nowString
+        )
+        db.feedItems = [deletedItem, keptItem, separatorKeptItem]
+
+        db.deleteFeedItem(id: deletedItem.id, watchTermKeyword: deletedTerm.keyword)
+        db.deleteFeedItem(id: keptItem.id, watchTermKeyword: keptTerm.keyword)
+        db.deleteFeedItem(id: separatorKeptItem.id, watchTermKeyword: separatorKeptTerm.keyword)
+
+        db.deleteTerm(id: deletedTerm.id)
+
+        XCTAssertFalse(db.hiddenItems.contains("\(deletedItem.id)::\(deletedTerm.keyword)"))
+        XCTAssertTrue(db.hiddenItems.contains("\(keptItem.id)::\(keptTerm.keyword)"))
+        XCTAssertTrue(db.hiddenItems.contains("\(separatorKeptItem.id)::\(separatorKeptTerm.keyword)"))
+    }
+
+    @MainActor
     func testChangingIngestionSourcesRejectsStaleResults() throws {
         let term = db.saveTerm(keyword: "Disabled Oshi")
         let staleTermRevision = db.dataRevision
@@ -1686,6 +1926,43 @@ final class OshiReaderTests: XCTestCase {
     
     // MARK: - Feature 2: Feed Items merging & duplicates checking
     @MainActor
+    func testMergeSearchFallbackItemsAreDroppedByPrefixOnly() throws {
+        let nowString = ISO8601DateFormatter().string(from: Date())
+        let fallbackItem = FeedItem(
+            id: "search:fallback",
+            platform: "news",
+            url: "https://example.com/search",
+            title: "search: result",
+            content_text: nil,
+            author: nil,
+            thumbnail_url: nil,
+            media_type: "article",
+            published_at: nowString,
+            watch_term_keyword: "Oshi",
+            fetched_at: nowString
+        )
+        let legitimateItem = FeedItem(
+            id: "news:how-to-search:guide",
+            platform: "news",
+            url: "https://example.com/how-to-search-guide",
+            title: "Oshi guide: search: advanced tips",
+            content_text: nil,
+            author: nil,
+            thumbnail_url: nil,
+            media_type: "article",
+            published_at: nowString,
+            watch_term_keyword: "Oshi",
+            fetched_at: nowString
+        )
+
+        XCTAssertEqual(db.mergeItems(newItems: [fallbackItem]), 0)
+        XCTAssertTrue(db.feedItems.isEmpty)
+
+        XCTAssertEqual(db.mergeItems(newItems: [legitimateItem]), 1)
+        XCTAssertEqual(db.queryFeed(keyword: nil, days: 0).map(\.id), [legitimateItem.id])
+    }
+
+    @MainActor
     func testFeedItemsMerge() throws {
         let nowString = ISO8601DateFormatter().string(from: Date())
         let item1 = FeedItem(
@@ -1699,7 +1976,8 @@ final class OshiReaderTests: XCTestCase {
             media_type: "video",
             published_at: nowString,
             watch_term_keyword: "Oshi",
-            fetched_at: nowString
+            fetched_at: nowString,
+            source: "youtube_scrape"
         )
         
         // Duplicate item with shorter title
@@ -1714,7 +1992,8 @@ final class OshiReaderTests: XCTestCase {
             media_type: "video",
             published_at: nowString,
             watch_term_keyword: "Oshi",
-            fetched_at: nowString
+            fetched_at: nowString,
+            source: "youtube_scrape"
         )
         
         let item2 = FeedItem(
@@ -1747,6 +2026,44 @@ final class OshiReaderTests: XCTestCase {
         let added2 = db.mergeItems(newItems: [item2])
         XCTAssertEqual(added2, 1)
         XCTAssertEqual(db.feedItems.count, 2)
+    }
+
+    @MainActor
+    func testMergeItemsBackfillsMissingTitleWithoutForceUnwrap() throws {
+        let nowString = ISO8601DateFormatter().string(from: Date())
+        let original = FeedItem(
+            id: "youtube:nil-title",
+            platform: "youtube",
+            url: "https://youtube.com/watch?v=nil-title",
+            title: nil,
+            content_text: "Initial content",
+            author: nil,
+            thumbnail_url: nil,
+            media_type: "video",
+            published_at: nowString,
+            watch_term_keyword: "Oshi",
+            fetched_at: nowString,
+            source: "youtube_scrape"
+        )
+        let updated = FeedItem(
+            id: original.id,
+            platform: original.platform,
+            url: original.url,
+            title: "Recovered video title",
+            content_text: nil,
+            author: nil,
+            thumbnail_url: nil,
+            media_type: original.media_type,
+            published_at: nowString,
+            watch_term_keyword: original.watch_term_keyword,
+            fetched_at: nowString,
+            source: "youtube_scrape"
+        )
+
+        XCTAssertEqual(db.mergeItems(newItems: [original]), 1)
+        XCTAssertEqual(db.mergeItems(newItems: [updated]), 0)
+
+        XCTAssertEqual(db.feedItems.first?.title, "Recovered video title")
     }
 
     @MainActor
@@ -1807,6 +2124,243 @@ final class OshiReaderTests: XCTestCase {
         XCTAssertEqual(db.feedItems.count, 600)
         XCTAssertTrue(db.feedItems.contains { $0.id == incoming.id })
         XCTAssertFalse(db.feedItems.contains { $0.id == evictedExistingID })
+    }
+
+    @MainActor
+    func testLegacyYouTubeFallbackPolicyIdentifiesOldCacheRows() {
+        let now = ISO8601DateFormatter().string(from: Date())
+        let unmarkedYouTube = FeedItem(
+            id: "youtube:legacy",
+            platform: "youtube",
+            url: "https://youtube.com/watch?v=legacy",
+            title: "Legacy",
+            content_text: nil,
+            author: nil,
+            thumbnail_url: nil,
+            media_type: "video",
+            published_at: now,
+            watch_term_keyword: "Legacy Oshi",
+            fetched_at: now
+        )
+        let googleNewsYouTube = FeedItem(
+            id: "youtube:gnews:legacy",
+            platform: "youtube",
+            url: "https://news.google.com/rss/articles/legacy",
+            title: "Legacy Google News",
+            content_text: nil,
+            author: nil,
+            thumbnail_url: nil,
+            media_type: "video",
+            published_at: now,
+            watch_term_keyword: "Legacy Oshi",
+            fetched_at: now,
+            source: "google_news"
+        )
+        let paddedGoogleNewsYouTube = FeedItem(
+            id: "youtube:padded-source",
+            platform: "youtube",
+            url: "https://youtube.com/watch?v=padded",
+            title: "Padded source",
+            content_text: nil,
+            author: nil,
+            thumbnail_url: nil,
+            media_type: "video",
+            published_at: now,
+            watch_term_keyword: "Legacy Oshi",
+            fetched_at: now,
+            source: " Google_News "
+        )
+        let currentYouTube = FeedItem(
+            id: "youtube:current",
+            platform: "youtube",
+            url: "https://youtube.com/watch?v=current",
+            title: "Current",
+            content_text: nil,
+            author: nil,
+            thumbnail_url: nil,
+            media_type: "video",
+            published_at: now,
+            watch_term_keyword: "Legacy Oshi",
+            fetched_at: now,
+            source: "youtube_scrape"
+        )
+
+        XCTAssertTrue(FeedItemPolicy.shouldPruneLegacyYouTubeItem(unmarkedYouTube))
+        XCTAssertTrue(FeedItemPolicy.shouldPruneLegacyYouTubeItem(googleNewsYouTube))
+        XCTAssertTrue(FeedItemPolicy.shouldPruneLegacyYouTubeItem(paddedGoogleNewsYouTube))
+        XCTAssertFalse(FeedItemPolicy.shouldPruneLegacyYouTubeItem(currentYouTube))
+    }
+
+    @MainActor
+    func testMergeItemsDropsLegacyYouTubeRowsButKeepsCurrentScrapeRows() {
+        let now = ISO8601DateFormatter().string(from: Date())
+        db.setSubscribedPlatforms(platforms: ["youtube"])
+        db.feedItems = [
+            FeedItem(
+                id: "youtube:cached-legacy",
+                platform: "youtube",
+                url: "https://youtube.com/watch?v=cached-legacy",
+                title: "Cached legacy",
+                content_text: nil,
+                author: nil,
+                thumbnail_url: nil,
+                media_type: "video",
+                published_at: now,
+                watch_term_keyword: "YouTube Oshi",
+                fetched_at: now
+            )
+        ]
+        let incomingLegacy = FeedItem(
+            id: "youtube:gnews:incoming",
+            platform: "youtube",
+            url: "https://news.google.com/rss/articles/incoming",
+            title: "Incoming legacy",
+            content_text: nil,
+            author: nil,
+            thumbnail_url: nil,
+            media_type: "video",
+            published_at: now,
+            watch_term_keyword: "YouTube Oshi",
+            fetched_at: now,
+            source: "google_news"
+        )
+        let current = FeedItem(
+            id: "youtube:current",
+            platform: "youtube",
+            url: "https://youtube.com/watch?v=current",
+            title: "Current",
+            content_text: nil,
+            author: nil,
+            thumbnail_url: nil,
+            media_type: "video",
+            published_at: now,
+            watch_term_keyword: "YouTube Oshi",
+            fetched_at: now,
+            source: "youtube_scrape"
+        )
+
+        XCTAssertEqual(db.mergeItems(newItems: [incomingLegacy, current]), 1)
+        XCTAssertEqual(db.feedItems.map(\.id), ["youtube:current"])
+        XCTAssertEqual(db.queryFeed(keyword: nil, days: 30).map(\.id), ["youtube:current"])
+    }
+
+    @MainActor
+    func testQueryFeedDedupesCanonicalURLVariants() throws {
+        let now = ISO8601DateFormatter().string(from: Date())
+        db.setSubscribedPlatforms(platforms: ["news"])
+        _ = db.saveTerm(keyword: "Aiko")
+
+        let trackedURL = FeedItem(
+            id: "news:tracked",
+            platform: "news",
+            url: "http://www.example.com/story/123/?utm_source=feed&ref=home",
+            title: "Aiko announces new tour",
+            content_text: "Aiko announces new tour",
+            author: nil,
+            thumbnail_url: nil,
+            media_type: "article",
+            published_at: now,
+            watch_term_keyword: "Aiko",
+            fetched_at: now
+        )
+        let cleanURL = FeedItem(
+            id: "news:clean",
+            platform: "news",
+            url: "https://example.com/story/123",
+            title: "Aiko announces new tour",
+            content_text: "Aiko announces new tour",
+            author: nil,
+            thumbnail_url: nil,
+            media_type: "article",
+            published_at: now,
+            watch_term_keyword: "Aiko",
+            fetched_at: now
+        )
+
+        _ = db.mergeItems(newItems: [trackedURL, cleanURL])
+
+        XCTAssertEqual(db.queryFeed(keyword: "Aiko", days: 30).map(\.id), ["news:clean"])
+    }
+
+    @MainActor
+    func testQueryFeedDoesNotDedupeCaseSensitiveURLPaths() throws {
+        let now = ISO8601DateFormatter().string(from: Date())
+        db.setSubscribedPlatforms(platforms: ["news"])
+        _ = db.saveTerm(keyword: "Aiko")
+
+        let upperPath = FeedItem(
+            id: "news:upper-path",
+            platform: "news",
+            url: "https://example.com/Story/Aiko",
+            title: "Aiko announces north tour",
+            content_text: nil,
+            author: nil,
+            thumbnail_url: nil,
+            media_type: "article",
+            published_at: now,
+            watch_term_keyword: "Aiko",
+            fetched_at: now
+        )
+        let lowerPath = FeedItem(
+            id: "news:lower-path",
+            platform: "news",
+            url: "https://example.com/story/Aiko",
+            title: "Aiko announces south tour",
+            content_text: nil,
+            author: nil,
+            thumbnail_url: nil,
+            media_type: "article",
+            published_at: now,
+            watch_term_keyword: "Aiko",
+            fetched_at: now
+        )
+
+        _ = db.mergeItems(newItems: [upperPath, lowerPath])
+
+        XCTAssertEqual(
+            Set(db.queryFeed(keyword: "Aiko", days: 30).map(\.id)),
+            Set(["news:upper-path", "news:lower-path"])
+        )
+    }
+
+    @MainActor
+    func testQueryFeedDedupesArticleTitlePublisherSuffixes() throws {
+        let formatter = ISO8601DateFormatter()
+        let newer = formatter.string(from: Date(timeIntervalSince1970: 1_800_000_060))
+        let older = formatter.string(from: Date(timeIntervalSince1970: 1_800_000_000))
+        db.setSubscribedPlatforms(platforms: ["mdpr", "oricon"])
+        _ = db.saveTerm(keyword: "Aiko")
+
+        let mdprCopy = FeedItem(
+            id: "mdpr:copy",
+            platform: "mdpr",
+            url: "https://mdpr.jp/news/123",
+            title: "Aiko 新曲と全国ツアー開催を発表！ - モデルプレス",
+            content_text: "Aiko 新曲と全国ツアー開催を発表",
+            author: nil,
+            thumbnail_url: nil,
+            media_type: "article",
+            published_at: newer,
+            watch_term_keyword: "Aiko",
+            fetched_at: newer
+        )
+        let oriconCopy = FeedItem(
+            id: "oricon:copy",
+            platform: "oricon",
+            url: "https://oricon.co.jp/news/456/",
+            title: "Aiko 新曲と全国ツアー開催を発表！（ORICON NEWS）",
+            content_text: "Aiko 新曲と全国ツアー開催を発表",
+            author: nil,
+            thumbnail_url: nil,
+            media_type: "article",
+            published_at: older,
+            watch_term_keyword: "Aiko",
+            fetched_at: older
+        )
+
+        _ = db.mergeItems(newItems: [oriconCopy, mdprCopy])
+
+        XCTAssertEqual(db.queryFeed(keyword: "Aiko", days: 30).map(\.id), ["mdpr:copy"])
     }
 
     @MainActor
@@ -1972,13 +2526,14 @@ final class OshiReaderTests: XCTestCase {
                 id: "youtube:enabled-1", platform: "youtube", url: "https://youtube.com/1",
                 title: "Enabled first", content_text: nil, author: nil, thumbnail_url: nil,
                 media_type: "video", published_at: oldString, watch_term_keyword: enabledTerm.keyword,
-                fetched_at: oldString
+                fetched_at: oldString, source: "youtube_scrape"
             ),
             FeedItem(
                 id: "note:enabled-2", platform: "note", url: "https://note.com/2",
                 title: "Enabled second", content_text: nil, author: nil, thumbnail_url: nil,
                 media_type: "article", published_at: newString, watch_term_keyword: enabledTerm.keyword,
-                fetched_at: newString
+                fetched_at: newString,
+                source: "note_rss"
             ),
             FeedItem(
                 id: "tver:muted", platform: "tver", url: "https://tver.jp/episodes/3",
@@ -1993,6 +2548,7 @@ final class OshiReaderTests: XCTestCase {
         XCTAssertEqual(center.requests.count, 1)
         XCTAssertEqual(center.requests.first?.content.title, "New items for Enabled Oshi")
         XCTAssertEqual(center.requests.first?.content.body, "Enabled second\n+1 more")
+        XCTAssertEqual(center.requests.first?.content.userInfo["source"] as? String, "note_rss")
         XCTAssertNil(center.requests.first?.trigger)
     }
 
@@ -2108,7 +2664,8 @@ final class OshiReaderTests: XCTestCase {
             id: "youtube:notify-stale", platform: "youtube", url: "https://youtube.com/watch?v=notify-stale",
             title: "Stale notification", content_text: nil, author: nil, thumbnail_url: nil,
             media_type: "video", published_at: nowString, watch_term_keyword: term.keyword,
-            fetched_at: nowString
+            fetched_at: nowString,
+            source: "youtube_scrape"
         )
 
         await manager.notifyForNewItems([item], terms: [term])
@@ -2132,7 +2689,8 @@ final class OshiReaderTests: XCTestCase {
             media_type: "video",
             published_at: nowString,
             watch_term_keyword: "Notify Oshi",
-            fetched_at: nowString
+            fetched_at: nowString,
+            source: "youtube_scrape"
         )
 
         XCTAssertEqual(db.mergeItems(newItems: [item]), 1)
@@ -2151,7 +2709,8 @@ final class OshiReaderTests: XCTestCase {
             id: "youtube:now", platform: "youtube", url: "https://u",
             title: "Aiko now news video", content_text: "Aiko is active", author: "Aiko",
             thumbnail_url: nil, media_type: "video", published_at: formatter.string(from: now),
-            watch_term_keyword: "Aiko", fetched_at: formatter.string(from: now)
+            watch_term_keyword: "Aiko", fetched_at: formatter.string(from: now),
+            source: "youtube_scrape"
         )
         
         let itemYesterday = FeedItem(
@@ -2202,6 +2761,148 @@ final class OshiReaderTests: XCTestCase {
     }
 
     @MainActor
+    func testYahooBareURLFallbackFilterUsesNormalizedPlatformAlias() throws {
+        let nowString = ISO8601DateFormatter().string(from: Date())
+        let item = FeedItem(
+            id: "news:yahoo_ent:bare-url",
+            platform: "news:yahoo_ent",
+            url: "https://news.yahoo.co.jp/articles/bare-url",
+            title: "https://news.yahoo.co.jp/articles/bare-url",
+            content_text: nil,
+            author: "Yahoo",
+            thumbnail_url: nil,
+            media_type: "article",
+            published_at: nowString,
+            watch_term_keyword: "Aiko",
+            fetched_at: nowString
+        )
+
+        db.setSubscribedPlatforms(platforms: ["yahoonews"])
+        XCTAssertEqual(db.mergeItems(newItems: [item]), 1)
+
+        XCTAssertTrue(db.queryFeed(keyword: "Aiko", days: 0).isEmpty)
+    }
+
+    @MainActor
+    func testFeedQueryingRejectsSummaryOnlyStrictMatches() throws {
+        let now = ISO8601DateFormatter().string(from: Date())
+        let term = db.saveTerm(keyword: "Aiko")
+        db.setSubscribedPlatforms(platforms: ["news"])
+        let item = FeedItem(
+            id: "news:summary-only",
+            platform: "news",
+            url: "https://example.com/summary-only",
+            title: "Unrelated headline",
+            content_text: "Aiko appears only in this generated summary.",
+            author: nil,
+            thumbnail_url: nil,
+            media_type: "article",
+            published_at: now,
+            watch_term_keyword: term.keyword,
+            fetched_at: now
+        )
+
+        _ = db.mergeItems(newItems: [item])
+
+        XCTAssertTrue(db.queryFeed(keyword: term.keyword, days: 30).isEmpty)
+    }
+
+    @MainActor
+    func testFeedMediaFilterIncludesImageItems() throws {
+        let now = ISO8601DateFormatter().string(from: Date())
+        db.setSubscribedPlatforms(platforms: ["twitter", "youtube"])
+        let imageItem = FeedItem(
+            id: "twitter:image",
+            platform: "twitter",
+            url: "https://x.com/example/status/1",
+            title: "Photo update",
+            content_text: nil,
+            author: nil,
+            thumbnail_url: nil,
+            media_type: "image",
+            published_at: now,
+            watch_term_keyword: "Aiko",
+            fetched_at: now,
+            source: "twitter_api"
+        )
+        let textItem = FeedItem(
+            id: "twitter:text",
+            platform: "twitter",
+            url: "https://x.com/example/status/2",
+            title: "Text update",
+            content_text: nil,
+            author: nil,
+            thumbnail_url: nil,
+            media_type: "text",
+            published_at: now,
+            watch_term_keyword: "Aiko",
+            fetched_at: now,
+            source: "twitter_api"
+        )
+        let legacyCasedMediaPlatformItem = FeedItem(
+            id: "youtube:legacy-cased-platform",
+            platform: "YOUTUBE",
+            url: "https://youtube.com/watch?v=legacy-cased-platform",
+            title: "Legacy cased YouTube item",
+            content_text: nil,
+            author: nil,
+            thumbnail_url: nil,
+            media_type: "article",
+            published_at: now,
+            watch_term_keyword: "Aiko",
+            fetched_at: now,
+            source: "youtube_scrape"
+        )
+
+        _ = db.mergeItems(newItems: [imageItem, textItem, legacyCasedMediaPlatformItem])
+
+        XCTAssertEqual(
+            FeedView.makeFilteredItems(db: db, keyword: nil, platform: nil, mediaFilter: "media_only", days: 30).map(\.id),
+            ["twitter:image", "youtube:legacy-cased-platform"]
+        )
+    }
+
+    func testReaderViewNormalizesLegacyPlatformIDsForRouting() throws {
+        let now = ISO8601DateFormatter().string(from: Date())
+        let fiveCh = FeedItem(
+            id: "5ch:legacy-cased",
+            platform: "5CH",
+            url: "https://idol.5ch.net/test/read.cgi/board/1234567890?utm_source=feed",
+            title: "5ch thread",
+            content_text: nil,
+            author: nil,
+            thumbnail_url: nil,
+            media_type: "text",
+            published_at: now,
+            watch_term_keyword: "Aiko",
+            fetched_at: now
+        )
+        let oricon = FeedItem(
+            id: "oricon:legacy-cased",
+            platform: "ORICON",
+            url: "https://www.oricon.co.jp/news/12345/?utm_source=feed",
+            title: "Oricon article",
+            content_text: nil,
+            author: nil,
+            thumbnail_url: nil,
+            media_type: "article",
+            published_at: now,
+            watch_term_keyword: "Aiko",
+            fetched_at: now
+        )
+
+        XCTAssertTrue(ReaderView.usesSystemSafari(for: fiveCh))
+        XCTAssertEqual(
+            ReaderView(feedItem: fiveCh).originalPageUrl?.absoluteString,
+            "https://itest.5ch.io/idol/test/read.cgi/board/1234567890/"
+        )
+        XCTAssertEqual(
+            ReaderView(feedItem: oricon).originalPageUrl?.absoluteString,
+            "https://www.oricon.co.jp/news/12345/full/"
+        )
+    }
+
+    @MainActor
     func testFeedOrderingUsesParsedDatesAcrossTimezoneOffsets() throws {
         db.setSubscribedPlatforms(platforms: ["youtube"])
         let newerUtc = "2024-06-01T03:00:00Z"
@@ -2217,7 +2918,8 @@ final class OshiReaderTests: XCTestCase {
             media_type: "video",
             published_at: newerUtc,
             watch_term_keyword: "Aiko",
-            fetched_at: newerUtc
+            fetched_at: newerUtc,
+            source: "youtube_scrape"
         )
         let olderItem = FeedItem(
             id: "youtube:older",
@@ -2230,7 +2932,8 @@ final class OshiReaderTests: XCTestCase {
             media_type: "video",
             published_at: olderWithOffset,
             watch_term_keyword: "Aiko",
-            fetched_at: olderWithOffset
+            fetched_at: olderWithOffset,
+            source: "youtube_scrape"
         )
 
         _ = db.mergeItems(newItems: [olderItem, newerItem])
@@ -2244,7 +2947,8 @@ final class OshiReaderTests: XCTestCase {
         let item = FeedItem(
             id: "news:111", platform: "news", url: "https://url", title: "Bookmark test",
             content_text: nil, author: nil, thumbnail_url: nil, media_type: "article",
-            published_at: "2026-06-02T12:00:00Z", watch_term_keyword: "", fetched_at: ""
+            published_at: "2026-06-02T12:00:00Z", watch_term_keyword: "", fetched_at: "",
+            source: "google_news"
         )
         
         XCTAssertEqual(db.getSaved().count, 0)
@@ -2254,6 +2958,8 @@ final class OshiReaderTests: XCTestCase {
         XCTAssertTrue(isSaved1)
         XCTAssertEqual(db.getSaved().count, 1)
         XCTAssertEqual(db.getSaved().first?.id, "news:111")
+        XCTAssertEqual(db.getSaved().first?.source, "google_news")
+        XCTAssertEqual(db.getSaved().first?.toFeedItem().source, "google_news")
         
         // Toggle saved (Remove)
         let isSaved2 = db.toggleSaved(item: item)
@@ -2282,11 +2988,21 @@ final class OshiReaderTests: XCTestCase {
             media_type: "article",
             published_at: now,
             watch_term_keyword: term.keyword,
-            fetched_at: now
+            fetched_at: now,
+            source: "google_news"
         )
         db.terms = [term]
         db.feedItems = [item]
-        db.savedPages = [SavedPage(id: item.id, url: item.url, title: item.title, platform: item.platform, saved_at: now)]
+        db.savedPages = [
+            SavedPage(
+                id: item.id,
+                url: item.url,
+                title: item.title,
+                platform: item.platform,
+                saved_at: now,
+                source: item.source
+            )
+        ]
         db.customUrls = [CustomUrl(id: "custom:backup", url: "https://example.com/feed.xml", title: "Backup feed", added_at: now)]
 
         let data = try db.exportBackupData()
@@ -2299,6 +3015,7 @@ final class OshiReaderTests: XCTestCase {
         XCTAssertEqual(db.terms, [term])
         XCTAssertEqual(db.feedItems, [item])
         XCTAssertEqual(db.savedPages.count, 1)
+        XCTAssertEqual(db.savedPages.first?.source, "google_news")
         XCTAssertEqual(db.customUrls.count, 1)
     }
 
@@ -2612,7 +3329,8 @@ final class OshiReaderTests: XCTestCase {
             media_type: "video",
             published_at: "2024-06-01T03:00:00Z",
             watch_term_keyword: "Aiko",
-            fetched_at: "2024-06-01T03:00:00Z"
+            fetched_at: "2024-06-01T03:00:00Z",
+            source: "youtube_scrape"
         )
         let olderOffset = FeedItem(
             id: "backup-youtube:older",
@@ -2625,7 +3343,8 @@ final class OshiReaderTests: XCTestCase {
             media_type: "video",
             published_at: "2024-06-01T10:00:00+09:00",
             watch_term_keyword: "Aiko",
-            fetched_at: "2024-06-01T10:00:00+09:00"
+            fetched_at: "2024-06-01T10:00:00+09:00",
+            source: "youtube_scrape"
         )
         let backup = LocalBackup(
             exportedAt: formatter.string(from: Date()),
@@ -2652,6 +3371,74 @@ final class OshiReaderTests: XCTestCase {
     }
 
     @MainActor
+    func testBackupImportPrunesLegacyYouTubeFallbackRows() throws {
+        let now = ISO8601DateFormatter().string(from: Date())
+        let legacyUnmarked = FeedItem(
+            id: "backup-youtube:legacy-unmarked",
+            platform: "youtube",
+            url: "https://youtube.com/watch?v=legacy-unmarked",
+            title: "Legacy unmarked",
+            content_text: nil,
+            author: nil,
+            thumbnail_url: nil,
+            media_type: "video",
+            published_at: now,
+            watch_term_keyword: "Aiko",
+            fetched_at: now
+        )
+        let legacyGoogleNews = FeedItem(
+            id: "backup-youtube:legacy-google",
+            platform: "youtube",
+            url: "https://news.google.com/articles/legacy-google",
+            title: "Legacy Google News",
+            content_text: nil,
+            author: nil,
+            thumbnail_url: nil,
+            media_type: "video",
+            published_at: now,
+            watch_term_keyword: "Aiko",
+            fetched_at: now,
+            source: "google_news"
+        )
+        let currentScrape = FeedItem(
+            id: "backup-youtube:current",
+            platform: "youtube",
+            url: "https://youtube.com/watch?v=current",
+            title: "Current scrape",
+            content_text: nil,
+            author: nil,
+            thumbnail_url: nil,
+            media_type: "video",
+            published_at: now,
+            watch_term_keyword: "Aiko",
+            fetched_at: now,
+            source: "youtube_scrape"
+        )
+        let backup = LocalBackup(
+            exportedAt: now,
+            terms: [],
+            feedItems: [legacyUnmarked, legacyGoogleNews, currentScrape],
+            savedPages: [],
+            customUrls: [],
+            subscribedPlatforms: ["youtube"],
+            wallpaper: nil,
+            sourcesOrder: nil,
+            oshiAvatars: [:],
+            compositions: [:],
+            hiddenItems: [
+                "\(legacyUnmarked.id)::\(legacyUnmarked.watch_term_keyword)",
+                "\(legacyGoogleNews.id)::\(legacyGoogleNews.watch_term_keyword)",
+                "\(currentScrape.id)::\(currentScrape.watch_term_keyword)"
+            ]
+        )
+
+        try db.importBackupData(JSONEncoder().encode(backup))
+
+        XCTAssertEqual(db.feedItems.map(\.id), [currentScrape.id])
+        XCTAssertEqual(db.hiddenItems, ["\(currentScrape.id)::\(currentScrape.watch_term_keyword)"])
+    }
+
+    @MainActor
     func testNotificationPayloadRecoversEvictedItem() throws {
         let item = FeedItem(
             id: "news:evicted",
@@ -2664,7 +3451,8 @@ final class OshiReaderTests: XCTestCase {
             media_type: "article",
             published_at: "2026-07-27T00:00:00Z",
             watch_term_keyword: "Evicted Oshi",
-            fetched_at: "2026-07-27T00:00:00Z"
+            fetched_at: "2026-07-27T00:00:00Z",
+            source: "google_news"
         )
         db.feedItems = []
         NotificationNavigationManager.shared.open(userInfo: [
@@ -2677,7 +3465,8 @@ final class OshiReaderTests: XCTestCase {
             "author": item.author as Any,
             "media_type": item.media_type,
             "published_at": item.published_at,
-            "fetched_at": item.fetched_at
+            "fetched_at": item.fetched_at,
+            "source": item.source as Any
         ])
 
         XCTAssertEqual(NotificationNavigationManager.shared.selectedItem, item)
@@ -2697,7 +3486,8 @@ final class OshiReaderTests: XCTestCase {
             media_type: "video",
             published_at: "2026-07-27T00:00:00Z",
             watch_term_keyword: "Cached Oshi",
-            fetched_at: "2026-07-27T00:01:00Z"
+            fetched_at: "2026-07-27T00:01:00Z",
+            source: "youtube_scrape"
         )
         db.feedItems = [cached]
 
@@ -2708,9 +3498,49 @@ final class OshiReaderTests: XCTestCase {
 
         XCTAssertEqual(NotificationNavigationManager.shared.selectedItem, cached)
         NotificationNavigationManager.shared.selectedItem = nil
+
+        let twitterCached = FeedItem(
+            id: "twitter:legacy-platform",
+            platform: "twitter",
+            url: "https://x.com/example/status/1",
+            title: "Cached X title",
+            content_text: nil,
+            author: nil,
+            thumbnail_url: nil,
+            media_type: "text",
+            published_at: "2026-07-27T00:00:00Z",
+            watch_term_keyword: "Cached Oshi",
+            fetched_at: "2026-07-27T00:01:00Z",
+            source: "twitter_api"
+        )
+        db.feedItems = [twitterCached]
+
+        NotificationNavigationManager.shared.open(userInfo: [
+            "feed_item_id": twitterCached.id,
+            "watch_term_keyword": twitterCached.watch_term_keyword,
+            "platform": "x",
+            "url": twitterCached.url
+        ])
+
+        XCTAssertEqual(NotificationNavigationManager.shared.selectedItem?.platform, "twitter")
+        NotificationNavigationManager.shared.selectedItem = nil
+
+        db.feedItems = []
+        NotificationNavigationManager.shared.open(userInfo: [
+            "feed_item_id": "x:evicted-status",
+            "url": "https://x.com/example/status/2",
+            "title": "Evicted X post",
+            "media_type": "text",
+            "published_at": "2026-07-27T00:00:00Z",
+            "fetched_at": "2026-07-27T00:01:00Z"
+        ])
+
+        XCTAssertEqual(NotificationNavigationManager.shared.selectedItem?.platform, "twitter")
+        NotificationNavigationManager.shared.selectedItem = nil
     }
     
     // MARK: - Feature 5: Custom tracked URLs
+    @MainActor
     func testCustomUrls() throws {
         XCTAssertEqual(db.customUrls.count, 0)
         
@@ -2718,10 +3548,215 @@ final class OshiReaderTests: XCTestCase {
         XCTAssertEqual(db.customUrls.count, 1)
         XCTAssertEqual(db.customUrls.first?.title, "Oshi Blog")
         XCTAssertEqual(db.customUrls.first?.url, "https://myoshi-blog.com/feed")
+
+        db.addCustomUrl(url: "myoshi-blog.com/second-feed", title: "Second Feed")
+        XCTAssertEqual(db.customUrls.count, 2)
+        XCTAssertEqual(db.customUrls.first?.url, "https://myoshi-blog.com/second-feed")
+
+        db.addCustomUrl(url: "HTTPS://MYOSHI-BLOG.COM/second-feed/", title: "Duplicate Feed")
+        XCTAssertEqual(db.customUrls.count, 2)
+
+        db.addCustomUrl(url: "https://www.myoshi-blog.com/second-feed", title: "WWW Duplicate Feed")
+        XCTAssertEqual(db.customUrls.count, 2)
+
+        db.addCustomUrl(url: "https://myoshi-blog.com:443/second-feed", title: "Default Port Duplicate")
+        XCTAssertEqual(db.customUrls.count, 2)
+
+        db.addCustomUrl(url: "https://myoshi-blog.com/query-feed?b=2&utm_source=app&a=1#top", title: "Query Feed")
+        XCTAssertEqual(db.customUrls.count, 3)
+        XCTAssertEqual(db.customUrls.first?.url, "https://myoshi-blog.com/query-feed?a=1&b=2")
+        db.addCustomUrl(url: "https://myoshi-blog.com/query-feed?b=2&a=1", title: "Query Feed Duplicate")
+        XCTAssertEqual(db.customUrls.count, 3)
+
+        db.addCustomUrl(url: "javascript://alert.example/feed", title: "Bad Feed")
+        XCTAssertEqual(db.customUrls.count, 3)
+
+        db.addCustomUrl(url: "mailto:test@example.com", title: "Mail Feed")
+        db.addCustomUrl(url: "javascript:alert(1)", title: "Script Feed")
+        XCTAssertEqual(db.customUrls.count, 3)
+
+        db.addCustomUrl(url: "", title: "Empty Feed")
+        db.addCustomUrl(url: "https://", title: "No Host Feed")
+        db.addCustomUrl(url: "https://javascript/feed", title: "Single Label Feed")
+        XCTAssertEqual(db.customUrls.count, 3)
+
+        db.addCustomUrl(url: "http://localhost:8080/feed", title: "Local Feed")
+        XCTAssertEqual(db.customUrls.count, 4)
+        XCTAssertEqual(db.customUrls.first?.url, "http://localhost:8080/feed")
+
+        let longPrefix = "https://feeds.example.com/" + String(repeating: "same-prefix-", count: 8)
+        db.addCustomUrl(url: "\(longPrefix)a.xml", title: "Long Feed A")
+        db.addCustomUrl(url: "\(longPrefix)b.xml", title: "Long Feed B")
+        XCTAssertEqual(db.customUrls.count, 6)
         
-        let id = db.customUrls.first!.id
-        db.removeCustomUrl(id: id)
+        for id in db.customUrls.map(\.id) {
+            db.removeCustomUrl(id: id)
+        }
         XCTAssertEqual(db.customUrls.count, 0)
+    }
+
+    @MainActor
+    func testRemoveCustomUrlPrunesCachedCustomFeedItem() throws {
+        db.setSubscribedPlatforms(platforms: ["custom"])
+        db.addCustomUrl(url: "https://myoshi-blog.com/feed", title: "Oshi Blog")
+        let custom = try XCTUnwrap(db.customUrls.first)
+        let now = ISO8601DateFormatter().string(from: Date())
+        let item = FeedItem(
+            id: custom.id,
+            platform: "custom",
+            url: custom.url,
+            title: "Oshi Blog",
+            content_text: nil,
+            author: "myoshi-blog.com",
+            thumbnail_url: nil,
+            media_type: "article",
+            published_at: now,
+            watch_term_keyword: "",
+            fetched_at: now,
+            source: "custom_url"
+        )
+
+        XCTAssertEqual(db.mergeItems(newItems: [item]), 1)
+        XCTAssertEqual(db.queryFeed(keyword: nil, days: 0).map(\.id), [custom.id])
+        db.hiddenItems.insert("\(item.id)::\(item.watch_term_keyword)")
+
+        db.removeCustomUrl(id: custom.id)
+
+        XCTAssertTrue(db.customUrls.isEmpty)
+        XCTAssertTrue(db.feedItems.isEmpty)
+        XCTAssertFalse(db.hiddenItems.contains("\(item.id)::\(item.watch_term_keyword)"))
+        XCTAssertTrue(db.queryFeed(keyword: nil, days: 0).isEmpty)
+    }
+
+    @MainActor
+    func testRemoveCustomUrlClearsHiddenCustomTombstoneWithoutCachedItem() throws {
+        db.addCustomUrl(url: "https://myoshi-blog.com/feed", title: "Oshi Blog")
+        let custom = try XCTUnwrap(db.customUrls.first)
+        let hiddenKey = "\(custom.id)::Aiko"
+        let unrelatedHiddenKey = "youtube:v1::Aiko"
+        db.hiddenItems.insert(hiddenKey)
+        db.hiddenItems.insert(unrelatedHiddenKey)
+
+        db.removeCustomUrl(id: custom.id)
+
+        XCTAssertFalse(db.hiddenItems.contains(hiddenKey))
+        XCTAssertTrue(db.hiddenItems.contains(unrelatedHiddenKey))
+    }
+
+    @MainActor
+    func testRemoveCustomUrlPreservesHiddenKeysForRemainingPrefixedCustomID() throws {
+        db.addCustomUrl(url: "https://example.com/a", title: "Short")
+        db.addCustomUrl(url: "https://example.com/a::b", title: "Long")
+        let short = try XCTUnwrap(db.customUrls.first { $0.url == "https://example.com/a" })
+        let long = try XCTUnwrap(db.customUrls.first { $0.url == "https://example.com/a::b" })
+        let shortHiddenKey = "\(short.id)::"
+        let longHiddenKey = "\(long.id)::"
+        db.hiddenItems.insert(shortHiddenKey)
+        db.hiddenItems.insert(longHiddenKey)
+
+        db.removeCustomUrl(id: short.id)
+
+        XCTAssertFalse(db.hiddenItems.contains(shortHiddenKey))
+        XCTAssertTrue(db.hiddenItems.contains(longHiddenKey))
+    }
+
+    @MainActor
+    func testRemoveCustomUrlKeepsUnrelatedCachedFeedItems() throws {
+        db.setSubscribedPlatforms(platforms: ["custom", "youtube"])
+        db.addCustomUrl(url: "https://myoshi-blog.com/feed", title: "Oshi Blog")
+        let custom = try XCTUnwrap(db.customUrls.first)
+        let now = ISO8601DateFormatter().string(from: Date())
+        let staleCustom = FeedItem(
+            id: custom.id,
+            platform: "CUSTOM",
+            url: custom.url,
+            title: "Oshi Blog",
+            content_text: nil,
+            author: "myoshi-blog.com",
+            thumbnail_url: nil,
+            media_type: "article",
+            published_at: now,
+            watch_term_keyword: "",
+            fetched_at: now,
+            source: "custom_url"
+        )
+        let regular = FeedItem(
+            id: "youtube:v1",
+            platform: "youtube",
+            url: "https://youtube.com/watch?v=v1",
+            title: "Video",
+            content_text: nil,
+            author: nil,
+            thumbnail_url: nil,
+            media_type: "video",
+            published_at: now,
+            watch_term_keyword: "Aiko",
+            fetched_at: now,
+            source: "youtube_scrape"
+        )
+        db.feedItems = [staleCustom, regular]
+        db.hiddenItems.insert("\(staleCustom.id)::\(staleCustom.watch_term_keyword)")
+        db.hiddenItems.insert("\(regular.id)::\(regular.watch_term_keyword)")
+
+        db.removeCustomUrl(id: custom.id)
+
+        XCTAssertEqual(db.feedItems, [regular])
+        XCTAssertFalse(db.hiddenItems.contains("\(staleCustom.id)::\(staleCustom.watch_term_keyword)"))
+        XCTAssertTrue(db.hiddenItems.contains("\(regular.id)::\(regular.watch_term_keyword)"))
+    }
+
+    @MainActor
+    func testCurrentCustomFeedItemsFiltersRemovedCustomSourceResults() throws {
+        db.addCustomUrl(url: "https://myoshi-blog.com/feed", title: "Oshi Blog")
+        let custom = try XCTUnwrap(db.customUrls.first)
+        let now = ISO8601DateFormatter().string(from: Date())
+        let currentCustom = FeedItem(
+            id: custom.id,
+            platform: "custom",
+            url: custom.url,
+            title: "Current Oshi Blog",
+            content_text: nil,
+            author: "myoshi-blog.com",
+            thumbnail_url: nil,
+            media_type: "article",
+            published_at: now,
+            watch_term_keyword: "",
+            fetched_at: now,
+            source: "custom_url"
+        )
+        let removedCustom = FeedItem(
+            id: "custom:https%3A%2F%2Fold.example.com%2Ffeed.xml",
+            platform: "CUSTOM",
+            url: "https://old.example.com/feed.xml",
+            title: "Removed Custom Feed",
+            content_text: nil,
+            author: "old.example.com",
+            thumbnail_url: nil,
+            media_type: "article",
+            published_at: now,
+            watch_term_keyword: "",
+            fetched_at: now,
+            source: "custom_url"
+        )
+        let regular = FeedItem(
+            id: "youtube:v1",
+            platform: "youtube",
+            url: "https://youtube.com/watch?v=v1",
+            title: "Video",
+            content_text: nil,
+            author: nil,
+            thumbnail_url: nil,
+            media_type: "video",
+            published_at: now,
+            watch_term_keyword: "Aiko",
+            fetched_at: now,
+            source: "youtube_scrape"
+        )
+
+        XCTAssertEqual(
+            db.currentCustomFeedItems([removedCustom, currentCustom, regular]).map(\.id),
+            [currentCustom.id, regular.id]
+        )
     }
     
     // MARK: - Feature 6: Oshi Avatars Compositions
@@ -2753,6 +3788,18 @@ final class OshiReaderTests: XCTestCase {
         XCTAssertEqual(tverMeta.name, "TVer")
         XCTAssertEqual(tverMeta.icon, "📺")
         XCTAssertEqual(tverMeta.accent, Color.blue)
+
+        let twitterAliasMeta = manager.metadata(for: "x")
+        XCTAssertEqual(twitterAliasMeta.name, "X")
+        XCTAssertEqual(twitterAliasMeta.icon, "𝕏")
+
+        let modelPressAliasMeta = manager.metadata(for: "news:mdpr")
+        XCTAssertEqual(modelPressAliasMeta.name, "ModelPress")
+        XCTAssertEqual(modelPressAliasMeta.icon, "💅")
+
+        let yahooAliasMeta = manager.metadata(for: " news:yahoo_ent ")
+        XCTAssertEqual(yahooAliasMeta.name, "YahooNews")
+        XCTAssertEqual(yahooAliasMeta.icon, "🇯🇵")
         
         let customMeta = manager.metadata(for: "unknown_platform")
         XCTAssertEqual(customMeta.name, "Unknown_Platform")
