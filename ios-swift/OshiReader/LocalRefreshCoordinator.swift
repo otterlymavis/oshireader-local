@@ -73,15 +73,22 @@ final class LocalRefreshCoordinator: ObservableObject {
                 generation: refreshGeneration,
                 profileID: profileID
             )
-            if self.isCurrent(generation: refreshGeneration, profileID: profileID) {
+            let isCurrent = self.isCurrent(generation: refreshGeneration, profileID: profileID)
+            let isSameProfile = LocalDB.shared.activeProfile.id == profileID
+            // Cancellation intentionally invalidates the generation so stale
+            // results cannot merge, but the task still owns the coordinator's
+            // loading state. Always clear that state when this task exits.
+            // A cancelled task on the same profile must finish diagnostics;
+            // after a profile switch, the new profile's diagnostics must win.
+            if isCurrent || isSameProfile {
                 RefreshDiagnostics.shared.finish(
                     succeeded: result.succeeded,
                     addedCount: result.addedCount,
                     partial: result.completion != .completed || !result.customRefreshCompleted
                 )
-                self.isRefreshing = false
-                self.activeRequest = nil
             }
+            self.isRefreshing = false
+            self.activeRequest = nil
             self.activeTask = nil
             return result
         }
@@ -228,13 +235,13 @@ final class LocalRefreshCoordinator: ObservableObject {
         profileID: UUID
     ) async -> (completed: Bool, addedCount: Int) {
         guard !Task.isCancelled, isCurrent(generation: generation, profileID: profileID) else { return (false, 0) }
-        let customItems = await NetworkManager.shared.scrapeCustomUrls(db.customUrls)
+        let customReport = await NetworkManager.shared.scrapeCustomUrlsReport(db.customUrls)
         guard !Task.isCancelled, isCurrent(generation: generation, profileID: profileID) else { return (false, 0) }
         var addedCount = 0
-        if !customItems.isEmpty {
-            addedCount = db.mergeItems(newItems: customItems, sourceRevision: sourceRevision)
+        if !customReport.items.isEmpty {
+            addedCount = db.mergeItems(newItems: customReport.items, sourceRevision: sourceRevision)
         }
-        return (true, addedCount)
+        return (customReport.completed, addedCount)
     }
 
     private func isCurrent(generation: Int, profileID: UUID) -> Bool {

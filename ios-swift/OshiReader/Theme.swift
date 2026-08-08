@@ -212,34 +212,35 @@ class ThemeManager: ObservableObject {
     }
     
     func metadata(for platform: String) -> PlatformMetadata {
-        let p = platform.lowercased()
-        if p == "youtube" {
+        switch platform.lowercased() {
+        case "youtube":
             return PlatformMetadata(name: "YouTube", icon: "📹", accent: Color.red, bg: Color(red: 1.0, green: 0.9, blue: 0.9), fg: Color.red)
-        } else if p == "tver" {
+        case "tver":
             return PlatformMetadata(name: "TVer", icon: "📺", accent: Color.blue, bg: Color(red: 0.9, green: 0.95, blue: 1.0), fg: Color.blue)
-        } else if p == "niconico" {
+        case "niconico":
             return PlatformMetadata(name: "NicoNico", icon: "💬", accent: Color.black, bg: Color.gray.opacity(0.2), fg: Color.primary)
-        } else if p == "yahoonews" {
+        case "yahoonews":
             return PlatformMetadata(name: "YahooNews", icon: "🇯🇵", accent: Color(red: 0.86, green: 0.0, blue: 0.0), bg: Color(red: 1.0, green: 0.92, blue: 0.92), fg: Color(red: 0.86, green: 0.0, blue: 0.0))
-        } else if p == "mdpr" {
+        case "mdpr":
             return PlatformMetadata(name: "ModelPress", icon: "💅", accent: Color.pink, bg: Color(red: 1.0, green: 0.9, blue: 0.95), fg: Color.pink)
-        } else if p == "oricon" {
+        case "oricon":
             return PlatformMetadata(name: "Oricon", icon: "🎤", accent: Color(red: 0.86, green: 0.12, blue: 0.22), bg: Color(red: 1.0, green: 0.92, blue: 0.94), fg: Color(red: 0.86, green: 0.12, blue: 0.22))
-        } else if p == "twitter" {
+        case "twitter":
             return PlatformMetadata(name: "X", icon: "𝕏", accent: Color.black, bg: Color.gray.opacity(0.16), fg: Color.primary)
-        } else if p == "5ch" {
+        case "5ch":
             return PlatformMetadata(name: "5ch", icon: "💬", accent: Color.orange, bg: Color(red: 1.0, green: 0.95, blue: 0.9), fg: Color.orange)
-        } else if p == "girlschannel" {
+        case "girlschannel":
             return PlatformMetadata(name: "GirlsChannel", icon: "👭", accent: Color.pink, bg: Color(red: 1.0, green: 0.92, blue: 0.95), fg: Color.pink)
-        } else if p == "togetter" {
+        case "togetter":
             return PlatformMetadata(name: "Togetter", icon: "🐧", accent: Color.green, bg: Color(red: 0.9, green: 0.98, blue: 0.92), fg: Color.green)
-        } else if p == "note" {
+        case "note":
             return PlatformMetadata(name: "Note", icon: "📝", accent: Color(red: 0.1, green: 0.7, blue: 0.5), bg: Color(red: 0.9, green: 0.97, blue: 0.95), fg: Color(red: 0.1, green: 0.7, blue: 0.5))
-        } else if p == "news" {
+        case "news":
             return PlatformMetadata(name: "News", icon: "📰", accent: Color.purple, bg: Color(red: 0.96, green: 0.9, blue: 1.0), fg: Color.purple)
-        } else if let definition = PlatformRegistry.definition(for: p) {
-            return PlatformMetadata(name: definition.name, icon: definition.icon, accent: colors.primary, bg: colors.primaryBg, fg: colors.primary)
-        } else {
+        default:
+            if let definition = PlatformRegistry.definition(for: platform.lowercased()) {
+                return PlatformMetadata(name: definition.name, icon: definition.icon, accent: colors.primary, bg: colors.primaryBg, fg: colors.primary)
+            }
             return PlatformMetadata(name: platform.capitalized, icon: "🌐", accent: colors.primary, bg: colors.primaryBg, fg: colors.primary)
         }
     }

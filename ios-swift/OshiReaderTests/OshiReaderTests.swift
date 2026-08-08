@@ -135,6 +135,7 @@ final class OshiReaderTests: XCTestCase {
         <title>Natalie Oshi music update</title>
         <link>https://natalie.mu/music/news/123?utm_source=rss</link>
         <description>Natalie Oshi news</description>
+        <pubDate>Sun, 02 Aug 2026 08:00:00 GMT</pubDate>
         </item></channel></rss>
         """.data(using: .utf8)!
         let capture = RequestCapture()
@@ -170,6 +171,7 @@ final class OshiReaderTests: XCTestCase {
         <title>BARKS Oshi feature</title>
         <link>\(originalURL)</link>
         <description>BARKS Oshi feature description</description>
+        <pubDate>Sun, 02 Aug 2026 08:00:00 GMT</pubDate>
         </item></channel></rss>
         """.data(using: .utf8)!
         let capture = RequestCapture()
@@ -202,8 +204,8 @@ final class OshiReaderTests: XCTestCase {
     func testJapaneseDedicatedRSSSourcesUsePublisherFeedsAndPreserveSourceIDs() async {
         let rss = Data("""
         <rss version="2.0"><channel>
-          <item><title>Alias Oshi publisher update</title><link>https://publisher.example/article-1?utm_source=rss</link><description>Publisher detail</description></item>
-          <item><title>Alias Oshi duplicate</title><link>https://publisher.example/article-1?utm_medium=email</link></item>
+          <item><title>Alias Oshi publisher update</title><link>https://publisher.example/article-1?utm_source=rss</link><description>Publisher detail</description><pubDate>Sun, 02 Aug 2026 08:00:00 GMT</pubDate></item>
+          <item><title>Alias Oshi duplicate</title><link>https://publisher.example/article-1?utm_medium=email</link><pubDate>Sun, 02 Aug 2026 08:00:00 GMT</pubDate></item>
         </channel></rss>
         """.utf8)
         let atom = Data("""
@@ -280,7 +282,7 @@ final class OshiReaderTests: XCTestCase {
     }
 
     func testJapaneseDedicatedRSSFailureStaysAttachedToPublisher() async {
-        let rss = Data("<rss version=\"2.0\"><channel><item><title>Hochi Oshi update</title><link>https://hochi.news/articles/1</link></item></channel></rss>".utf8)
+        let rss = Data("<rss version=\"2.0\"><channel><item><title>Hochi Oshi update</title><link>https://hochi.news/articles/1</link><pubDate>Sun, 02 Aug 2026 08:00:00 GMT</pubDate></item></channel></rss>".utf8)
         let service = IngestionService(
             requestExecutor: { request in
                 if request.url?.host == "dot.asahi.com" {
@@ -310,14 +312,14 @@ final class OshiReaderTests: XCTestCase {
         let billboardURL = "https://www.billboard-japan.com/d_news/detail/1?utm_medium=email"
         let cinemaRSS = Data("""
         <rss version="2.0"><channel>
-          <item><title>Alias Oshi CinemaCafe update</title><link>\(cinemaURL)</link><description>Film detail</description></item>
-          <item><title>Alias Oshi duplicate</title><link>https://www.cinemacafe.net/article/1.html?utm_medium=email</link></item>
+          <item><title>Alias Oshi CinemaCafe update</title><link>\(cinemaURL)</link><description>Film detail</description><pubDate>Sun, 02 Aug 2026 08:00:00 GMT</pubDate></item>
+          <item><title>Alias Oshi duplicate</title><link>https://www.cinemacafe.net/article/1.html?utm_medium=email</link><pubDate>Sun, 02 Aug 2026 08:00:00 GMT</pubDate></item>
         </channel></rss>
         """.utf8)
         let billboardRSS = Data("""
         <rss version="2.0"><channel>
-          <item><title>Alias Oshi Billboard update</title><link>\(billboardURL)</link><description>Music detail</description></item>
-          <item><title>Alias Oshi duplicate</title><link>https://www.billboard-japan.com/d_news/detail/1?utm_source=rss</link></item>
+          <item><title>Alias Oshi Billboard update</title><link>\(billboardURL)</link><description>Music detail</description><pubDate>Sun, 02 Aug 2026 08:00:00 GMT</pubDate></item>
+          <item><title>Alias Oshi duplicate</title><link>https://www.billboard-japan.com/d_news/detail/1?utm_source=rss</link><pubDate>Sun, 02 Aug 2026 08:00:00 GMT</pubDate></item>
         </channel></rss>
         """.utf8)
         let capture = RequestCapture()
@@ -368,7 +370,7 @@ final class OshiReaderTests: XCTestCase {
     }
 
     func testCinemaCafeFailureAndBillboardSuccessRemainSourceSpecific() async {
-        let billboardRSS = Data("<rss version=\"2.0\"><channel><item><title>Oshi Billboard update</title><link>https://www.billboard-japan.com/d_news/detail/2</link></item></channel></rss>".utf8)
+        let billboardRSS = Data("<rss version=\"2.0\"><channel><item><title>Oshi Billboard update</title><link>https://www.billboard-japan.com/d_news/detail/2</link><pubDate>Sun, 02 Aug 2026 08:00:00 GMT</pubDate></item></channel></rss>".utf8)
         let service = IngestionService(
             requestExecutor: { request in
                 if request.url?.host == "www.cinemacafe.net" {
@@ -419,9 +421,11 @@ final class OshiReaderTests: XCTestCase {
         <rss version="2.0"><channel><item>
         <title>Alias Oshi exclusive</title>
         <link>https://natalie.mu/music/news/alias</link>
+        <pubDate>Sun, 02 Aug 2026 08:00:00 GMT</pubDate>
         </item><item>
         <title>Unrelated headline</title>
         <link>https://natalie.mu/music/news/unrelated</link>
+        <pubDate>Sun, 02 Aug 2026 08:00:00 GMT</pubDate>
         </item></channel></rss>
         """.data(using: .utf8)!
         let service = IngestionService { request in
@@ -549,9 +553,9 @@ final class OshiReaderTests: XCTestCase {
         let originalURL = "https://ameblo.jp/first/entry-1?utm_source=rss"
         let rss = Data("""
         <rss version="2.0"><channel>
-          <item><title>Alias Oshi diary</title><link>\(originalURL)</link><description>daily update</description></item>
-          <item><title>Alias Oshi duplicate</title><link>https://ameblo.jp/first/entry-1?utm_medium=email</link></item>
-          <item><title>Unrelated</title><link>https://ameblo.jp/first/entry-2</link></item>
+          <item><title>Alias Oshi diary</title><link>\(originalURL)</link><description>daily update</description><pubDate>Sun, 02 Aug 2026 08:00:00 GMT</pubDate></item>
+          <item><title>Alias Oshi duplicate</title><link>https://ameblo.jp/first/entry-1?utm_medium=email</link><pubDate>Sun, 02 Aug 2026 08:00:00 GMT</pubDate></item>
+          <item><title>Unrelated</title><link>https://ameblo.jp/first/entry-2</link><pubDate>Sun, 02 Aug 2026 08:00:00 GMT</pubDate></item>
         </channel></rss>
         """.utf8)
         let capture = RequestCapture()
@@ -610,7 +614,7 @@ final class OshiReaderTests: XCTestCase {
             AmebloBlog(url: "https://ameblo.jp/failing")!,
             AmebloBlog(url: "https://ameblo.jp/succeeding")!
         ]
-        let rss = Data("<rss version=\"2.0\"><channel><item><title>Oshi update</title><link>https://ameblo.jp/succeeding/entry-1</link></item></channel></rss>".utf8)
+        let rss = Data("<rss version=\"2.0\"><channel><item><title>Oshi update</title><link>https://ameblo.jp/succeeding/entry-1</link><pubDate>Sun, 02 Aug 2026 08:00:00 GMT</pubDate></item></channel></rss>".utf8)
         let service = IngestionService(
             requestExecutor: { request in
                 if request.url?.host == "rssblog.ameba.jp" && request.url?.path.contains("failing") == true {
@@ -657,7 +661,15 @@ final class OshiReaderTests: XCTestCase {
     }
 
     func testIngestionReportAggregatesSourceStatusForEmptyPlatforms() async {
-        let report = await IngestionService.shared.ingestReport(
+        let service = IngestionService(requestExecutor: { request in
+            (
+                Data("<rss version=\"2.0\"><channel></channel></rss>".utf8),
+                try XCTUnwrap(HTTPURLResponse(
+                    url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                ))
+            )
+        }, retrySleeper: { _ in })
+        let report = await service.ingestReport(
             term: WatchTerm(keyword: "Status Oshi", collection_mode: "media_only"),
             platforms: ["news"]
         )
@@ -703,7 +715,7 @@ final class OshiReaderTests: XCTestCase {
     }
 
     func testRetryTimeoutThenSuccessReturnsItemsWithoutFailure() async {
-        let rss = Data("<rss version=\"2.0\"><channel><item><title>Retry Oshi</title><link>https://example.com/retry</link></item></channel></rss>".utf8)
+        let rss = Data("<rss version=\"2.0\"><channel><item><title>Retry Oshi</title><link>https://example.com/retry</link><pubDate>Sun, 02 Aug 2026 08:00:00 GMT</pubDate></item></channel></rss>".utf8)
         let capture = RequestCapture()
         let service = IngestionService(
             requestExecutor: { request in
@@ -756,7 +768,7 @@ final class OshiReaderTests: XCTestCase {
     }
 
     func testRetryHTTP503ThenSuccessAndHTTP429Exhaustion() async {
-        let successRSS = Data("<rss version=\"2.0\"><channel><item><title>Server Oshi</title><link>https://example.com/server</link></item></channel></rss>".utf8)
+        let successRSS = Data("<rss version=\"2.0\"><channel><item><title>Server Oshi</title><link>https://example.com/server</link><pubDate>Sun, 02 Aug 2026 08:00:00 GMT</pubDate></item></channel></rss>".utf8)
         let serverCapture = RequestCapture()
         let serverService = IngestionService(
             requestExecutor: { request in
@@ -983,6 +995,7 @@ final class OshiReaderTests: XCTestCase {
         <rss version="2.0"><channel><item>
         <title>Mixed Oshi headline</title>
         <link>https://example.com/mixed-oshi</link>
+        <pubDate>Sun, 02 Aug 2026 08:00:00 GMT</pubDate>
         </item></channel></rss>
         """.data(using: .utf8)!
         let service = IngestionService { request in
@@ -1576,6 +1589,43 @@ final class OshiReaderTests: XCTestCase {
         XCTAssertNotNil(center.requests.first?.trigger)
     }
 
+    @MainActor
+    func testLocalAlertPermissionHelperRequestsWhenNeeded() async throws {
+        let center = MockNotificationCenter(status: .notDetermined, grantsAuthorization: true)
+        let manager = NotificationManager(center: center)
+
+        let canSchedule = await manager.requestAuthorizationIfNeededForLocalAlerts()
+
+        XCTAssertTrue(canSchedule)
+        XCTAssertEqual(center.authorizationRequestCount, 1)
+        XCTAssertEqual(center.status, .authorized)
+    }
+
+    @MainActor
+    func testLocalAlertPermissionHelperDoesNotRequestWhenAlreadyAllowed() async throws {
+        let center = MockNotificationCenter(status: .authorized)
+        let manager = NotificationManager(center: center)
+        await manager.refreshAuthorizationStatus()
+
+        let canSchedule = await manager.requestAuthorizationIfNeededForLocalAlerts()
+
+        XCTAssertTrue(canSchedule)
+        XCTAssertEqual(center.authorizationRequestCount, 0)
+    }
+
+    @MainActor
+    func testLocalAlertPermissionHelperDoesNotRequestWhenDenied() async throws {
+        let center = MockNotificationCenter(status: .denied, grantsAuthorization: true)
+        let manager = NotificationManager(center: center)
+        await manager.refreshAuthorizationStatus()
+
+        let canSchedule = await manager.requestAuthorizationIfNeededForLocalAlerts()
+
+        XCTAssertFalse(canSchedule)
+        XCTAssertEqual(center.authorizationRequestCount, 0)
+        XCTAssertEqual(center.status, .denied)
+    }
+
     func testAPNSDeviceTokenStringUsesLowercaseHex() throws {
         let data = Data([0x00, 0x0f, 0xa1, 0xff])
         XCTAssertEqual(NotificationManager.deviceTokenString(data), "000fa1ff")
@@ -1635,6 +1685,45 @@ final class OshiReaderTests: XCTestCase {
         XCTAssertEqual(center.requests.first?.content.title, "New items for Enabled Oshi")
         XCTAssertEqual(center.requests.first?.content.body, "2 new items found.")
         XCTAssertNil(center.requests.first?.trigger)
+    }
+
+    @MainActor
+    func testLocalDigestDoesNotScheduleWithoutNotificationPermission() async throws {
+        let center = MockNotificationCenter(status: .notDetermined)
+        let manager = NotificationManager(center: center)
+        let nowString = ISO8601DateFormatter().string(from: Date())
+        let term = WatchTerm(id: "needs-permission", keyword: "Permission Oshi", notify_on_new: true)
+        let item = FeedItem(
+            id: "news:needs-permission", platform: "news", url: "https://example.com/permission",
+            title: "Permission", content_text: nil, author: nil, thumbnail_url: nil,
+            media_type: "article", published_at: nowString, watch_term_keyword: term.keyword,
+            fetched_at: nowString
+        )
+
+        await manager.notifyForNewItems([item], terms: [term])
+
+        XCTAssertTrue(center.requests.isEmpty)
+        XCTAssertEqual(center.authorizationRequestCount, 0)
+    }
+
+    @MainActor
+    func testLocalDigestDoesNotScheduleWhenNotificationsDenied() async throws {
+        let center = MockNotificationCenter(status: .denied, grantsAuthorization: false)
+        let manager = NotificationManager(center: center)
+        await manager.refreshAuthorizationStatus()
+        let nowString = ISO8601DateFormatter().string(from: Date())
+        let term = WatchTerm(id: "denied", keyword: "Denied Oshi", notify_on_new: true)
+        let item = FeedItem(
+            id: "news:denied", platform: "news", url: "https://example.com/denied",
+            title: "Denied", content_text: nil, author: nil, thumbnail_url: nil,
+            media_type: "article", published_at: nowString, watch_term_keyword: term.keyword,
+            fetched_at: nowString
+        )
+
+        await manager.notifyForNewItems([item], terms: [term])
+
+        XCTAssertTrue(center.requests.isEmpty)
+        XCTAssertEqual(center.authorizationRequestCount, 0)
     }
 
     @MainActor

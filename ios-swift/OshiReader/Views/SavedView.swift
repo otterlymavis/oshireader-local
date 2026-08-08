@@ -155,7 +155,7 @@ struct SavedPageCard: View {
                 .padding(.vertical, 3)
                 .background(meta.bg)
                 .foregroundColor(meta.fg)
-                .cornerRadius(6)
+                .clipShape(RoundedRectangle(cornerRadius: 6))
                 
                 Spacer()
                 
@@ -173,16 +173,20 @@ struct SavedPageCard: View {
         }
         .padding(12)
         .background(theme.colors.card)
-        .cornerRadius(12)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
         .shadow(color: Color.black.opacity(theme.mode == .dark ? 0.2 : 0.04), radius: 5, x: 0, y: 2)
         .accessibilityIdentifier("saved.card.\(page.id)")
     }
     
     private func formattedDate(_ isoString: String) -> String {
         guard let date = parseISO8601Date(isoString) else { return isoString }
-        let outFormatter = DateFormatter()
-        outFormatter.dateStyle = .short
-        outFormatter.timeStyle = .short
-        return outFormatter.string(from: date)
+        return Self.savedDateFormatter.string(from: date)
     }
+
+    private static let savedDateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateStyle = .short
+        f.timeStyle = .short
+        return f
+    }()
 }

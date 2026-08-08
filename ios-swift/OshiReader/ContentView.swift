@@ -17,7 +17,8 @@ struct ContentView: View {
     @State private var selectedTab: OshiTab = .feed
     
     init() {
-        // Customize tab bar background/colors to match Otterpia aesthetics
+        // Initial appearance before the theme preference is read from disk.
+        // The correct colors are applied in .onAppear via updateTabBarAppearance.
         let appearance = UITabBarAppearance()
         appearance.configureWithOpaqueBackground()
         UITabBar.appearance().scrollEdgeAppearance = appearance
@@ -46,6 +47,7 @@ struct ContentView: View {
                         .listRowSeparator(.hidden)
                     }
                 }
+                .animation(.easeInOut(duration: 0.2), value: selectedTab)
                 .navigationTitle(i18n.t("appTitle"))
                 .listStyle(.sidebar)
             } detail: {
@@ -111,11 +113,28 @@ struct ContentView: View {
         .ifLet(appearance.dynamicTypeSizeOverride) { view, size in
             view.environment(\.dynamicTypeSize, size)
         }
+        .onAppear {
+            updateTabBarAppearance(for: theme.mode)
+        }
+        .onChange(of: theme.mode) { _, newMode in
+            updateTabBarAppearance(for: newMode)
+        }
         .sheet(item: $notificationNavigation.selectedItem) { item in
             NavigationStack {
                 ReaderView(feedItem: item)
             }
         }
+    }
+
+    /// Applies a theme-aware `UITabBarAppearance` so the tab bar background
+    /// stays in sync when the user switches between light / dark / sepia modes.
+    private func updateTabBarAppearance(for mode: AppThemeMode) {
+        let colors = AppColors(mode: mode)
+        let tbAppearance = UITabBarAppearance()
+        tbAppearance.configureWithOpaqueBackground()
+        tbAppearance.backgroundColor = UIColor(colors.card)
+        UITabBar.appearance().scrollEdgeAppearance = tbAppearance
+        UITabBar.appearance().standardAppearance = tbAppearance
     }
 
     private func sidebarRowContent(for tab: OshiTab) -> some View {

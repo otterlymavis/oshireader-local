@@ -78,7 +78,7 @@ final class OshiReaderUITests: XCTestCase {
         mediaOnlyButton.tap()
     }
 
-    func testSourceStatusSheetShowsHealthSummary() throws {
+    func testSourceStatusSummaryShowsHealthSummary() throws {
         tapTab(index: 0, labels: ["Feed"])
 
         XCTAssertTrue(app.buttons["feed.refreshButton"].waitForExistence(timeout: 3))
@@ -86,11 +86,17 @@ final class OshiReaderUITests: XCTestCase {
 
         let sourceSummary = app.buttons["feed.sourceStatus"]
         XCTAssertTrue(sourceSummary.waitForExistence(timeout: 3))
-        sourceSummary.tap()
-        let sourceStatusSheet = app.descendants(matching: .any)["feed.sourceStatusSheet"]
-        let newsSourceStatus = app.descendants(matching: .any)["feed.sourceStatus.news"]
-        _ = sourceStatusSheet.waitForExistence(timeout: 3)
-        XCTAssertTrue(newsSourceStatus.waitForExistence(timeout: 3))
+        let summaryReady = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label CONTAINS[c] 'with items'"),
+            object: sourceSummary
+        )
+        XCTAssertEqual(
+            XCTWaiter().wait(for: [summaryReady], timeout: 5),
+            .completed
+        )
+        XCTAssertTrue(sourceSummary.label.contains("1 with items"))
+        XCTAssertTrue(sourceSummary.label.contains("1 empty"))
+        XCTAssertTrue(sourceSummary.label.contains("0 failed"))
     }
 
     func testOpenReaderFromFeedAndSave() throws {
@@ -174,6 +180,7 @@ final class OshiReaderUITests: XCTestCase {
         tapTab(index: 4, labels: ["Settings"])
 
         XCTAssertTrue(waitForElement(identifier: "settings.notificationStatus", timeout: 2, swipes: 4).exists)
+        XCTAssertTrue(waitForElement(identifier: "settings.localAlertBackgroundStatus", timeout: 2, swipes: 1).exists)
         let notificationAction = waitForAnyElement(
             identifiers: [
                 "settings.enableNotificationsButton",

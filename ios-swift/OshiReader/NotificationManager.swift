@@ -110,7 +110,7 @@ final class NotificationManager: ObservableObject {
 
     func sendTestNotification() async throws {
         if !canScheduleNotifications {
-            _ = await requestAuthorization()
+            _ = await requestAuthorizationIfNeededForLocalAlerts()
         }
         guard canScheduleNotifications else { return }
 
@@ -125,6 +125,15 @@ final class NotificationManager: ObservableObject {
             trigger: UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)
         )
         try await center.add(request)
+    }
+
+    @discardableResult
+    func requestAuthorizationIfNeededForLocalAlerts() async -> Bool {
+        await refreshAuthorizationStatus()
+        if authorizationStatus == .notDetermined {
+            _ = await requestAuthorization()
+        }
+        return canScheduleNotifications
     }
 
     // Remote/APNs push has been removed — the app is fully local and delivers

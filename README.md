@@ -2,7 +2,7 @@
 
 OshiReader is a native SwiftUI iOS app that tracks favorite creators, idols, and topics across supported Japanese media sources and presents matched items in a feed.
 
-The app is local-only: ingestion runs on-device in `ios-swift/OshiReader/IngestionService.swift`, and feed data is stored locally. There is no backend service or scheduled GitHub poll in this repository.
+The app is local-only: ingestion runs on-device in `ios-swift/OshiReader/IngestionService.swift`, and feed data is stored locally. There is no backend service or scheduled GitHub poll in this repository. The app also requests best-effort iOS background refresh through `BackgroundRefreshManager`; iOS controls whether it runs.
 
 ## Project Structure
 

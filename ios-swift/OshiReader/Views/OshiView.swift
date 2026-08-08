@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct OshiView: View {
     @StateObject private var db = LocalDB.shared
@@ -12,8 +13,10 @@ struct OshiView: View {
         db.terms.sorted(by: { $0.created_at < $1.created_at })
     }
 
-    var feedCountsByKeyword: [String: Int] {
-        db.feedItems.reduce(into: [:]) { counts, item in
+    @State private var cachedFeedCounts: [String: Int] = [:]
+
+    private func updateFeedCounts() {
+        cachedFeedCounts = db.feedItems.reduce(into: [:]) { counts, item in
             counts[item.watch_term_keyword, default: 0] += 1
         }
     }
@@ -64,7 +67,7 @@ struct OshiView: View {
                         TabView(selection: $activePage) {
                             ForEach(0..<sortedTerms.count, id: \.self) { idx in
                                 let term = sortedTerms[idx]
-                                let count = feedCountsByKeyword[term.keyword, default: 0]
+                                let count = cachedFeedCounts[term.keyword, default: 0]
                                 let layers = db.compositions[term.keyword] ?? []
                                 
                                 OshiPage(term: term, count: count, layers: layers, theme: theme, i18n: i18n) {
@@ -79,7 +82,7 @@ struct OshiView: View {
                         if sortedTerms.count > 1 {
                             HStack(spacing: 7) {
                                 ForEach(0..<sortedTerms.count, id: \.self) { idx in
-                                    Circle()
+                                    Capsule()
                                         .frame(width: idx == activePage ? 14 : 6, height: 6)
                                         .foregroundColor(idx == activePage ? theme.colors.primary : theme.colors.border)
                                         .animation(.spring(), value: activePage)
@@ -96,6 +99,11 @@ struct OshiView: View {
                 AvatarEditorView(keyword: keyword)
             }
             .accessibilityIdentifier("oshi.screen")
+            .onAppear { updateFeedCounts() }
+            .onChange(of: sortedTerms.count) { _, count in
+                activePage = min(activePage, max(0, count - 1))
+            }
+            .onChange(of: db.feedItems) { _, _ in updateFeedCounts() }
         }
     }
 }
@@ -141,19 +149,14 @@ struct OshiPage: View {
                                 let cropScale = layer.cropScale ?? 1.0
                                 
                                 if let url = URL(string: layer.imageUrl) {
-                                    AsyncImage(url: url) { image in
-                                        image
-                                            .resizable()
-                                            .aspectRatio(contentMode: .fit)
-                                            .scaleEffect(cropScale)
-                                            .offset(x: cropX, y: cropY)
-                                            .frame(width: size, height: size)
-                                            .clipped()
-                                            .rotationEffect(Angle(degrees: layer.rotation ?? 0.0))
-                                    } placeholder: {
-                                        ProgressView()
-                                            .frame(width: size, height: size)
-                                    }
+                                    OshiLayerImageView(
+                                        url: url,
+                                        size: size,
+                                        cropScale: cropScale,
+                                        cropX: cropX,
+                                        cropY: cropY,
+                                        rotation: layer.rotation ?? 0.0
+                                    )
                                     .position(x: (layer.x + 45.0 * layer.scale) * scaleFactor,
                                               y: (layer.y + 45.0 * layer.scale) * scaleFactor)
                                 }
@@ -162,6 +165,8 @@ struct OshiPage: View {
                     }
                 }
                 .buttonStyle(PlainButtonStyle())
+                .accessibilityLabel(i18n.t("editAvatarFor").replacingOccurrences(of: "%@", with: term.keyword))
+                .accessibilityHint(i18n.t("openAvatarEditorHint"))
                 .accessibilityIdentifier("oshi.avatarCanvas.\(term.keyword)")
                 .frame(width: W, height: H)
                 
@@ -181,7 +186,7 @@ struct OshiPage: View {
                                 .padding(.vertical, 3)
                                 .background(theme.colors.primaryBg)
                                 .foregroundColor(theme.colors.primary)
-                                .cornerRadius(99)
+                                .clipShape(Capsule())
                             
                             Text(term.collection_mode == "media_only" ? "📹 " + i18n.t("mediaOnly") : "📄 " + i18n.t("allInfo"))
                                 .font(.system(size: 12, weight: .medium))
@@ -189,7 +194,7 @@ struct OshiPage: View {
                                 .padding(.vertical, 3)
                                 .background(theme.colors.divider)
                                 .foregroundColor(theme.colors.textMuted)
-                                .cornerRadius(99)
+                                .clipShape(Capsule())
                             
                             Circle()
                                 .frame(width: 8, height: 8)
@@ -209,7 +214,7 @@ struct OshiPage: View {
                         .padding(.vertical, 9)
                         .background(theme.colors.primaryBg)
                         .foregroundColor(theme.colors.primary)
-                        .cornerRadius(12)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
                     }
                     .accessibilityIdentifier("oshi.editButton.\(term.keyword)")
                 }
@@ -218,6 +223,45 @@ struct OshiPage: View {
                 
                 Spacer()
             }
+        }
+    }
+}
+
+// MARK: - Cached Avatar Layer Image
+
+/// Replaces `AsyncImage` for avatar layer stickers, using the shared
+/// `FeedThumbnailLoader.avatar` actor so images are cached across page swipes.
+private struct OshiLayerImageView: View {
+    let url: URL
+    let size: CGFloat
+    let cropScale: CGFloat
+    let cropX: CGFloat
+    let cropY: CGFloat
+    let rotation: CGFloat
+
+    @State private var image: UIImage?
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .scaleEffect(cropScale)
+                    .offset(x: cropX, y: cropY)
+                    .frame(width: size, height: size)
+                    .clipped()
+                    .rotationEffect(Angle(degrees: rotation))
+            } else {
+                ProgressView()
+                    .frame(width: size, height: size)
+            }
+        }
+        .task(id: url) {
+            image = nil
+            let loaded = await FeedThumbnailLoader.avatar.image(for: url)
+            guard !Task.isCancelled else { return }
+            image = loaded
         }
     }
 }

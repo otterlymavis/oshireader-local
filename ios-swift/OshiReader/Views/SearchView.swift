@@ -152,7 +152,7 @@ struct SearchView: View {
             .padding(.horizontal, 12)
             .background(theme.colors.divider)
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(theme.colors.border, lineWidth: 1))
-            .cornerRadius(8)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
 
             if activeTerms.isEmpty {
                 Text(i18n.t("addWatchKeywordsHint"))
@@ -176,7 +176,7 @@ struct SearchView: View {
         .padding(12)
         .background(theme.colors.card)
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(theme.colors.border, lineWidth: 1))
-        .cornerRadius(8)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
     private var categoryStrip: some View {
@@ -304,7 +304,7 @@ struct SearchView: View {
         .padding(.vertical, 10)
         .background(theme.colors.card)
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(theme.colors.border, lineWidth: 1))
-        .cornerRadius(8)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
         .opacity(disabled ? 0.45 : 1)
     }
 

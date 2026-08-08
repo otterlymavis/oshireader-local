@@ -89,6 +89,7 @@ struct ReaderView: View {
 
             ToolbarItem(placement: .navigationBarTrailing) {
                 Button {
+                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
                     _ = db.toggleSaved(item: feedItem)
                 } label: {
                     Image(systemName: isSaved ? "bookmark.fill" : "bookmark")
@@ -170,7 +171,7 @@ struct ReaderView: View {
                         .padding(.vertical, 7)
                         .background(theme.colors.divider)
                         .foregroundColor(theme.colors.primary)
-                        .cornerRadius(8)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
                 }
                 .accessibilityLabel(readerMode ? i18n.t("readerModeText") : i18n.t("readerModeWeb"))
                 .accessibilityIdentifier("reader.modeToggleButton")
@@ -215,7 +216,7 @@ struct ReaderView: View {
                 .padding(.vertical, 4)
                 .frame(maxWidth: .infinity)
                 .background(theme.colors.divider)
-                .cornerRadius(8)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
             }
         }
         .padding(.horizontal, 14)

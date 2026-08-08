@@ -7,11 +7,19 @@ struct IrasutoyaImage: Codable, Identifiable, Hashable {
     let title: String
 }
 
+struct CustomURLScrapeReport {
+    let items: [FeedItem]
+    let failedCount: Int
+
+    var completed: Bool { failedCount == 0 }
+}
+
 /// Direct-to-source network helpers that aren't part of feed ingestion:
 /// custom-URL card scraping, the Irasutoya avatar picker, and the Google
 /// Translate helper. Feed ingestion lives in `IngestionService`.
 class NetworkManager {
     static let shared = NetworkManager()
+    private static let customURLConcurrencyLimit = 4
 
     private init() {}
 
@@ -140,28 +148,47 @@ class NetworkManager {
 
     // MARK: - Custom URL Scraping
     func scrapeCustomUrls(_ urls: [CustomUrl]) async -> [FeedItem] {
-        guard !urls.isEmpty else { return [] }
+        await scrapeCustomUrlsReport(urls).items
+    }
 
-        return await withTaskGroup(of: FeedItem?.self) { group in
-            for entry in urls {
+    func scrapeCustomUrlsReport(_ urls: [CustomUrl]) async -> CustomURLScrapeReport {
+        guard !urls.isEmpty else { return CustomURLScrapeReport(items: [], failedCount: 0) }
+
+        return await withTaskGroup(of: (item: FeedItem?, succeeded: Bool).self) { group in
+            var iterator = urls.makeIterator()
+            var running = 0
+            var results = [FeedItem]()
+            var failedCount = 0
+
+            func add(_ entry: CustomUrl) {
                 group.addTask {
                     await self.scrapeCustomUrl(entry)
                 }
+                running += 1
             }
 
-            var results = [FeedItem]()
-            for await item in group {
-                if let item {
+            while running < Self.customURLConcurrencyLimit, let entry = iterator.next() {
+                add(entry)
+            }
+            for await result in group {
+                running -= 1
+                guard result.succeeded else {
+                    failedCount += 1
+                    if let entry = iterator.next() { add(entry) }
+                    continue
+                }
+                if let item = result.item {
                     results.append(item)
                 }
+                if let entry = iterator.next() { add(entry) }
             }
-            return results
+            return CustomURLScrapeReport(items: results, failedCount: failedCount)
         }
     }
 
-    private func scrapeCustomUrl(_ entry: CustomUrl) async -> FeedItem? {
+    private func scrapeCustomUrl(_ entry: CustomUrl) async -> (item: FeedItem?, succeeded: Bool) {
         let normalized = normalizedCustomUrl(entry.url)
-        guard let url = URL(string: normalized) else { return nil }
+        guard let url = URL(string: normalized) else { return (nil, false) }
 
         let nowString = ISO8601DateFormatter().string(from: Date())
         var title = entry.title?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -172,7 +199,11 @@ class NetworkManager {
             request.timeoutInterval = 12
             request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1", forHTTPHeaderField: "User-Agent")
 
-            let (data, _) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse,
+                  (200...299).contains(httpResponse.statusCode) else {
+                return (nil, false)
+            }
             if let html = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .shiftJIS) {
                 title = extractTagContent(named: "title", from: html) ?? title
                 description = extractMetaDescription(from: html)
@@ -181,9 +212,10 @@ class NetworkManager {
             #if DEBUG
             print("Custom URL scrape failed for \(entry.url): \(error)")
             #endif
+            return (nil, false)
         }
 
-        return FeedItem(
+        return (FeedItem(
             id: entry.id,
             platform: "custom",
             url: normalized,
@@ -195,7 +227,7 @@ class NetworkManager {
             published_at: entry.added_at,
             watch_term_keyword: "",
             fetched_at: nowString
-        )
+        ), true)
     }
 
     private func normalizedCustomUrl(_ value: String) -> String {

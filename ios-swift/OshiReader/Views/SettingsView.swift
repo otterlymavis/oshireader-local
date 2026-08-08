@@ -73,6 +73,7 @@ struct SettingsView: View {
     @StateObject private var appearance = AppearanceManager.shared
     @StateObject private var notifications = NotificationManager.shared
     @StateObject private var profiles = LocalProfileStore.shared
+    @Environment(\.scenePhase) private var scenePhase
     
     @State private var showingAddKeywordAlert = false
     @State private var showingClearAllAlert = false
@@ -112,6 +113,7 @@ struct SettingsView: View {
     @State private var amebloURL = ""
     @State private var amebloTitle = ""
     @State private var amebloError = ""
+    @State private var currentBackgroundRefreshStatus = UIApplication.shared.backgroundRefreshStatus
     
     var allPlatforms: [(String, String)] {
         PlatformRegistry.all.map { ($0.id, "\($0.icon) \($0.name)") }
@@ -127,18 +129,18 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section(header: Text("Profiles"), footer: Text("Profiles stay on this device. Imported profile packages create a new profile.")) {
+                Section(header: Text(i18n.t("profiles")), footer: Text(i18n.t("profilesFooter"))) {
                     ForEach(profiles.profiles) { profile in
                         HStack {
                             Button {
                                 do { try db.switchProfile(to: profile.id) }
-                                catch { profileError = error.localizedDescription }
+                                catch { profileError = localizedProfileMessage(error) }
                             } label: {
                                 HStack {
                                     Image(systemName: profile.id == profiles.activeProfileID ? "checkmark.circle.fill" : "circle")
                                     VStack(alignment: .leading) {
                                         Text(profile.name)
-                                        if profile.id == profiles.activeProfileID { Text("Active").font(.caption).foregroundStyle(.secondary) }
+                                        if profile.id == profiles.activeProfileID { Text(i18n.t("active")).font(.caption).foregroundStyle(.secondary) }
                                     }
                                 }
                             }
@@ -159,7 +161,7 @@ struct SettingsView: View {
 
                             Button(role: .destructive) {
                                 do { try db.deleteProfile(id: profile.id) }
-                                catch { profileError = error.localizedDescription }
+                                catch { profileError = localizedProfileMessage(error) }
                             } label: {
                                 Image(systemName: "trash")
                             }
@@ -173,7 +175,7 @@ struct SettingsView: View {
                         profileError = ""
                         showingProfileNameSheet = true
                     } label: {
-                        Label("Add profile", systemImage: "plus")
+                        Label(i18n.t("addProfile"), systemImage: "plus")
                     }
                     .accessibilityIdentifier("settings.addProfileButton")
 
@@ -181,26 +183,26 @@ struct SettingsView: View {
                         do {
                             profileTransferDocument = LocalProfileTransferDocument(data: try db.exportProfileTransferData())
                             showingProfileExporter = true
-                        } catch { profileError = error.localizedDescription }
+                        } catch { profileError = localizedProfileMessage(error) }
                     } label: {
-                        Label("Export profile", systemImage: "square.and.arrow.up")
+                        Label(i18n.t("exportProfile"), systemImage: "square.and.arrow.up")
                     }
                     .accessibilityIdentifier("settings.exportProfileButton")
 
                     Button { showingProfileImporter = true } label: {
-                        Label("Import profile", systemImage: "square.and.arrow.down")
+                        Label(i18n.t("importProfile"), systemImage: "square.and.arrow.down")
                     }
                     .accessibilityIdentifier("settings.importProfileButton")
                 }
 
-                Section(header: Text("Ameblo blogs"), footer: Text("Add Ameba blog URLs to search their RSS feeds for every active watch term. Up to 20 blogs.")) {
+                Section(header: Text(i18n.t("amebloBlogs")), footer: Text(i18n.t("amebloBlogsFooter"))) {
                     TextField("https://ameblo.jp/blog-id", text: $amebloURL)
                         .keyboardType(.URL)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .accessibilityIdentifier("settings.amebloURLField")
 
-                    TextField("Blog title (optional)", text: $amebloTitle)
+                    TextField(i18n.t("blogTitleOptional"), text: $amebloTitle)
                         .accessibilityIdentifier("settings.amebloTitleField")
 
                     Button {
@@ -210,20 +212,20 @@ struct SettingsView: View {
                             amebloTitle = ""
                             amebloError = ""
                         case .invalidURL:
-                            amebloError = "Enter an Ameblo blog URL such as https://ameblo.jp/blog-id."
+                            amebloError = i18n.t("amebloInvalidURL")
                         case .duplicate:
-                            amebloError = "This Ameblo blog is already configured."
+                            amebloError = i18n.t("amebloDuplicate")
                         case .limitReached:
-                            amebloError = "You can configure up to 20 Ameblo blogs."
+                            amebloError = i18n.t("amebloLimitReached")
                         }
                     } label: {
-                        Label("Add Ameblo blog", systemImage: "plus.circle.fill")
+                        Label(i18n.t("addAmebloBlog"), systemImage: "plus.circle.fill")
                     }
                     .disabled(amebloURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     .accessibilityIdentifier("settings.addAmebloButton")
 
                     if db.subscribedPlatforms.contains("ameblo") {
-                        Text("Ameblo is enabled")
+                        Text(i18n.t("amebloEnabled"))
                             .font(.caption)
                             .foregroundColor(theme.colors.textMuted)
                             .accessibilityIdentifier("settings.amebloSubscriptionState")
@@ -252,7 +254,7 @@ struct SettingsView: View {
                             } label: {
                                 Image(systemName: "trash")
                             }
-                            .accessibilityLabel("Remove \(blog.amebaID)")
+                            .accessibilityLabel(i18n.t("removeNamed").replacingOccurrences(of: "%@", with: blog.amebaID))
                             .accessibilityIdentifier("settings.removeAmeblo.\(blog.amebaID)")
                         }
                         .accessibilityIdentifier("settings.amebloBlog.\(blog.amebaID)")
@@ -405,7 +407,7 @@ struct SettingsView: View {
 
                                 Button(action: {
                                     let next = !term.notify_on_new
-                                    db.updateTerm(id: term.id, notifyOnNew: next)
+                                    Task { await setNotificationEnabled(next, for: term) }
                                 }) {
                                     Label(term.notify_on_new ? i18n.t("notificationsOn") : i18n.t("notificationsOff"),
                                           systemImage: term.notify_on_new ? "bell.fill" : "bell.slash")
@@ -467,14 +469,25 @@ struct SettingsView: View {
                     }
                 }
 
-                Section(header: Text(i18n.t("notificationsSection"))) {
+                Section(
+                    header: Text(i18n.t("localAlertsSection")),
+                    footer: Text(i18n.t("localAlertsFooter"))
+                ) {
                     HStack {
-                        Label(i18n.t("pushNotifications"), systemImage: "bell.badge")
+                        Label(i18n.t("localAlertPermission"), systemImage: "bell.badge")
                         Spacer()
                         Text(notificationStatusText)
                             .foregroundColor(notifications.canScheduleNotifications ? theme.colors.primary : theme.colors.textMuted)
                     }
                     .accessibilityIdentifier("settings.notificationStatus")
+
+                    HStack {
+                        Label(i18n.t("localAlertBackgroundRefresh"), systemImage: "arrow.clockwise")
+                        Spacer()
+                        Text(backgroundRefreshStatusText)
+                            .foregroundColor(backgroundRefreshStatusColor)
+                    }
+                    .accessibilityIdentifier("settings.localAlertBackgroundStatus")
 
                     switch notifications.authorizationStatus {
                     case .notDetermined:
@@ -594,7 +607,7 @@ struct SettingsView: View {
                             backupDocument = LocalBackupDocument(data: try db.exportBackupData())
                             showingBackupExporter = true
                         } catch {
-                            backupMessage = error.localizedDescription
+                            backupMessage = localizedBackupMessage(error)
                             showingBackupMessage = true
                         }
                     } label: {
@@ -612,14 +625,14 @@ struct SettingsView: View {
                     Button {
                         beginEncryptedExport()
                     } label: {
-                        Label("Export encrypted backup", systemImage: "lock.shield")
+                        Label(i18n.t("exportEncryptedBackup"), systemImage: "lock.shield")
                     }
                     .accessibilityIdentifier("settings.exportEncryptedBackupButton")
 
                     Button {
                         showingEncryptedBackupImporter = true
                     } label: {
-                        Label("Import encrypted backup", systemImage: "lock.shield.fill")
+                        Label(i18n.t("importEncryptedBackup"), systemImage: "lock.shield.fill")
                     }
                     .accessibilityIdentifier("settings.importEncryptedBackupButton")
 
@@ -772,7 +785,7 @@ struct SettingsView: View {
                 defaultFilename: "oshireader-backup.json"
             ) { result in
                 if case .failure(let error) = result {
-                    backupMessage = error.localizedDescription
+                    backupMessage = localizedBackupMessage(error)
                     showingBackupMessage = true
                 }
             }
@@ -786,13 +799,15 @@ struct SettingsView: View {
                     let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
                     let byteCount = (attributes[.size] as? NSNumber)?.int64Value ?? 0
                     guard byteCount <= Int64(LocalDB.maximumBackupBytes) else {
-                        throw NSError(domain: "OshiReaderBackup", code: 5, userInfo: [NSLocalizedDescriptionKey: "Backup file is too large"])
+                        backupMessage = i18n.t("backupFileTooLarge")
+                        showingBackupMessage = true
+                        return
                     }
                     let data = try Data(contentsOf: url, options: [.mappedIfSafe])
                     try db.importBackupData(data)
                     backupMessage = i18n.t("backupImported")
                 } catch {
-                    backupMessage = error.localizedDescription
+                    backupMessage = localizedBackupMessage(error)
                 }
                 showingBackupMessage = true
             }
@@ -803,7 +818,7 @@ struct SettingsView: View {
                 defaultFilename: "oshireader-backup.oshireader"
             ) { result in
                 if case .failure(let error) = result {
-                    backupMessage = error.localizedDescription
+                    backupMessage = localizedBackupMessage(error)
                     showingBackupMessage = true
                 }
             }
@@ -828,7 +843,7 @@ struct SettingsView: View {
                     encryptedBackupError = ""
                     encryptedBackupOperation = .import
                 } catch {
-                    backupMessage = error.localizedDescription
+                    backupMessage = localizedBackupMessage(error)
                     showingBackupMessage = true
                 }
             }
@@ -839,16 +854,16 @@ struct SettingsView: View {
             }
             .sheet(isPresented: $showingProfileNameSheet) {
                 VStack(spacing: 16) {
-                    Text(profileNameMode == .create ? "Add profile" : "Rename profile")
+                    Text(profileNameMode == .create ? i18n.t("addProfile") : i18n.t("renameProfile"))
                         .font(.headline)
-                    TextField("Profile name", text: $profileName)
+                    TextField(i18n.t("profileName"), text: $profileName)
                         .textFieldStyle(.roundedBorder)
                         .accessibilityIdentifier("settings.profileNameField")
                     if !profileError.isEmpty { Text(profileError).foregroundStyle(.red).font(.caption) }
                     HStack {
-                        Button("Cancel") { showingProfileNameSheet = false }
+                        Button(i18n.t("cancel")) { showingProfileNameSheet = false }
                             .accessibilityIdentifier("settings.profileCancelButton")
-                        Button("Save") {
+                        Button(i18n.t("save")) {
                             do {
                                 switch profileNameMode {
                                 case .create: _ = try db.createProfile(name: profileName)
@@ -858,7 +873,7 @@ struct SettingsView: View {
                                 }
                                 showingProfileNameSheet = false
                                 profileError = ""
-                            } catch { profileError = error.localizedDescription }
+                            } catch { profileError = localizedProfileMessage(error) }
                         }
                         .accessibilityIdentifier("settings.profileSaveButton")
                     }
@@ -872,7 +887,7 @@ struct SettingsView: View {
                 contentType: .oshiReaderProfile,
                 defaultFilename: "oshireader-profile.oshireaderprofile"
             ) { result in
-                if case .failure(let error) = result { profileError = error.localizedDescription }
+                if case .failure(let error) = result { profileError = localizedProfileMessage(error) }
             }
             .fileImporter(isPresented: $showingProfileImporter, allowedContentTypes: [.oshiReaderProfile, .data]) { result in
                 do {
@@ -883,14 +898,14 @@ struct SettingsView: View {
                     let byteCount = (attributes[.size] as? NSNumber)?.int64Value ?? 0
                     guard byteCount <= Int64(LocalDB.maximumProfileTransferBytes) else { throw LocalProfileError.invalidPackage }
                     let imported = try db.importProfileTransferData(try Data(contentsOf: url, options: [.mappedIfSafe]))
-                    profileError = "Imported profile \(imported.name)."
-                } catch { profileError = error.localizedDescription }
+                    profileError = i18n.t("profileImported").replacingOccurrences(of: "%@", with: imported.name)
+                } catch { profileError = localizedProfileMessage(error) }
             }
-            .alert("Profile status", isPresented: Binding(
+            .alert(i18n.t("profileStatus"), isPresented: Binding(
                 get: { !profileError.isEmpty && !showingProfileNameSheet },
                 set: { if !$0 { profileError = "" } }
             )) {
-                Button("OK", role: .cancel) { profileError = "" }
+                Button(i18n.t("ok"), role: .cancel) { profileError = "" }
             } message: { Text(profileError) }
             .alert(i18n.t("addAlias"), isPresented: $showingAliasLimitMessage) {
                 Button(i18n.t("ok"), role: .cancel) {}
@@ -908,6 +923,11 @@ struct SettingsView: View {
                 enabled,
                 forKey: LocalProfileStore.defaultsKey("auto_translate_reader", profileID: profiles.activeProfileID)
             )
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            guard newPhase == .active else { return }
+            currentBackgroundRefreshStatus = UIApplication.shared.backgroundRefreshStatus
+            Task { await notifications.refreshAuthorizationStatus() }
         }
     }
 
@@ -932,7 +952,8 @@ struct SettingsView: View {
             switch encryptedBackupOperation {
             case .export:
                 guard encryptedBackupPassword == encryptedBackupConfirmation else {
-                    throw NSError(domain: "OshiReaderBackup", code: 8, userInfo: [NSLocalizedDescriptionKey: "Passwords do not match."])
+                    encryptedBackupError = i18n.t("passwordsDoNotMatch")
+                    return
                 }
                 encryptedBackupDocument = EncryptedBackupDocument(data: try db.exportEncryptedBackupData(password: encryptedBackupPassword))
                 encryptedBackupOperation = nil
@@ -955,7 +976,60 @@ struct SettingsView: View {
                 break
             }
         } catch {
-            encryptedBackupError = error.localizedDescription
+            encryptedBackupError = localizedEncryptedBackupMessage(error)
+        }
+    }
+
+    private func localizedProfileMessage(_ error: Error) -> String {
+        let nsError = error as NSError
+        if nsError.domain == "OshiReaderProfile", nsError.code == 5 {
+            return i18n.t("profilePackageTooLarge")
+        }
+        guard let profileError = error as? LocalProfileError else { return error.localizedDescription }
+        switch profileError {
+        case .invalidName: return i18n.t("profileInvalidName")
+        case .duplicateName: return i18n.t("profileDuplicateName")
+        case .profileNotFound: return i18n.t("profileNotFound")
+        case .cannotDeleteLastProfile: return i18n.t("cannotDeleteLastProfile")
+        case .invalidPackage: return i18n.t("invalidProfilePackage")
+        case .unsupportedPackageVersion: return i18n.t("unsupportedProfilePackageVersion")
+        }
+    }
+
+    private func localizedEncryptedBackupMessage(_ error: Error) -> String {
+        guard let backupError = error as? EncryptedBackupError else { return error.localizedDescription }
+        switch backupError {
+        case .invalidPassword: return i18n.t("encryptedBackupInvalidPassword")
+        case .invalidEnvelope: return i18n.t("encryptedBackupInvalidEnvelope")
+        case .unsupportedVersion: return i18n.t("encryptedBackupUnsupportedVersion")
+        case .authenticationFailed: return i18n.t("encryptedBackupAuthenticationFailed")
+        case .keyDerivationFailed: return i18n.t("encryptedBackupKeyDerivationFailed")
+        case .payloadTooLarge: return i18n.t("encryptedBackupPayloadTooLarge")
+        }
+    }
+
+    private func localizedBackupMessage(_ error: Error) -> String {
+        if let backupError = error as? EncryptedBackupError {
+            return localizedEncryptedBackupMessage(backupError)
+        }
+        let nsError = error as NSError
+        guard nsError.domain == "OshiReaderBackup" else { return error.localizedDescription }
+        switch nsError.code {
+        case 2:
+            return i18n.t("backupTooManyPlatforms")
+        case 3:
+            return i18n.t("backupRestoreStagingIncomplete")
+        case 4:
+            return i18n.t("backupTooMuchData")
+        case 5:
+            return i18n.t("backupFileTooLarge")
+        case 6:
+            if nsError.localizedDescription == "Invalid restore staging path" {
+                return i18n.t("backupInvalidRestoreStagingPath")
+            }
+            return i18n.t("backupInvalidRestoreManifest")
+        default:
+            return error.localizedDescription
         }
     }
 
@@ -1034,6 +1108,13 @@ struct SettingsView: View {
         }
     }
 
+    private func setNotificationEnabled(_ enabled: Bool, for term: WatchTerm) async {
+        if enabled {
+            guard await notifications.requestAuthorizationIfNeededForLocalAlerts() else { return }
+        }
+        db.updateTerm(id: term.id, notifyOnNew: enabled)
+    }
+
     private var notificationStatusText: String {
         switch notifications.authorizationStatus {
         case .authorized:
@@ -1050,6 +1131,25 @@ struct SettingsView: View {
             return i18n.t("notificationStatusUnknown")
         }
     }
+
+    private var backgroundRefreshStatusText: String {
+        switch currentBackgroundRefreshStatus {
+        case .available:
+            return i18n.t("backgroundRefreshAvailable")
+        case .denied:
+            return i18n.t("backgroundRefreshDenied")
+        case .restricted:
+            return i18n.t("backgroundRefreshRestricted")
+        @unknown default:
+            return i18n.t("notificationStatusUnknown")
+        }
+    }
+
+    private var backgroundRefreshStatusColor: Color {
+        currentBackgroundRefreshStatus == .available
+            ? theme.colors.primary
+            : theme.colors.textMuted
+    }
 }
 
 private struct EncryptedBackupPasswordSheet: View {
@@ -1059,6 +1159,7 @@ private struct EncryptedBackupPasswordSheet: View {
     @Binding var errorMessage: String
     let onCancel: () -> Void
     let onSubmit: () -> Void
+    @StateObject private var i18n = I18nManager.shared
 
     private var isExport: Bool { operation == .export }
 
@@ -1066,21 +1167,21 @@ private struct EncryptedBackupPasswordSheet: View {
         NavigationStack {
             Form {
                 Section {
-                    SecureField("Password", text: $password)
+                    SecureField(i18n.t("password"), text: $password)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .accessibilityIdentifier("settings.encryptedBackupPasswordField")
 
                     if isExport {
-                        SecureField("Confirm password", text: $confirmation)
+                        SecureField(i18n.t("confirmPassword"), text: $confirmation)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                             .accessibilityIdentifier("settings.encryptedBackupConfirmationField")
                     }
                 } footer: {
                     Text(isExport
-                         ? "Use at least 12 characters. The password is never stored."
-                         : "Enter the password used when this encrypted backup was exported.")
+                         ? i18n.t("encryptedBackupExportPasswordHint")
+                         : i18n.t("encryptedBackupImportPasswordHint"))
                 }
 
                 if !errorMessage.isEmpty {
@@ -1091,13 +1192,13 @@ private struct EncryptedBackupPasswordSheet: View {
                 }
 
                 Section {
-                    Button(isExport ? "Export encrypted backup" : "Import encrypted backup", action: onSubmit)
+                    Button(isExport ? i18n.t("exportEncryptedBackup") : i18n.t("importEncryptedBackup"), action: onSubmit)
                         .accessibilityIdentifier("settings.encryptedBackupSubmitButton")
-                    Button("Cancel", role: .cancel, action: onCancel)
+                    Button(i18n.t("cancel"), role: .cancel, action: onCancel)
                         .accessibilityIdentifier("settings.encryptedBackupCancelButton")
                 }
             }
-            .navigationTitle(isExport ? "Encrypted backup" : "Unlock backup")
+            .navigationTitle(isExport ? i18n.t("encryptedBackupTitle") : i18n.t("unlockBackup"))
             .navigationBarTitleDisplayMode(.inline)
         }
     }

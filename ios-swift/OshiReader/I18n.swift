@@ -73,6 +73,24 @@ class I18nManager: ObservableObject {
             "zh-TW": "全部",
             "zh-CN": "全部"
         ],
+        "showsAllPlatformsHint": [
+            "en": "Shows all platforms",
+            "ja": "すべてのプラットフォームを表示",
+            "zh-TW": "顯示所有平台",
+            "zh-CN": "显示所有平台"
+        ],
+        "deselectFilterHint": [
+            "en": "Double-tap to deselect",
+            "ja": "ダブルタップして選択を解除",
+            "zh-TW": "點兩下以取消選取",
+            "zh-CN": "双击取消选择"
+        ],
+        "filterByPlatformHint": [
+            "en": "Double-tap to filter by %@",
+            "ja": "ダブルタップして%@で絞り込む",
+            "zh-TW": "點兩下以依 %@ 篩選",
+            "zh-CN": "双击按 %@ 筛选"
+        ],
         "filter": [
             "en": "Filter",
             "ja": "フィルター",
@@ -151,6 +169,54 @@ class I18nManager: ObservableObject {
             "zh-TW": "在「設定」中新增關鍵字以開始獲取結果。",
             "zh-CN": "在「设置」中添加关键字以开始获取结果。"
         ],
+        "sourceStatusTitle": [
+            "en": "Source Status",
+            "ja": "ソースの状態",
+            "zh-TW": "來源狀態",
+            "zh-CN": "来源状态"
+        ],
+        "noSourceHistoryYet": [
+            "en": "No source history yet",
+            "ja": "ソース履歴はまだありません",
+            "zh-TW": "尚無來源記錄",
+            "zh-CN": "暂无来源记录"
+        ],
+        "sourceItemsQueries": [
+            "en": "{items} items · {queries} queries",
+            "ja": "{items}件 · {queries}クエリ",
+            "zh-TW": "{items} 個項目 · {queries} 次查詢",
+            "zh-CN": "{items} 个项目 · {queries} 次查询"
+        ],
+        "sourceNoMatchingItemsQueries": [
+            "en": "No matching items · {queries} queries",
+            "ja": "一致する項目なし · {queries}クエリ",
+            "zh-TW": "無符合項目 · {queries} 次查詢",
+            "zh-CN": "无匹配项目 · {queries} 次查询"
+        ],
+        "sourceFailureQueries": [
+            "en": "{failure} · {queries} queries",
+            "ja": "{failure} · {queries}クエリ",
+            "zh-TW": "{failure} · {queries} 次查詢",
+            "zh-CN": "{failure} · {queries} 次查询"
+        ],
+        "notChecked": [
+            "en": "Not checked",
+            "ja": "未確認",
+            "zh-TW": "尚未檢查",
+            "zh-CN": "尚未检查"
+        ],
+        "sourceLastFailure": [
+            "en": " · last {failure}",
+            "ja": " · 前回 {failure}",
+            "zh-TW": " · 上次 {failure}",
+            "zh-CN": " · 上次 {failure}"
+        ],
+        "sourceHistorySummary": [
+            "en": "{current} · 7d: {received} received, {empty} empty, {failed} failed · {total} total items · checked {checked}{lastFailure}",
+            "ja": "{current} · 7日間: 取得 {received}、空 {empty}、失敗 {failed} · 合計 {total}件 · 確認 {checked}{lastFailure}",
+            "zh-TW": "{current} · 7 天：取得 {received}、空白 {empty}、失敗 {failed} · 共 {total} 個項目 · 檢查 {checked}{lastFailure}",
+            "zh-CN": "{current} · 7 天：获取 {received}、空白 {empty}、失败 {failed} · 共 {total} 个项目 · 检查 {checked}{lastFailure}"
+        ],
         "cancel": [
             "en": "Cancel",
             "ja": "キャンセル",
@@ -162,6 +228,12 @@ class I18nManager: ObservableObject {
             "ja": "削除",
             "zh-TW": "刪除",
             "zh-CN": "删除"
+        ],
+        "removeNamed": [
+            "en": "Remove %@",
+            "ja": "%@を削除",
+            "zh-TW": "移除 %@",
+            "zh-CN": "移除 %@"
         ],
         "save": [
             "en": "Save",
@@ -415,6 +487,18 @@ class I18nManager: ObservableObject {
             "zh-TW": "頭像編輯器",
             "zh-CN": "头像编辑器"
         ],
+        "editAvatarFor": [
+            "en": "Edit avatar for %@",
+            "ja": "%@のアバターを編集",
+            "zh-TW": "編輯 %@ 的頭像",
+            "zh-CN": "编辑 %@ 的头像"
+        ],
+        "openAvatarEditorHint": [
+            "en": "Double-tap to open the avatar editor",
+            "ja": "ダブルタップしてアバターエディタを開く",
+            "zh-TW": "點兩下以開啟頭像編輯器",
+            "zh-CN": "双击打开头像编辑器"
+        ],
         "cropMode": [
             "en": "Crop / Move Mode",
             "ja": "切り抜き / 移動",
@@ -500,6 +584,48 @@ class I18nManager: ObservableObject {
             "ja": "通知",
             "zh-TW": "通知",
             "zh-CN": "通知"
+        ],
+        "localAlertsSection": [
+            "en": "Local Alerts",
+            "ja": "ローカル通知",
+            "zh-TW": "本機提醒",
+            "zh-CN": "本地提醒"
+        ],
+        "localAlertsFooter": [
+            "en": "OshiReader checks for new items on this device and shows local digest alerts. iOS controls when background refresh runs, so alerts are best-effort and not instant push notifications.",
+            "ja": "OshiReaderはこのデバイス上で新着を確認し、ローカルのまとめ通知を表示します。バックグラウンド更新のタイミングはiOSが制御するため、通知はベストエフォートで、即時のプッシュ通知ではありません。",
+            "zh-TW": "OshiReader 會在此裝置上檢查新項目，並顯示本機摘要提醒。背景重新整理時間由 iOS 控制，因此提醒是盡力提供，不是即時推播通知。",
+            "zh-CN": "OshiReader 会在此设备上检查新内容，并显示本地摘要提醒。后台刷新时间由 iOS 控制，因此提醒是尽力提供，不是即时推送通知。"
+        ],
+        "localAlertPermission": [
+            "en": "Local Alert Permission",
+            "ja": "ローカル通知の許可",
+            "zh-TW": "本機提醒權限",
+            "zh-CN": "本地提醒权限"
+        ],
+        "localAlertBackgroundRefresh": [
+            "en": "Background Refresh",
+            "ja": "バックグラウンド更新",
+            "zh-TW": "背景重新整理",
+            "zh-CN": "后台刷新"
+        ],
+        "backgroundRefreshAvailable": [
+            "en": "Available",
+            "ja": "利用可能",
+            "zh-TW": "可用",
+            "zh-CN": "可用"
+        ],
+        "backgroundRefreshDenied": [
+            "en": "Off in iOS Settings",
+            "ja": "iOS設定でオフ",
+            "zh-TW": "已在 iOS 設定中關閉",
+            "zh-CN": "已在 iOS 设置中关闭"
+        ],
+        "backgroundRefreshRestricted": [
+            "en": "Restricted by iOS",
+            "ja": "iOSにより制限中",
+            "zh-TW": "受 iOS 限制",
+            "zh-CN": "受 iOS 限制"
         ],
         "pushNotifications": [
             "en": "Push Notifications",
@@ -803,6 +929,150 @@ class I18nManager: ObservableObject {
             "zh-TW": "通知：當你啟用關鍵字提醒或傳送測試通知時會請求此權限。\n\n照片圖庫：當你從文章閱讀器將圖片儲存到照片時會請求此權限。\n\n本 app 不會請求位置、聯絡人、相機、麥克風、Bluetooth、健康資料或動作感測器的存取權。",
             "zh-CN": "通知：当你启用关键字提醒或发送测试通知时会请求此权限。\n\n照片图库：当你从文章阅读器将图片保存到照片时会请求此权限。\n\n本 app 不会请求位置、联系人、相机、麦克风、Bluetooth、健康数据或运动传感器的访问权限。"
         ],
+        "profiles": [
+            "en": "Profiles",
+            "ja": "プロフィール",
+            "zh-TW": "個人檔案",
+            "zh-CN": "个人档案"
+        ],
+        "profilesFooter": [
+            "en": "Profiles stay on this device. Imported profile packages create a new profile.",
+            "ja": "プロフィールはこのデバイス内に保存されます。読み込んだプロフィールパッケージは新しいプロフィールとして作成されます。",
+            "zh-TW": "個人檔案會保留在此裝置上。匯入的個人檔案套件會建立新的個人檔案。",
+            "zh-CN": "个人档案会保留在此设备上。导入的个人档案包会创建新的个人档案。"
+        ],
+        "addProfile": [
+            "en": "Add profile",
+            "ja": "プロフィールを追加",
+            "zh-TW": "新增個人檔案",
+            "zh-CN": "添加个人档案"
+        ],
+        "renameProfile": [
+            "en": "Rename profile",
+            "ja": "プロフィール名を変更",
+            "zh-TW": "重新命名個人檔案",
+            "zh-CN": "重命名个人档案"
+        ],
+        "exportProfile": [
+            "en": "Export profile",
+            "ja": "プロフィールを書き出す",
+            "zh-TW": "匯出個人檔案",
+            "zh-CN": "导出个人档案"
+        ],
+        "importProfile": [
+            "en": "Import profile",
+            "ja": "プロフィールを読み込む",
+            "zh-TW": "匯入個人檔案",
+            "zh-CN": "导入个人档案"
+        ],
+        "profileName": [
+            "en": "Profile name",
+            "ja": "プロフィール名",
+            "zh-TW": "個人檔案名稱",
+            "zh-CN": "个人档案名称"
+        ],
+        "profileStatus": [
+            "en": "Profile status",
+            "ja": "プロフィールの状態",
+            "zh-TW": "個人檔案狀態",
+            "zh-CN": "个人档案状态"
+        ],
+        "profileImported": [
+            "en": "Imported profile %@.",
+            "ja": "プロフィール「%@」を読み込みました。",
+            "zh-TW": "已匯入個人檔案「%@」。",
+            "zh-CN": "已导入个人档案“%@”。"
+        ],
+        "profileInvalidName": [
+            "en": "Profile names must not be empty.",
+            "ja": "プロフィール名は空にできません。",
+            "zh-TW": "個人檔案名稱不可空白。",
+            "zh-CN": "个人档案名称不能为空。"
+        ],
+        "profileDuplicateName": [
+            "en": "A profile with that name already exists.",
+            "ja": "同じ名前のプロフィールがすでに存在します。",
+            "zh-TW": "已有相同名稱的個人檔案。",
+            "zh-CN": "已存在同名个人档案。"
+        ],
+        "profileNotFound": [
+            "en": "The selected profile is no longer available.",
+            "ja": "選択したプロフィールは利用できません。",
+            "zh-TW": "選取的個人檔案已無法使用。",
+            "zh-CN": "所选个人档案已不可用。"
+        ],
+        "cannotDeleteLastProfile": [
+            "en": "The final profile cannot be deleted.",
+            "ja": "最後のプロフィールは削除できません。",
+            "zh-TW": "無法刪除最後一個個人檔案。",
+            "zh-CN": "无法删除最后一个个人档案。"
+        ],
+        "invalidProfilePackage": [
+            "en": "The profile package is invalid or incomplete.",
+            "ja": "プロフィールパッケージが無効または不完全です。",
+            "zh-TW": "個人檔案套件無效或不完整。",
+            "zh-CN": "个人档案包无效或不完整。"
+        ],
+        "unsupportedProfilePackageVersion": [
+            "en": "This profile package version is not supported.",
+            "ja": "このプロフィールパッケージのバージョンには対応していません。",
+            "zh-TW": "不支援此個人檔案套件版本。",
+            "zh-CN": "不支持此个人档案包版本。"
+        ],
+        "profilePackageTooLarge": [
+            "en": "The profile package is too large.",
+            "ja": "プロフィールパッケージが大きすぎます。",
+            "zh-TW": "個人檔案套件太大。",
+            "zh-CN": "个人档案包太大。"
+        ],
+        "amebloBlogs": [
+            "en": "Ameblo blogs",
+            "ja": "Amebloブログ",
+            "zh-TW": "Ameblo 部落格",
+            "zh-CN": "Ameblo 博客"
+        ],
+        "amebloBlogsFooter": [
+            "en": "Add Ameba blog URLs to search their RSS feeds for every active watch term. Up to 20 blogs.",
+            "ja": "AmebaブログのURLを追加すると、すべての有効なキーワードでRSSフィードを検索します。最大20件まで追加できます。",
+            "zh-TW": "新增 Ameba 部落格網址後，會針對每個啟用的追蹤關鍵字搜尋其 RSS feed。最多 20 個部落格。",
+            "zh-CN": "添加 Ameba 博客网址后，会针对每个启用的追踪关键字搜索其 RSS feed。最多 20 个博客。"
+        ],
+        "blogTitleOptional": [
+            "en": "Blog title (optional)",
+            "ja": "ブログタイトル（任意）",
+            "zh-TW": "部落格標題（選填）",
+            "zh-CN": "博客标题（可选）"
+        ],
+        "amebloInvalidURL": [
+            "en": "Enter an Ameblo blog URL such as https://ameblo.jp/blog-id.",
+            "ja": "https://ameblo.jp/blog-id のようなAmebloブログURLを入力してください。",
+            "zh-TW": "請輸入 Ameblo 部落格網址，例如 https://ameblo.jp/blog-id。",
+            "zh-CN": "请输入 Ameblo 博客网址，例如 https://ameblo.jp/blog-id。"
+        ],
+        "amebloDuplicate": [
+            "en": "This Ameblo blog is already configured.",
+            "ja": "このAmebloブログはすでに設定されています。",
+            "zh-TW": "此 Ameblo 部落格已設定。",
+            "zh-CN": "此 Ameblo 博客已配置。"
+        ],
+        "amebloLimitReached": [
+            "en": "You can configure up to 20 Ameblo blogs.",
+            "ja": "Amebloブログは最大20件まで設定できます。",
+            "zh-TW": "最多可設定 20 個 Ameblo 部落格。",
+            "zh-CN": "最多可配置 20 个 Ameblo 博客。"
+        ],
+        "addAmebloBlog": [
+            "en": "Add Ameblo blog",
+            "ja": "Amebloブログを追加",
+            "zh-TW": "新增 Ameblo 部落格",
+            "zh-CN": "添加 Ameblo 博客"
+        ],
+        "amebloEnabled": [
+            "en": "Ameblo is enabled",
+            "ja": "Amebloは有効です",
+            "zh-TW": "Ameblo 已啟用",
+            "zh-CN": "Ameblo 已启用"
+        ],
         "clearAllData": [
             "en": "Clear All Data",
             "ja": "すべてのデータを削除",
@@ -973,6 +1243,96 @@ class I18nManager: ObservableObject {
             "zh-TW": "匯入本機備份",
             "zh-CN": "导入本地备份"
         ],
+        "exportEncryptedBackup": [
+            "en": "Export Encrypted Backup",
+            "ja": "暗号化バックアップを書き出す",
+            "zh-TW": "匯出加密備份",
+            "zh-CN": "导出加密备份"
+        ],
+        "importEncryptedBackup": [
+            "en": "Import Encrypted Backup",
+            "ja": "暗号化バックアップを読み込む",
+            "zh-TW": "匯入加密備份",
+            "zh-CN": "导入加密备份"
+        ],
+        "encryptedBackupTitle": [
+            "en": "Encrypted Backup",
+            "ja": "暗号化バックアップ",
+            "zh-TW": "加密備份",
+            "zh-CN": "加密备份"
+        ],
+        "unlockBackup": [
+            "en": "Unlock Backup",
+            "ja": "バックアップのロックを解除",
+            "zh-TW": "解鎖備份",
+            "zh-CN": "解锁备份"
+        ],
+        "password": [
+            "en": "Password",
+            "ja": "パスワード",
+            "zh-TW": "密碼",
+            "zh-CN": "密码"
+        ],
+        "confirmPassword": [
+            "en": "Confirm password",
+            "ja": "パスワードを確認",
+            "zh-TW": "確認密碼",
+            "zh-CN": "确认密码"
+        ],
+        "encryptedBackupExportPasswordHint": [
+            "en": "Use at least 12 characters. The password is never stored.",
+            "ja": "12文字以上を使用してください。パスワードは保存されません。",
+            "zh-TW": "請使用至少 12 個字元。密碼永遠不會被儲存。",
+            "zh-CN": "请使用至少 12 个字符。密码永远不会被保存。"
+        ],
+        "encryptedBackupImportPasswordHint": [
+            "en": "Enter the password used when this encrypted backup was exported.",
+            "ja": "この暗号化バックアップを書き出したときに使用したパスワードを入力してください。",
+            "zh-TW": "請輸入匯出此加密備份時使用的密碼。",
+            "zh-CN": "请输入导出此加密备份时使用的密码。"
+        ],
+        "passwordsDoNotMatch": [
+            "en": "Passwords do not match.",
+            "ja": "パスワードが一致しません。",
+            "zh-TW": "密碼不一致。",
+            "zh-CN": "密码不一致。"
+        ],
+        "encryptedBackupInvalidPassword": [
+            "en": "Password must be between 12 and 256 characters.",
+            "ja": "パスワードは12文字以上256文字以下にしてください。",
+            "zh-TW": "密碼長度必須介於 12 到 256 個字元。",
+            "zh-CN": "密码长度必须介于 12 到 256 个字符。"
+        ],
+        "encryptedBackupInvalidEnvelope": [
+            "en": "This is not a valid OshiReader encrypted backup.",
+            "ja": "有効なOshiReader暗号化バックアップではありません。",
+            "zh-TW": "這不是有效的 OshiReader 加密備份。",
+            "zh-CN": "这不是有效的 OshiReader 加密备份。"
+        ],
+        "encryptedBackupUnsupportedVersion": [
+            "en": "This encrypted backup version is not supported.",
+            "ja": "この暗号化バックアップのバージョンには対応していません。",
+            "zh-TW": "不支援此加密備份版本。",
+            "zh-CN": "不支持此加密备份版本。"
+        ],
+        "encryptedBackupAuthenticationFailed": [
+            "en": "The password is incorrect or the backup was corrupted.",
+            "ja": "パスワードが正しくないか、バックアップが破損しています。",
+            "zh-TW": "密碼不正確，或備份已損毀。",
+            "zh-CN": "密码不正确，或备份已损坏。"
+        ],
+        "encryptedBackupKeyDerivationFailed": [
+            "en": "The encrypted backup key could not be derived.",
+            "ja": "暗号化バックアップキーを生成できませんでした。",
+            "zh-TW": "無法衍生加密備份金鑰。",
+            "zh-CN": "无法派生加密备份密钥。"
+        ],
+        "encryptedBackupPayloadTooLarge": [
+            "en": "The encrypted backup file is too large.",
+            "ja": "暗号化バックアップファイルが大きすぎます。",
+            "zh-TW": "加密備份檔案太大。",
+            "zh-CN": "加密备份文件太大。"
+        ],
         "backupImported": [
             "en": "Backup restored successfully.",
             "ja": "バックアップを復元しました。",
@@ -984,6 +1344,42 @@ class I18nManager: ObservableObject {
             "ja": "バックアップ",
             "zh-TW": "備份",
             "zh-CN": "备份"
+        ],
+        "backupFileTooLarge": [
+            "en": "Backup file is too large.",
+            "ja": "バックアップファイルが大きすぎます。",
+            "zh-TW": "備份檔案太大。",
+            "zh-CN": "备份文件太大。"
+        ],
+        "backupTooManyPlatforms": [
+            "en": "Backup contains too many platforms.",
+            "ja": "バックアップ内のプラットフォーム数が多すぎます。",
+            "zh-TW": "備份包含太多平台。",
+            "zh-CN": "备份包含太多平台。"
+        ],
+        "backupTooMuchData": [
+            "en": "Backup contains too much data.",
+            "ja": "バックアップ内のデータ量が多すぎます。",
+            "zh-TW": "備份包含太多資料。",
+            "zh-CN": "备份包含太多数据。"
+        ],
+        "backupInvalidRestoreManifest": [
+            "en": "Invalid restore manifest.",
+            "ja": "復元マニフェストが無効です。",
+            "zh-TW": "還原清單無效。",
+            "zh-CN": "恢复清单无效。"
+        ],
+        "backupInvalidRestoreStagingPath": [
+            "en": "Invalid restore staging path.",
+            "ja": "復元用ステージングパスが無効です。",
+            "zh-TW": "還原暫存路徑無效。",
+            "zh-CN": "恢复暂存路径无效。"
+        ],
+        "backupRestoreStagingIncomplete": [
+            "en": "Restore staging data is incomplete.",
+            "ja": "復元用ステージングデータが不完全です。",
+            "zh-TW": "還原暫存資料不完整。",
+            "zh-CN": "恢复暂存数据不完整。"
         ],
         "openNotification": [
             "en": "Open",

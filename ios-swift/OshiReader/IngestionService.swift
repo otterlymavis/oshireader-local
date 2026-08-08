@@ -334,7 +334,8 @@ final class IngestionService {
                     guard let url = URL(string: feedURL) else { return [] }
                     guard case .success(let entries) = await self.parseRSS(url) else { return [] }
                     return entries.compactMap { entry -> FeedItem? in
-                        guard !entry.link.isEmpty else { return nil }
+                        guard !entry.link.isEmpty,
+                              let publishedAt = self.validPublishedDate(entry.pubDate) else { return nil }
                         guard self.matchesKeyword(title: entry.title, desc: entry.description, kw: keyword) else { return nil }
                         return FeedItem(
                             id: "news:\(self.stableId(entry.link))",
@@ -345,7 +346,7 @@ final class IngestionService {
                             author: nil,
                             thumbnail_url: entry.thumbnailUrl,
                             media_type: "article",
-                            published_at: entry.pubDate ?? self.nowISO(),
+                            published_at: publishedAt,
                             watch_term_keyword: keyword,
                             fetched_at: self.nowISO()
                         )
@@ -377,6 +378,7 @@ final class IngestionService {
                     var seen = Set<String>()
                     return entries.compactMap { entry -> FeedItem? in
                         guard !entry.link.isEmpty,
+                              let publishedAt = self.validPublishedDate(entry.pubDate),
                               self.matchesKeyword(title: entry.title, desc: entry.description, kw: keyword) else {
                             return nil
                         }
@@ -391,7 +393,7 @@ final class IngestionService {
                             author: nil,
                             thumbnail_url: entry.thumbnailUrl,
                             media_type: "article",
-                            published_at: entry.pubDate ?? self.nowISO(),
+                            published_at: publishedAt,
                             watch_term_keyword: keyword,
                             fetched_at: self.nowISO()
                         )
@@ -426,6 +428,7 @@ final class IngestionService {
                     var seen = Set<String>()
                     let items = entries.compactMap { entry -> FeedItem? in
                         guard !entry.link.isEmpty,
+                              let publishedAt = self.validPublishedDate(entry.pubDate),
                               self.matchesKeyword(title: entry.title, desc: entry.description, kw: keyword) else { return nil }
                         let canonical = Self.canonicalURLForDedup(entry.link)
                         guard seen.insert(canonical).inserted else { return nil }
@@ -438,7 +441,7 @@ final class IngestionService {
                             author: blog.title ?? blog.amebaID,
                             thumbnail_url: entry.thumbnailUrl,
                             media_type: "article",
-                            published_at: entry.pubDate ?? self.nowISO(),
+                            published_at: publishedAt,
                             watch_term_keyword: keyword,
                             fetched_at: self.nowISO()
                         )
@@ -499,7 +502,8 @@ final class IngestionService {
         var items = [FeedItem]()
         for entry in entries {
             if items.count >= limit { break }
-            guard !entry.link.isEmpty else { continue }
+            guard !entry.link.isEmpty,
+                  let publishedAt = validPublishedDate(entry.pubDate) else { continue }
             let key = entry.link
             if !seen.insert(key).inserted { continue }
             let title = cleanTitle(entry.title, patterns: titlePatterns)
@@ -513,7 +517,7 @@ final class IngestionService {
                 author: author,
                 thumbnail_url: nil,
                 media_type: mediaType,
-                published_at: entry.pubDate ?? nowISO(),
+                published_at: publishedAt,
                 watch_term_keyword: keyword,
                 fetched_at: nowISO()
             ))
@@ -603,7 +607,8 @@ final class IngestionService {
             if !entries.isEmpty { break }
         }
         return entries.prefix(25).compactMap { entry -> FeedItem? in
-            guard !entry.link.isEmpty else { return nil }
+            guard !entry.link.isEmpty,
+                  let publishedAt = validPublishedDate(entry.pubDate) else { return nil }
             let itemId = entry.link.split(separator: "/").last.map(String.init) ?? entry.link
             return FeedItem(
                 id: "note:\(itemId)",
@@ -614,7 +619,7 @@ final class IngestionService {
                 author: nil,
                 thumbnail_url: entry.thumbnailUrl,
                 media_type: "article",
-                published_at: entry.pubDate ?? nowISO(),
+                published_at: publishedAt,
                 watch_term_keyword: keyword,
                 fetched_at: nowISO()
             )
@@ -1335,6 +1340,13 @@ final class IngestionService {
             return parts.allSatisfy { haystack.contains($0.lowercased()) }
         }
         return false
+    }
+
+    private func validPublishedDate(_ value: String?) -> String? {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty,
+              parseISO8601Date(value) != nil else { return nil }
+        return value
     }
 
     /// Stable FNV-1a hash so the same article URL yields the same FeedItem id

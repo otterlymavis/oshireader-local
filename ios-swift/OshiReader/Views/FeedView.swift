@@ -6,6 +6,8 @@ import UIKit
 /// large source images from causing scroll-time memory spikes.
 actor FeedThumbnailLoader {
     static let shared = FeedThumbnailLoader()
+    /// Larger instance used by avatar layers, which can render near 300 pt.
+    static let avatar = FeedThumbnailLoader(maxPixelSize: 900)
 
     private let cache = NSCache<NSURL, UIImage>()
     private var inFlight: [URL: Task<UIImage?, Never>] = [:]
@@ -41,7 +43,12 @@ actor FeedThumbnailLoader {
         inFlight[url] = task
         let result = await task.value
         inFlight[url] = nil
-        if let result { cache.setObject(result, forKey: url as NSURL, cost: result.jpegData(compressionQuality: 0.8)?.count ?? 1) }
+        if let result {
+            // Estimate decoded memory from actual pixels rather than points.
+            let cost = result.cgImage.map { $0.bytesPerRow * $0.height }
+                ?? Int(result.size.width * result.scale * result.size.height * result.scale * 4)
+            cache.setObject(result, forKey: url as NSURL, cost: cost)
+        }
         return result
     }
 }
@@ -56,15 +63,21 @@ private struct FeedThumbnailView: View {
                 Image(uiImage: image)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
+                    .transition(.opacity)
             } else {
                 Color.gray.opacity(0.1)
+                    .transition(.opacity)
             }
         }
         .frame(width: 72, height: 72)
         .clipped()
-        .cornerRadius(8)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .animation(.easeIn(duration: 0.2), value: image != nil)
         .task(id: url) {
-            image = await FeedThumbnailLoader.shared.image(for: url)
+            image = nil
+            let loaded = await FeedThumbnailLoader.shared.image(for: url)
+            guard !Task.isCancelled else { return }
+            image = loaded
         }
     }
 }
@@ -258,7 +271,10 @@ struct FeedView: View {
                         ScrollView(.horizontal, showsIndicators: false) {
                             HStack(spacing: 8) {
                                 // "All" button
-                                Button(action: { selectedPlatform = nil }) {
+                                Button(action: {
+                                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                                    selectedPlatform = nil
+                                }) {
                                     HStack(spacing: 6) {
                                         Text("🌐")
                                             .font(.system(size: 16))
@@ -270,8 +286,10 @@ struct FeedView: View {
                                     .padding(.horizontal, 10)
                                     .frame(minWidth: 64, minHeight: 44)
                                     .background(selectedPlatform == nil ? theme.colors.primary : theme.colors.divider)
-                                    .cornerRadius(10)
+                                    .clipShape(RoundedRectangle(cornerRadius: 10))
                                 }
+                                .accessibilityLabel(i18n.t("all"))
+                                .accessibilityHint(selectedPlatform != nil ? i18n.t("showsAllPlatformsHint") : "")
                                 .accessibilityIdentifier("feed.platform.all")
                                 
                                 // Individual platforms
@@ -285,6 +303,7 @@ struct FeedView: View {
                                         ? (isSelected ? Color.white : theme.standardBadgeFg)
                                         : (isSelected ? Color.white : meta.fg)
                                     Button(action: {
+                                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
                                         selectedPlatform = isSelected ? nil : platformId
                                         if !isSelected && !hasItems(for: platformId) {
                                             Task {
@@ -304,8 +323,14 @@ struct FeedView: View {
                                         .padding(.horizontal, 10)
                                         .frame(minWidth: 64, minHeight: 44)
                                         .background(bg)
-                                        .cornerRadius(10)
+                                        .clipShape(RoundedRectangle(cornerRadius: 10))
                                     }
+                                    .accessibilityLabel(meta.name)
+                                    .accessibilityHint(
+                                        isSelected
+                                            ? i18n.t("deselectFilterHint")
+                                            : i18n.t("filterByPlatformHint").replacingOccurrences(of: "%@", with: meta.name)
+                                    )
                                     .accessibilityIdentifier("feed.platform.\(platformId)")
                                 }
                             }
@@ -414,6 +439,7 @@ struct FeedView: View {
                                 }
                                 .swipeActions(edge: .leading, allowsFullSwipe: true) {
                                     Button {
+                                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
                                         _ = db.toggleSaved(item: item)
                                     } label: {
                                         Label(savedItemIds.contains(item.id) ? i18n.t("unsave") : i18n.t("save"),
@@ -440,6 +466,7 @@ struct FeedView: View {
                                 }
                                 .swipeActions(edge: .leading, allowsFullSwipe: true) {
                                     Button {
+                                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
                                         _ = db.toggleSaved(item: item)
                                     } label: {
                                         Label(savedItemIds.contains(item.id) ? i18n.t("unsave") : i18n.t("save"),
@@ -465,6 +492,7 @@ struct FeedView: View {
                             }
                             .listRowBackground(Color.clear)
                             .listRowSeparator(.hidden)
+                            .accessibilityIdentifier("feed.loadMoreButton")
                         }
                     }
                     .listStyle(.plain)
@@ -510,7 +538,7 @@ struct FeedView: View {
         }
         .sheet(isPresented: $showFilterSheet) {
             FilterPanel(selectedKeyword: $selectedKeyword, mediaFilter: $mediaFilter, daysFilter: $daysFilter, theme: theme, i18n: i18n, timeRanges: timeRanges)
-                .presentationDetents([.medium])
+                .presentationDetents([.medium, .large])
         }
         .sheet(isPresented: $showAddUrlSheet) {
             AddUrlSheet(customUrlString: $customUrlString, customUrlTitle: $customUrlTitle, theme: theme, i18n: i18n) {
@@ -621,17 +649,6 @@ struct FeedView: View {
         return item.platform == platformId
     }
 
-    private func sourceStatusText(_ status: SourceRefreshStatus) -> String {
-        switch status.outcome {
-        case .received:
-            return "\(status.itemCount) items · \(status.queryCount) queries"
-        case .noResults:
-            return "No matching items · \(status.queryCount) queries"
-        case .failed(let failure):
-            return "\(failure.displayName) · \(status.queryCount) queries"
-        }
-    }
-
 }
 
 // MARK: - Subviews
@@ -639,18 +656,20 @@ struct FeedView: View {
 private struct SourceStatusSheet: View {
     let summaries: [SourceHealthSummary]
     let theme: ThemeManager
+    @StateObject private var i18n = I18nManager.shared
 
     var body: some View {
         NavigationStack {
             if summaries.isEmpty {
-                ContentUnavailableView("No source history yet", systemImage: "chart.bar.xaxis")
+                ContentUnavailableView(i18n.t("noSourceHistoryYet"), systemImage: "chart.bar.xaxis")
             } else {
                 List(summaries) { summary in
                     SourceStatusRow(summary: summary, theme: theme)
                 }
+                .accessibilityIdentifier("feed.sourceStatusSheet")
             }
         }
-        .navigationTitle("Source status")
+        .navigationTitle(i18n.t("sourceStatusTitle"))
         .navigationBarTitleDisplayMode(.inline)
         .presentationDetents([.medium, .large])
         .accessibilityIdentifier("feed.sourceStatusSheet")
@@ -660,6 +679,7 @@ private struct SourceStatusSheet: View {
 private struct SourceStatusRow: View {
     let summary: SourceHealthSummary
     let theme: ThemeManager
+    @StateObject private var i18n = I18nManager.shared
 
     var body: some View {
         HStack(spacing: 10) {
@@ -668,6 +688,7 @@ private struct SourceStatusRow: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(metadata.name)
                     .font(.subheadline.weight(.semibold))
+                    .accessibilityIdentifier("feed.sourceStatus.\(summary.id)")
                 Text(summaryText)
                     .font(.caption)
                     .foregroundColor(theme.colors.textMuted)
@@ -677,26 +698,49 @@ private struct SourceStatusRow: View {
                 .font(.caption.monospacedDigit())
                 .foregroundColor(theme.colors.textMuted)
         }
-        .accessibilityIdentifier("feed.sourceStatus.\(summary.id)")
     }
 
     private var summaryText: String {
-        let current = summary.currentStatus.map(statusText) ?? "Not checked"
-        let lastFailure = summary.lastFailure.map { " · last \($0.displayName)" } ?? ""
+        let current = summary.currentStatus.map(statusText) ?? i18n.t("notChecked")
+        let lastFailure = summary.lastFailure.map {
+            i18n.t("sourceLastFailure").replacingOccurrences(of: "{failure}", with: $0.displayName)
+        } ?? ""
         let formatter = RelativeDateTimeFormatter()
+        formatter.locale = Locale(identifier: localeIdentifier)
         formatter.unitsStyle = .short
         let checked = formatter.localizedString(for: summary.lastCheckedAt, relativeTo: Date())
-        return "\(current) · 7d: \(summary.receivedCount) received, \(summary.emptyCount) empty, \(summary.failedCount) failed · \(summary.totalItemCount) total items · checked \(checked)\(lastFailure)"
+        return i18n.t("sourceHistorySummary")
+            .replacingOccurrences(of: "{current}", with: current)
+            .replacingOccurrences(of: "{received}", with: "\(summary.receivedCount)")
+            .replacingOccurrences(of: "{empty}", with: "\(summary.emptyCount)")
+            .replacingOccurrences(of: "{failed}", with: "\(summary.failedCount)")
+            .replacingOccurrences(of: "{total}", with: "\(summary.totalItemCount)")
+            .replacingOccurrences(of: "{checked}", with: checked)
+            .replacingOccurrences(of: "{lastFailure}", with: lastFailure)
     }
 
     private func statusText(_ status: SourceRefreshStatus) -> String {
         switch status.outcome {
         case .received:
-            return "\(status.itemCount) items · \(status.queryCount) queries"
+            return i18n.t("sourceItemsQueries")
+                .replacingOccurrences(of: "{items}", with: "\(status.itemCount)")
+                .replacingOccurrences(of: "{queries}", with: "\(status.queryCount)")
         case .noResults:
-            return "No matching items · \(status.queryCount) queries"
+            return i18n.t("sourceNoMatchingItemsQueries")
+                .replacingOccurrences(of: "{queries}", with: "\(status.queryCount)")
         case .failed(let failure):
-            return "\(failure.displayName) · \(status.queryCount) queries"
+            return i18n.t("sourceFailureQueries")
+                .replacingOccurrences(of: "{failure}", with: failure.displayName)
+                .replacingOccurrences(of: "{queries}", with: "\(status.queryCount)")
+        }
+    }
+
+    private var localeIdentifier: String {
+        switch i18n.lang {
+        case "zh-TW": return "zh_Hant_TW"
+        case "zh-CN": return "zh_Hans_CN"
+        case "ja": return "ja_JP"
+        default: return "en_US"
         }
     }
 }
@@ -743,7 +787,7 @@ struct FeedCard: View {
                 .padding(.vertical, 3)
                 .background(badgeBg)
                 .foregroundColor(badgeFg)
-                .cornerRadius(6)
+                .clipShape(RoundedRectangle(cornerRadius: 6))
                 
                 if !item.watch_term_keyword.isEmpty {
                     Text(item.watch_term_keyword)
@@ -752,7 +796,7 @@ struct FeedCard: View {
                         .padding(.vertical, 3)
                         .background(theme.colors.divider)
                         .foregroundColor(theme.colors.textSub)
-                        .cornerRadius(6)
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
                 }
                 
                 Spacer()
@@ -807,7 +851,7 @@ struct FeedCard: View {
         }
         .padding(12)
         .background(theme.colors.card)
-        .cornerRadius(12)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
         .shadow(color: Color.black.opacity(theme.mode == .dark ? 0.2 : 0.04), radius: 5, x: 0, y: 2)
     }
     
@@ -925,7 +969,7 @@ struct FilterButton: View {
                 .padding(.vertical, 7)
                 .background(isSelected ? theme.colors.primary : theme.colors.divider)
                 .foregroundColor(isSelected ? .white : theme.colors.textSub)
-                .cornerRadius(999)
+                .clipShape(Capsule())
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(text)
