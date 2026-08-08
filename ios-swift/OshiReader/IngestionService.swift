@@ -73,6 +73,34 @@ final class IngestionService {
     private let retrySleeper: RetrySleeper
     private static let maximumTransportAttempts = 2
     private static let retryDelayNanoseconds: UInt64 = 100_000_000
+    private static let outputISO8601: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter
+    }()
+    private static let titleCleanupRegexLock = NSLock()
+    private static var titleCleanupRegexes: [String: NSRegularExpression] = [:]
+    private static let defaultTitleCleanupPatterns = [
+        #"\s*\([^)]*ニュース\)\s*[-|]\s*Yahoo!ニュース\s*$"#,
+        #"\s*[-|]\s*Yahoo!ニュース\s*$"#,
+        #"\s*[-|]\s*(?:Bing|Google)\s*$"#
+    ]
+    private static let generalRegexLock = NSLock()
+    private static var generalRegexes: [String: NSRegularExpression] = [:]
+    private static let youtubeInitialDataObjectRegex = try? NSRegularExpression(
+        pattern: #"ytInitialData\s*=\s*(\{.+?\});"#,
+        options: [.dotMatchesLineSeparators]
+    )
+    private static let youtubeInitialDataStringRegex = try? NSRegularExpression(
+        pattern: #"ytInitialData\s*=\s*'((?:\\'|[^'])*)';"#,
+        options: [.dotMatchesLineSeparators]
+    )
+    private static let escapedYouTubeVideoIDRegexes: [NSRegularExpression] = [
+        #""videoId":"([A-Za-z0-9_-]{11})""#,
+        #"/(?:watch\?v=|shorts/)([A-Za-z0-9_-]{11})"#,
+        #"\\\\x22videoId\\\\x22:\\\\x22([A-Za-z0-9_-]{11})\\\\x22"#,
+        #"/(?:watch\?v\\\\x3d|shorts/)([A-Za-z0-9_-]{11})"#
+    ].compactMap { try? NSRegularExpression(pattern: $0) }
 
     init(
         requestExecutor: @escaping RequestExecutor = { request in
@@ -341,7 +369,7 @@ final class IngestionService {
                             id: "news:\(self.stableId(entry.link))",
                             platform: "news",
                             url: entry.link,
-                            title: entry.title.isEmpty ? nil : entry.title,
+                            title: self.cleanedOptionalTitle(entry.title),
                             content_text: entry.description.isEmpty ? nil : entry.description,
                             author: nil,
                             thumbnail_url: entry.thumbnailUrl,
@@ -388,7 +416,7 @@ final class IngestionService {
                             id: "\(sourceID):\(self.stableId(entry.link))",
                             platform: sourceID,
                             url: entry.link,
-                            title: entry.title.isEmpty ? nil : entry.title,
+                            title: self.cleanedOptionalTitle(entry.title),
                             content_text: entry.description.isEmpty ? nil : entry.description,
                             author: nil,
                             thumbnail_url: entry.thumbnailUrl,
@@ -436,7 +464,7 @@ final class IngestionService {
                             id: "ameblo:\(self.stableId(entry.link))",
                             platform: "ameblo",
                             url: entry.link,
-                            title: entry.title.isEmpty ? nil : entry.title,
+                            title: self.cleanedOptionalTitle(entry.title),
                             content_text: entry.description.isEmpty ? nil : entry.description,
                             author: blog.title ?? blog.amebaID,
                             thumbnail_url: entry.thumbnailUrl,
@@ -614,7 +642,7 @@ final class IngestionService {
                 id: "note:\(itemId)",
                 platform: "note",
                 url: entry.link,
-                title: entry.title.isEmpty ? nil : entry.title,
+                title: cleanedOptionalTitle(entry.title),
                 content_text: entry.description.isEmpty ? nil : entry.description,
                 author: nil,
                 thumbnail_url: entry.thumbnailUrl,
@@ -773,7 +801,7 @@ final class IngestionService {
 
     /// Return the capture groups (1...) of the first match, or nil if no match.
     private func regexGroups(_ s: String, _ pattern: String) -> [String]? {
-        guard let re = try? NSRegularExpression(pattern: pattern),
+        guard let re = Self.generalRegex(for: pattern),
               let m = re.firstMatch(in: s, range: NSRange(s.startIndex..., in: s)),
               m.numberOfRanges > 1 else { return nil }
         var out = [String]()
@@ -782,6 +810,22 @@ final class IngestionService {
             out.append(String(s[r]))
         }
         return out
+    }
+
+    private static func generalRegex(for pattern: String) -> NSRegularExpression? {
+        generalRegexLock.lock()
+        if let cached = generalRegexes[pattern] {
+            generalRegexLock.unlock()
+            return cached
+        }
+        generalRegexLock.unlock()
+
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+
+        generalRegexLock.lock()
+        generalRegexes[pattern] = regex
+        generalRegexLock.unlock()
+        return regex
     }
 
     // MARK: - YouTube (keyless search)
@@ -877,16 +921,14 @@ final class IngestionService {
     }
 
     private func extractYouTubeInitialData(from html: String) -> [String: Any]? {
-        if let regex = try? NSRegularExpression(pattern: #"ytInitialData\s*=\s*(\{.+?\});"#, options: [.dotMatchesLineSeparators]),
-           let match = regex.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
+        if let match = Self.youtubeInitialDataObjectRegex?.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
            let range = Range(match.range(at: 1), in: html),
            let data = String(html[range]).data(using: .utf8),
            let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
             return json
         }
 
-        guard let regex = try? NSRegularExpression(pattern: #"ytInitialData\s*=\s*'((?:\\'|[^'])*)';"#, options: [.dotMatchesLineSeparators]),
-              let match = regex.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
+        guard let match = Self.youtubeInitialDataStringRegex?.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
               let range = Range(match.range(at: 1), in: html) else {
             return nil
         }
@@ -1071,16 +1113,9 @@ final class IngestionService {
     }
 
     private func collectYouTubeItemsFromEscapedHTML(_ html: String, keyword: String) -> [FeedItem] {
-        let patterns = [
-            #""videoId":"([A-Za-z0-9_-]{11})""#,
-            #"/(?:watch\?v=|shorts/)([A-Za-z0-9_-]{11})"#,
-            #"\\\\x22videoId\\\\x22:\\\\x22([A-Za-z0-9_-]{11})\\\\x22"#,
-            #"/(?:watch\?v\\\\x3d|shorts/)([A-Za-z0-9_-]{11})"#
-        ]
         var ids = [String]()
         var seen = Set<String>()
-        for pattern in patterns {
-            guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
+        for regex in Self.escapedYouTubeVideoIDRegexes {
             let matches = regex.matches(in: html, range: NSRange(html.startIndex..., in: html))
             for match in matches {
                 guard let range = Range(match.range(at: 1), in: html) else { continue }
@@ -1324,10 +1359,38 @@ final class IngestionService {
 
     private func cleanTitle(_ value: String, patterns: [String]) -> String {
         var title = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        for pattern in patterns {
-            title = title.replacingOccurrences(of: pattern, with: "", options: [.regularExpression, .caseInsensitive])
+        for pattern in Self.defaultTitleCleanupPatterns + patterns {
+            guard let regex = Self.titleCleanupRegex(for: pattern) else { continue }
+            title = regex.stringByReplacingMatches(
+                in: title,
+                range: NSRange(title.startIndex..., in: title),
+                withTemplate: ""
+            )
         }
         return title.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func cleanedOptionalTitle(_ value: String, patterns: [String] = []) -> String? {
+        let title = cleanTitle(value, patterns: patterns)
+        return title.isEmpty ? nil : title
+    }
+
+    private static func titleCleanupRegex(for pattern: String) -> NSRegularExpression? {
+        titleCleanupRegexLock.lock()
+        if let regex = titleCleanupRegexes[pattern] {
+            titleCleanupRegexLock.unlock()
+            return regex
+        }
+        titleCleanupRegexLock.unlock()
+
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
+            return nil
+        }
+
+        titleCleanupRegexLock.lock()
+        titleCleanupRegexes[pattern] = regex
+        titleCleanupRegexLock.unlock()
+        return regex
     }
 
     private func matchesKeyword(title: String, desc: String, kw: String) -> Bool {
@@ -1362,9 +1425,7 @@ final class IngestionService {
     }
 
     private func isoString(_ date: Date) -> String {
-        let fmt = ISO8601DateFormatter()
-        fmt.formatOptions = [.withInternetDateTime]
-        return fmt.string(from: date)
+        Self.outputISO8601.string(from: date)
     }
 
     private func nowISO() -> String { isoString(Date()) }

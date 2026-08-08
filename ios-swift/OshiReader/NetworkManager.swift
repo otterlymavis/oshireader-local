@@ -1,5 +1,26 @@
 import Foundation
 
+private let _bloggerImageRegex = try? NSRegularExpression(
+    pattern: #"src="(https?://[^"]+\.(?:png|jpg|jpeg|gif))""#,
+    options: .caseInsensitive
+)
+private let _japaneseScriptRegex = try? NSRegularExpression(pattern: "\\p{Hiragana}|\\p{Katakana}|\\p{Han}")
+private let _bloggerThumbSuffixRegex = try? NSRegularExpression(pattern: "/s72-c$")
+private let _networkISO8601 = ISO8601DateFormatter()
+
+private enum _ScraperRegex {
+    static let titleTag = try? NSRegularExpression(
+        pattern: #"<title[^>]*>([^<]{1,240})</title>"#,
+        options: [.caseInsensitive, .dotMatchesLineSeparators]
+    )
+    static let metaDescription: [NSRegularExpression] = [
+        #"<meta[^>]+name=["']description["'][^>]+content=["']([^"']{1,360})["'][^>]*>"#,
+        #"<meta[^>]+content=["']([^"']{1,360})["'][^>]+name=["']description["'][^>]*>"#,
+        #"<meta[^>]+property=["']og:description["'][^>]+content=["']([^"']{1,360})["'][^>]*>"#,
+        #"<meta[^>]+content=["']([^"']{1,360})["'][^>]+property=["']og:description["'][^>]*>"#
+    ].compactMap { try? NSRegularExpression(pattern: $0, options: [.caseInsensitive]) }
+}
+
 struct IrasutoyaImage: Codable, Identifiable, Hashable {
     var id: String { url }
     let url: String
@@ -25,8 +46,9 @@ class NetworkManager {
 
     // MARK: - Google Translate Helper
     func translateToJapanese(_ text: String) async -> String {
-        // Checks if contains Japanese characters
-        let isJapanese = text.range(of: "\\p{Hiragana}|\\p{Katakana}|\\p{Han}", options: .regularExpression) != nil
+        let isJapanese = _japaneseScriptRegex.flatMap {
+            $0.firstMatch(in: text, range: NSRange(text.startIndex..., in: text))
+        } != nil
         if isJapanese { return text }
 
         let query = text.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? text
@@ -46,9 +68,7 @@ class NetworkManager {
                 return translatedText.isEmpty ? text : translatedText
             }
         } catch {
-            #if DEBUG
-            print("Translation failed: \(error)")
-            #endif
+            AppLogger.network.error("Translation failed: \(error.localizedDescription)")
         }
         return text
     }
@@ -58,17 +78,16 @@ class NetworkManager {
         let feed1 = "https://www.irasutoya.com/feeds/posts/default?alt=json&max-results=20"
         let categoryUrl = "https://www.irasutoya.com/feeds/posts/default/-/\(URLQueryItem(name: "", value: "人物").value!.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "")?alt=json&max-results=15"
 
-        let items1 = try await fetchBloggerFeed(feed1)
-        let items2 = (try? await fetchBloggerFeed(categoryUrl)) ?? []
+        async let fetch1 = fetchBloggerFeed(feed1)
+        async let fetch2 = fetchBloggerFeed(categoryUrl)
+        let items1 = try await fetch1
+        let items2 = (try? await fetch2) ?? []
 
         var combined = [IrasutoyaImage]()
         var seen = Set<String>()
-
-        for item in items1 + items2 {
-            if !seen.contains(item.url) && combined.count < 30 {
-                seen.insert(item.url)
-                combined.append(item)
-            }
+        for item in items1 + items2 where !seen.contains(item.url) && combined.count < 30 {
+            seen.insert(item.url)
+            combined.append(item)
         }
         return combined
     }
@@ -125,8 +144,7 @@ class NetworkManager {
             }
             if thumb.isEmpty, let contentContainer = entry["content"] as? [String: Any],
                let contentHtml = contentContainer["$t"] as? String {
-                let pattern = #"src="(https?://[^"]+\.(?:png|jpg|jpeg|gif))""#
-                if let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive),
+                if let regex = _bloggerImageRegex,
                    let match = regex.firstMatch(in: contentHtml, range: NSRange(contentHtml.startIndex..., in: contentHtml)) {
                     if let range = Range(match.range(at: 1), in: contentHtml) {
                         thumb = String(contentHtml[range])
@@ -136,10 +154,16 @@ class NetworkManager {
 
             if !altLink.isEmpty && !thumb.isEmpty {
                 // Upscale small Blogger thumbnails for the editor picker.
-                let upscaled = thumb
+                var upscaled = thumb
                     .replacingOccurrences(of: "/s72-c/", with: "/s400-c/")
-                    .replacingOccurrences(of: "/s72-c$", with: "/s400-c", options: .regularExpression)
                     .replacingOccurrences(of: "/s1600/", with: "/s400/")
+                if let regex = _bloggerThumbSuffixRegex {
+                    upscaled = regex.stringByReplacingMatches(
+                        in: upscaled,
+                        range: NSRange(upscaled.startIndex..., in: upscaled),
+                        withTemplate: "/s400-c"
+                    )
+                }
                 list.append(IrasutoyaImage(url: altLink, thumb: upscaled, title: title))
             }
         }
@@ -190,7 +214,7 @@ class NetworkManager {
         let normalized = normalizedCustomUrl(entry.url)
         guard let url = URL(string: normalized) else { return (nil, false) }
 
-        let nowString = ISO8601DateFormatter().string(from: Date())
+        let nowString = _networkISO8601.string(from: Date())
         var title = entry.title?.trimmingCharacters(in: .whitespacesAndNewlines)
         var description: String?
 
@@ -209,9 +233,7 @@ class NetworkManager {
                 description = extractMetaDescription(from: html)
             }
         } catch {
-            #if DEBUG
-            print("Custom URL scrape failed for \(entry.url): \(error)")
-            #endif
+            AppLogger.scraping.error("Custom URL scrape failed for \(entry.url): \(error.localizedDescription)")
             return (nil, false)
         }
 
@@ -239,8 +261,8 @@ class NetworkManager {
     }
 
     private func extractTagContent(named tag: String, from html: String) -> String? {
-        let pattern = #"<\#(tag)[^>]*>([^<]{1,240})</\#(tag)>"#
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive, .dotMatchesLineSeparators]),
+        guard tag.lowercased() == "title",
+              let regex = _ScraperRegex.titleTag,
               let match = regex.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
               let range = Range(match.range(at: 1), in: html) else {
             return nil
@@ -249,16 +271,8 @@ class NetworkManager {
     }
 
     private func extractMetaDescription(from html: String) -> String? {
-        let patterns = [
-            #"<meta[^>]+name=["']description["'][^>]+content=["']([^"']{1,360})["'][^>]*>"#,
-            #"<meta[^>]+content=["']([^"']{1,360})["'][^>]+name=["']description["'][^>]*>"#,
-            #"<meta[^>]+property=["']og:description["'][^>]+content=["']([^"']{1,360})["'][^>]*>"#,
-            #"<meta[^>]+content=["']([^"']{1,360})["'][^>]+property=["']og:description["'][^>]*>"#
-        ]
-
-        for pattern in patterns {
-            guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]),
-                  let match = regex.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
+        for regex in _ScraperRegex.metaDescription {
+            guard let match = regex.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
                   let range = Range(match.range(at: 1), in: html) else {
                 continue
             }
@@ -287,6 +301,18 @@ class RSSParserDelegate: NSObject, XMLParserDelegate {
     private var currentDescription = ""
     private var currentPubDate = ""
     private var currentThumbnailUrl: String? = nil
+    private let dateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        return formatter
+    }()
+    private static let dateFormats = [
+        "E, d MMM yyyy HH:mm:ss Z",
+        "yyyy-MM-dd'T'HH:mm:ssXXXXX",
+        "yyyy-MM-dd'T'HH:mm:ssZ",
+        "yyyy-MM-dd'T'HH:mm:ss.SSSZ",
+        "yyyy-MM-dd'T'HH:mm:ss'Z'"
+    ]
 
     func parser(_ parser: XMLParser, didStartElement elementName: String, namespaceURI: String?, qualifiedName qName: String?, attributes attributeDict: [String : String] = [:]) {
         currentElement = elementName
@@ -349,28 +375,18 @@ class RSSParserDelegate: NSObject, XMLParserDelegate {
 
                 // Try to parse pubDate into ISO8601
                 let dateString = currentPubDate.trimmingCharacters(in: .whitespacesAndNewlines)
-                let df = DateFormatter()
-                df.locale = Locale(identifier: "en_US_POSIX")
-
                 // Try different formats (incl. Atom's colon-offset "+09:00").
                 var date: Date? = nil
-                let formats = [
-                    "E, d MMM yyyy HH:mm:ss Z",
-                    "yyyy-MM-dd'T'HH:mm:ssXXXXX",
-                    "yyyy-MM-dd'T'HH:mm:ssZ",
-                    "yyyy-MM-dd'T'HH:mm:ss.SSSZ",
-                    "yyyy-MM-dd'T'HH:mm:ss'Z'"
-                ]
-                for format in formats {
-                    df.dateFormat = format
-                    if let d = df.date(from: dateString) {
+                for format in Self.dateFormats {
+                    dateFormatter.dateFormat = format
+                    if let d = dateFormatter.date(from: dateString) {
                         date = d
                         break
                     }
                 }
 
                 if let date = date {
-                    item.pubDate = ISO8601DateFormatter().string(from: date)
+                    item.pubDate = _networkISO8601.string(from: date)
                 } else {
                     item.pubDate = dateString
                 }

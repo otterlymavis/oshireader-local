@@ -83,6 +83,9 @@ struct SettingsView: View {
     @State private var newSelectedPlatforms = Set<String>()
     @State private var addingAliasForId: String? = nil
     @State private var newAliasText = ""
+    @State private var notificationTestMessage: String? = nil
+    @State private var notificationTestSucceeded = false
+    @State private var isSendingNotificationTest = false
     // API token lives in the Keychain now that ingestion runs on-device.
     @State private var twitterBearerToken = KeychainHelper.read(.twitterBearerToken) ?? ""
     @State private var autoTranslateReader = UserDefaults.standard.bool(
@@ -130,310 +133,152 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section(header: Text(i18n.t("profiles")), footer: Text(i18n.t("profilesFooter"))) {
-                    ForEach(profiles.profiles) { profile in
-                        HStack {
-                            Button {
-                                do { try db.switchProfile(to: profile.id) }
-                                catch { profileError = localizedProfileMessage(error) }
-                            } label: {
-                                HStack {
-                                    Image(systemName: profile.id == profiles.activeProfileID ? "checkmark.circle.fill" : "circle")
-                                    VStack(alignment: .leading) {
-                                        Text(profile.name)
-                                        if profile.id == profiles.activeProfileID { Text(i18n.t("active")).font(.caption).foregroundStyle(.secondary) }
-                                    }
-                                }
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityIdentifier("settings.profile.\(profile.id.uuidString)")
-
-                            Spacer()
-                            Button {
-                                profileNameMode = .rename
-                                profileToRename = profile.id
-                                profileName = profile.name
-                                profileError = ""
-                                showingProfileNameSheet = true
-                            } label: {
-                                Image(systemName: "pencil")
-                            }
-                            .accessibilityIdentifier("settings.profileRename.\(profile.id.uuidString)")
-
-                            Button(role: .destructive) {
-                                do { try db.deleteProfile(id: profile.id) }
-                                catch { profileError = localizedProfileMessage(error) }
-                            } label: {
-                                Image(systemName: "trash")
-                            }
-                            .accessibilityIdentifier("settings.profileDelete.\(profile.id.uuidString)")
-                        }
-                    }
-                    Button {
-                        profileNameMode = .create
-                        profileToRename = nil
-                        profileName = ""
-                        profileError = ""
-                        showingProfileNameSheet = true
-                    } label: {
-                        Label(i18n.t("addProfile"), systemImage: "plus")
-                    }
-                    .accessibilityIdentifier("settings.addProfileButton")
-
-                    Button {
-                        do {
-                            profileTransferDocument = LocalProfileTransferDocument(data: try db.exportProfileTransferData())
-                            showingProfileExporter = true
-                        } catch { profileError = localizedProfileMessage(error) }
-                    } label: {
-                        Label(i18n.t("exportProfile"), systemImage: "square.and.arrow.up")
-                    }
-                    .accessibilityIdentifier("settings.exportProfileButton")
-
-                    Button { showingProfileImporter = true } label: {
-                        Label(i18n.t("importProfile"), systemImage: "square.and.arrow.down")
-                    }
-                    .accessibilityIdentifier("settings.importProfileButton")
-                }
-
-                Section(header: Text(i18n.t("amebloBlogs")), footer: Text(i18n.t("amebloBlogsFooter"))) {
-                    TextField("https://ameblo.jp/blog-id", text: $amebloURL)
-                        .keyboardType(.URL)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .accessibilityIdentifier("settings.amebloURLField")
-
-                    TextField(i18n.t("blogTitleOptional"), text: $amebloTitle)
-                        .accessibilityIdentifier("settings.amebloTitleField")
-
-                    Button {
-                        switch db.addAmebloBlog(url: amebloURL, title: amebloTitle) {
-                        case .added:
-                            amebloURL = ""
-                            amebloTitle = ""
-                            amebloError = ""
-                        case .invalidURL:
-                            amebloError = i18n.t("amebloInvalidURL")
-                        case .duplicate:
-                            amebloError = i18n.t("amebloDuplicate")
-                        case .limitReached:
-                            amebloError = i18n.t("amebloLimitReached")
-                        }
-                    } label: {
-                        Label(i18n.t("addAmebloBlog"), systemImage: "plus.circle.fill")
-                    }
-                    .disabled(amebloURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    .accessibilityIdentifier("settings.addAmebloButton")
-
-                    if db.subscribedPlatforms.contains("ameblo") {
-                        Text(i18n.t("amebloEnabled"))
-                            .font(.caption)
-                            .foregroundColor(theme.colors.textMuted)
-                            .accessibilityIdentifier("settings.amebloSubscriptionState")
-                    }
-
-                    if !amebloError.isEmpty {
-                        Text(amebloError)
-                            .font(.caption)
-                            .foregroundColor(.red)
-                            .accessibilityIdentifier("settings.amebloError")
-                    }
-
-                    ForEach(db.amebloBlogs) { blog in
-                        HStack(spacing: 10) {
-                            Text("✏️")
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(blog.title ?? blog.amebaID)
-                                    .font(.subheadline.weight(.semibold))
-                                Text(blog.url)
-                                    .font(.caption)
-                                    .foregroundColor(theme.colors.textMuted)
-                            }
-                            Spacer()
-                            Button(role: .destructive) {
-                                db.removeAmebloBlog(id: blog.id)
-                            } label: {
-                                Image(systemName: "trash")
-                            }
-                            .accessibilityLabel(i18n.t("removeNamed").replacingOccurrences(of: "%@", with: blog.amebaID))
-                            .accessibilityIdentifier("settings.removeAmeblo.\(blog.amebaID)")
-                        }
-                        .accessibilityIdentifier("settings.amebloBlog.\(blog.amebaID)")
-                        .accessibilityElement(children: .contain)
-                    }
-                    .onDelete { offsets in
-                        for index in offsets {
-                            db.removeAmebloBlog(id: db.amebloBlogs[index].id)
-                        }
-                    }
-                }
+                localProfileSection
+                amebloSection
 
                 // Section: Keywords management
                 Section(header: Text(i18n.t("watchTerms"))) {
                     ForEach(db.terms) { term in
-                        VStack(alignment: .leading, spacing: 10) {
-                            HStack(alignment: .top, spacing: 10) {
-                                NavigationLink(destination: AvatarEditorView(keyword: term.keyword)) {
-                                    ZStack {
-                                        Circle()
-                                            .fill(theme.colors.divider)
-                                            .frame(width: 38, height: 38)
-                                        if let avatar = db.oshiAvatars[term.keyword], let url = URL(string: avatar) {
-                                            AsyncImage(url: url) { image in
-                                                image
-                                                    .resizable()
-                                                    .aspectRatio(contentMode: .fill)
-                                            } placeholder: {
-                                                Text("🎨")
-                                            }
-                                            .frame(width: 38, height: 38)
-                                            .clipShape(Circle())
-                                        } else {
+                        HStack {
+                            NavigationLink(destination: AvatarEditorView(keyword: term.keyword)) {
+                                ZStack {
+                                    Circle()
+                                        .fill(theme.colors.divider)
+                                        .frame(width: 38, height: 38)
+                                    if let avatar = db.oshiAvatars[term.keyword], let url = URL(string: avatar) {
+                                        AsyncImage(url: url) { image in
+                                            image
+                                                .resizable()
+                                                .aspectRatio(contentMode: .fill)
+                                        } placeholder: {
                                             Text("🎨")
-                                                .font(.body)
                                         }
-                                    }
-                                }
-                                .buttonStyle(PlainButtonStyle())
-                                .accessibilityIdentifier("settings.keywordAvatar.\(term.keyword)")
-
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(term.keyword)
-                                        .font(.subheadline)
-                                        .fontWeight(.semibold)
-                                        .foregroundColor(theme.colors.text)
-                                        .lineLimit(2)
-                                        .fixedSize(horizontal: false, vertical: true)
-                                    // Alias chips
-                                    if !term.aliases.isEmpty || addingAliasForId == term.id {
-                                        ScrollView(.horizontal, showsIndicators: false) {
-                                            HStack(spacing: 4) {
-                                                ForEach(term.aliases, id: \.self) { alias in
-                                                    HStack(spacing: 2) {
-                                                        Text(alias)
-                                                            .font(.caption2)
-                                                            .foregroundColor(theme.colors.textSub)
-                                                        Button {
-                                                            let updated = term.aliases.filter { $0 != alias }
-                                                            db.updateTerm(id: term.id, aliases: updated)
-                                                        } label: {
-                                                            Image(systemName: "xmark")
-                                                                .font(.system(size: 8, weight: .bold))
-                                                                .foregroundColor(theme.colors.textMuted)
-                                                        }
-                                                        .buttonStyle(.plain)
-                                                    }
-                                                    .padding(.horizontal, 6)
-                                                    .padding(.vertical, 3)
-                                                    .background(theme.colors.divider)
-                                                    .cornerRadius(99)
-                                                }
-                                                if addingAliasForId == term.id {
-                                                    TextField(i18n.t("keyword"), text: $newAliasText)
-                                                        .font(.caption2)
-                                                        .frame(minWidth: 80, maxWidth: 140)
-                                                        .autocorrectionDisabled()
-                                                        .textInputAutocapitalization(.never)
-                                                        .submitLabel(.done)
-                                                        .onSubmit { commitAlias(for: term) }
-                                                }
-                                                Button {
-                                                    if addingAliasForId == term.id {
-                                                        if term.aliases.count >= IngestionService.maximumAliasesPerTerm {
-                                                            showingAliasLimitMessage = true
-                                                            newAliasText = ""
-                                                            addingAliasForId = nil
-                                                            return
-                                                        }
-                                                        commitAlias(for: term)
-                                                    } else {
-                                                        newAliasText = ""
-                                                        addingAliasForId = term.id
-                                                    }
-                                                } label: {
-                                                    Image(systemName: addingAliasForId == term.id ? "checkmark" : "plus")
-                                                        .font(.system(size: 9, weight: .bold))
-                                                        .foregroundColor(theme.colors.primary)
-                                                        .frame(width: 20, height: 18)
-                                                        .background(theme.colors.primaryBg)
-                                                        .cornerRadius(99)
-                                                }
-                                                .buttonStyle(.plain)
-                                            }
-                                        }
+                                        .frame(width: 38, height: 38)
+                                        .clipShape(Circle())
                                     } else {
-                                        Button {
-                                            newAliasText = ""
-                                            addingAliasForId = term.id
-                                        } label: {
-                                            Label(i18n.t("addAlias"), systemImage: "plus")
-                                                .font(.caption2)
-                                                .foregroundColor(theme.colors.textMuted)
+                                        Text("🎨")
+                                            .font(.body)
+                                    }
+                                }
+                            }
+                            .buttonStyle(PlainButtonStyle())
+                            .accessibilityIdentifier("settings.keywordAvatar.\(term.keyword)")
+
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(term.keyword)
+                                    .font(.subheadline)
+                                    .fontWeight(.semibold)
+                                    .foregroundColor(theme.colors.text)
+                                // Alias chips
+                                if !term.aliases.isEmpty || addingAliasForId == term.id {
+                                    ScrollView(.horizontal, showsIndicators: false) {
+                                        HStack(spacing: 4) {
+                                            ForEach(term.aliases, id: \.self) { alias in
+                                                HStack(spacing: 2) {
+                                                    Text(alias)
+                                                        .font(.caption2)
+                                                        .foregroundColor(theme.colors.textSub)
+                                                    Button {
+                                                        let updated = term.aliases.filter { $0 != alias }
+                                                        db.updateTerm(id: term.id, aliases: updated)
+                                                    } label: {
+                                                        Image(systemName: "xmark")
+                                                            .font(.system(size: 8, weight: .bold))
+                                                            .foregroundColor(theme.colors.textMuted)
+                                                    }
+                                                    .buttonStyle(.plain)
+                                                }
+                                                .padding(.horizontal, 6)
+                                                .padding(.vertical, 3)
+                                                .background(theme.colors.divider)
+                                                .cornerRadius(99)
+                                            }
+                                            if addingAliasForId == term.id {
+                                                TextField(i18n.t("keyword"), text: $newAliasText)
+                                                    .font(.caption2)
+                                                    .frame(width: 80)
+                                                    .autocorrectionDisabled()
+                                                    .textInputAutocapitalization(.never)
+                                                    .submitLabel(.done)
+                                                    .onSubmit { commitAlias(for: term) }
+                                            }
+                                            Button {
+                                                if addingAliasForId == term.id {
+                                                    commitAlias(for: term)
+                                                } else {
+                                                    newAliasText = ""
+                                                    addingAliasForId = term.id
+                                                }
+                                            } label: {
+                                                Image(systemName: addingAliasForId == term.id ? "checkmark" : "plus")
+                                                    .font(.system(size: 9, weight: .bold))
+                                                    .foregroundColor(theme.colors.primary)
+                                                    .frame(width: 20, height: 18)
+                                                    .background(theme.colors.primaryBg)
+                                                    .cornerRadius(99)
+                                            }
+                                            .buttonStyle(.plain)
                                         }
-                                        .buttonStyle(.plain)
                                     }
+                                } else {
+                                    Button {
+                                        newAliasText = ""
+                                        addingAliasForId = term.id
+                                    } label: {
+                                        Label(i18n.t("addAlias"), systemImage: "plus")
+                                            .font(.caption2)
+                                            .foregroundColor(theme.colors.textMuted)
+                                    }
+                                    .buttonStyle(.plain)
                                 }
-                                .frame(maxWidth: .infinity, alignment: .leading)
-
-                                Toggle("", isOn: Binding(
-                                    get: { term.is_active },
-                                    set: { next in
-                                        db.updateTerm(id: term.id, isActive: next)
-                                    }
-                                ))
-                                .labelsHidden()
-                                .tint(theme.colors.primary)
-                                .accessibilityLabel(i18n.t("active"))
-                                .accessibilityIdentifier("settings.keywordToggle.\(term.keyword)")
                             }
+                            Spacer()
 
-                            HStack(spacing: 8) {
-                                Button {
-                                    let next = term.collection_mode == "all_info" ? "media_only" : "all_info"
-                                    db.updateTerm(id: term.id, collectionMode: next)
-                                } label: {
-                                    Label(term.collection_mode == "media_only" ? i18n.t("mediaOnly") : i18n.t("allInfo"),
-                                          systemImage: term.collection_mode == "media_only" ? "play.rectangle" : "doc.text")
-                                        .font(.caption)
-                                        .fontWeight(.semibold)
-                                        .lineLimit(1)
-                                        .padding(.horizontal, 9)
-                                        .padding(.vertical, 6)
-                                        .background(theme.colors.divider)
-                                        .foregroundColor(theme.colors.textSub)
-                                        .clipShape(Capsule())
-                                }
-                                .buttonStyle(PlainButtonStyle())
-                                .accessibilityIdentifier("settings.keywordMode.\(term.keyword)")
-
-                                Button(action: {
-                                    guard notificationTermBeingUpdated == nil else { return }
-                                    let next = !term.notify_on_new
-                                    notificationTermBeingUpdated = term.id
-                                    Task { @MainActor in
-                                        await setNotificationEnabled(next, for: term)
-                                        notificationTermBeingUpdated = nil
-                                    }
-                                }) {
-                                    Label(term.notify_on_new ? i18n.t("notificationsOn") : i18n.t("notificationsOff"),
-                                          systemImage: term.notify_on_new ? "bell.fill" : "bell.slash")
-                                        .font(.caption)
-                                        .fontWeight(.semibold)
-                                        .lineLimit(1)
-                                        .padding(.horizontal, 9)
-                                        .padding(.vertical, 6)
-                                        .background(term.notify_on_new ? theme.colors.primaryBg : theme.colors.divider)
-                                        .foregroundColor(term.notify_on_new ? theme.colors.primary : theme.colors.textMuted)
-                                        .clipShape(Capsule())
-                                }
-                                .buttonStyle(PlainButtonStyle())
-                                .disabled(notificationTermBeingUpdated != nil)
-                                .accessibilityIdentifier("settings.keywordBell.\(term.keyword)")
-
-                                Spacer()
+                            Button {
+                                let next = term.collection_mode == "all_info" ? "media_only" : "all_info"
+                                db.updateTerm(id: term.id, collectionMode: next)
+                            } label: {
+                                Text(term.collection_mode == "media_only" ? "📹" : "📄")
+                                    .font(.caption)
+                                    .fontWeight(.bold)
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 5)
+                                    .background(theme.colors.divider)
+                                    .foregroundColor(theme.colors.textSub)
+                                    .clipShape(Capsule())
                             }
+                            .buttonStyle(PlainButtonStyle())
+                            .accessibilityIdentifier("settings.keywordMode.\(term.keyword)")
 
-                            sourceSelectionMenu(for: term)
+                            sourceSelectionIconMenu(for: term)
+
+                            // Push notifications bell button
+                            Button {
+                                guard notificationTermBeingUpdated == nil else { return }
+                                let next = !term.notify_on_new
+                                notificationTermBeingUpdated = term.id
+                                Task { @MainActor in
+                                    await setNotificationEnabled(next, for: term)
+                                    notificationTermBeingUpdated = nil
+                                }
+                            } label: {
+                                Image(systemName: term.notify_on_new ? "bell.fill" : "bell.slash")
+                                    .foregroundColor(term.notify_on_new ? theme.colors.primary : theme.colors.textMuted)
+                                    .font(.body)
+                                    .padding(.horizontal, 8)
+                            }
+                            .buttonStyle(PlainButtonStyle())
+                            .disabled(notificationTermBeingUpdated != nil)
+                            .accessibilityIdentifier("settings.keywordBell.\(term.keyword)")
+
+                            Toggle("", isOn: Binding(
+                                get: { term.is_active },
+                                set: { next in
+                                    db.updateTerm(id: term.id, isActive: next)
+                                }
+                            ))
+                            .tint(theme.colors.primary)
+                            .accessibilityIdentifier("settings.keywordToggle.\(term.keyword)")
                         }
                         .accessibilityIdentifier("settings.keywordRow.\(term.keyword)")
                     }
@@ -456,45 +301,49 @@ struct SettingsView: View {
                 }
                 
                 // Section: Subscribed Platforms
-                Section(header: Text(i18n.t("platformSettings"))) {
-                    ForEach(allPlatforms, id: \.0) { key, label in
-                        let isSubscribed = db.subscribedPlatforms.contains(key)
-                        Toggle(label, isOn: Binding(
-                            get: { isSubscribed },
-                            set: { value in
-                                var list = db.subscribedPlatforms
-                                if value {
-                                    if !list.contains(key) { list.append(key) }
-                                } else {
-                                    list.removeAll(where: { $0 == key })
-                                }
-                                db.setSubscribedPlatforms(platforms: list)
-                            }
-                        ))
-                        .tint(theme.colors.primary)
-                        .accessibilityIdentifier("settings.platformToggle.\(key)")
+                Section {
+                    Menu {
+                        ForEach(allPlatforms, id: \.0) { key, label in
+                            Toggle(
+                                label,
+                                isOn: Binding(
+                                    get: { db.subscribedPlatforms.contains(key) },
+                                    set: { isSubscribed in
+                                        setPlatformSubscription(key, isSubscribed: isSubscribed)
+                                    }
+                                )
+                            )
+                            .accessibilityIdentifier("settings.platformToggle.\(key)")
+                        }
+                    } label: {
+                        HStack {
+                            Label(i18n.t("platformSettings"), systemImage: "dot.radiowaves.left.and.right")
+                                .foregroundColor(theme.colors.text)
+                            Spacer()
+                            Text("\(db.subscribedPlatforms.count)/\(allPlatforms.count)")
+                                .font(.subheadline)
+                                .foregroundColor(theme.colors.textMuted)
+                            Image(systemName: "chevron.up.chevron.down")
+                                .font(.caption2)
+                                .foregroundColor(theme.colors.textMuted)
+                        }
                     }
+                    .accessibilityIdentifier("settings.platformMenu")
                 }
 
-                Section(
-                    header: Text(i18n.t("localAlertsSection")),
-                    footer: Text(i18n.t("localAlertsFooter"))
-                ) {
+                Section(header: Text(i18n.t("notificationsSection"))) {
                     HStack {
-                        Label(i18n.t("localAlertPermission"), systemImage: "bell.badge")
+                        Label(i18n.t("pushNotifications"), systemImage: "bell.badge")
                         Spacer()
                         Text(notificationStatusText)
                             .foregroundColor(notifications.canScheduleNotifications ? theme.colors.primary : theme.colors.textMuted)
                     }
                     .accessibilityIdentifier("settings.notificationStatus")
 
-                    HStack {
-                        Label(i18n.t("localAlertBackgroundRefresh"), systemImage: "arrow.clockwise")
-                        Spacer()
-                        Text(backgroundRefreshStatusText)
-                            .foregroundColor(backgroundRefreshStatusColor)
-                    }
-                    .accessibilityIdentifier("settings.localAlertBackgroundStatus")
+                    Label(i18n.t("notificationSetupHint"), systemImage: "info.circle")
+                        .font(.caption)
+                        .foregroundColor(theme.colors.textMuted)
+                        .accessibilityIdentifier("settings.notificationSetupHint")
 
                     switch notifications.authorizationStatus {
                     case .notDetermined:
@@ -516,14 +365,34 @@ struct SettingsView: View {
                         }
                         .accessibilityIdentifier("settings.openSettingsButton")
                     default:
+#if DEBUG
                         Button {
-                            Task { try? await notifications.sendTestNotification() }
+                            Task { await sendTestNotification() }
                         } label: {
-                            Label(i18n.t("sendTestNotification"), systemImage: "paperplane.fill")
+                            Label(
+                                isSendingNotificationTest ? i18n.t("notifLocalSending") : i18n.t("sendTestNotification"),
+                                systemImage: isSendingNotificationTest ? "clock" : "paperplane.fill"
+                            )
                                 .foregroundColor(theme.colors.primary)
                         }
+                        .disabled(isSendingNotificationTest)
                         .accessibilityIdentifier("settings.testNotificationButton")
+#else
+                        EmptyView()
+#endif
                     }
+
+#if DEBUG
+                    if let notificationTestMessage {
+                        Label(
+                            notificationTestMessage,
+                            systemImage: notificationTestSucceeded ? "checkmark.circle.fill" : "exclamationmark.triangle.fill"
+                        )
+                        .font(.caption)
+                        .foregroundColor(notificationTestSucceeded ? theme.colors.primary : .orange)
+                        .accessibilityIdentifier("settings.notificationTestResult")
+                    }
+#endif
                 }
 
                 Section(header: Text(i18n.t("readerSection"))) {
@@ -532,18 +401,6 @@ struct SettingsView: View {
                         .accessibilityIdentifier("settings.autoTranslateToggle")
                 }
 
-                Section(
-                    header: Text(i18n.t("credentialsSection")),
-                    footer: Text(i18n.t("credentialsFooter"))
-                ) {
-                    SecureField("X Bearer Token", text: $twitterBearerToken)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .onSubmit { KeychainHelper.save(.twitterBearerToken, twitterBearerToken) }
-                        .onDisappear { KeychainHelper.save(.twitterBearerToken, twitterBearerToken) }
-                        .accessibilityIdentifier("settings.twitterBearerTokenField")
-                }
-                
                 // Section: Customizations
                 Section(header: Text(i18n.t("appearanceSection"))) {
                     Picker(i18n.t("appTheme"), selection: $theme.mode) {
@@ -553,7 +410,7 @@ struct SettingsView: View {
                     }
                     .pickerStyle(.segmented)
 
-                    Picker(i18n.t("style"), selection: $theme.style) {
+                    Picker(i18n.t("themeStyle"), selection: $theme.style) {
                         ForEach(AppColorStyle.allCases) { style in
                             Text(displayName(for: style)).tag(style)
                         }
@@ -577,7 +434,7 @@ struct SettingsView: View {
 
                     Picker(i18n.t("font"), selection: $appearance.fontChoice) {
                         ForEach(AppFontChoice.allCases) { choice in
-                            Text(displayName(for: choice)).tag(choice)
+                            Text(choice.displayName).tag(choice)
                         }
                     }
                     .pickerStyle(.segmented)
@@ -632,14 +489,14 @@ struct SettingsView: View {
                     Button {
                         beginEncryptedExport()
                     } label: {
-                        Label(i18n.t("exportEncryptedBackup"), systemImage: "lock.shield")
+                        Label(i18n.t("exportEncryptedBackup"), systemImage: "lock.square.stack")
                     }
                     .accessibilityIdentifier("settings.exportEncryptedBackupButton")
 
                     Button {
                         showingEncryptedBackupImporter = true
                     } label: {
-                        Label(i18n.t("importEncryptedBackup"), systemImage: "lock.shield.fill")
+                        Label(i18n.t("importEncryptedBackup"), systemImage: "lock.open")
                     }
                     .accessibilityIdentifier("settings.importEncryptedBackupButton")
 
@@ -652,7 +509,7 @@ struct SettingsView: View {
                 }
                 
             }
-            .font(.system(size: 13))
+            .font(appearance.font(size: 13))
             .accessibilityIdentifier("settings.screen")
             .navigationTitle(i18n.t("settingsTitle"))
             .navigationBarTitleDisplayMode(.inline)
@@ -680,33 +537,30 @@ struct SettingsView: View {
                         Text(i18n.t("selectedSources")).tag(SourceMode.selected)
                     }
                     .pickerStyle(.segmented)
-
                     if newSourceMode == .selected {
-                        Menu {
-                            ForEach(selectablePlatforms, id: \.0) { key, label in
-                                Button {
-                                    if newSelectedPlatforms.contains(key) {
-                                        newSelectedPlatforms.remove(key)
-                                    } else {
-                                        newSelectedPlatforms.insert(key)
+                        ScrollView {
+                            LazyVGrid(columns: [GridItem(.adaptive(minimum: 125), spacing: 8)], spacing: 8) {
+                                ForEach(allPlatforms, id: \.0) { key, label in
+                                    Button {
+                                        if newSelectedPlatforms.contains(key) {
+                                            newSelectedPlatforms.remove(key)
+                                        } else {
+                                            newSelectedPlatforms.insert(key)
+                                        }
+                                    } label: {
+                                        HStack {
+                                            Image(systemName: newSelectedPlatforms.contains(key) ? "checkmark.square.fill" : "square")
+                                            Text(label).lineLimit(1)
+                                        }
+                                        .font(.caption)
+                                        .foregroundColor(theme.colors.text)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
                                     }
-                                } label: {
-                                    Label(label, systemImage: newSelectedPlatforms.contains(key) ? "checkmark.square" : "square")
                                 }
-                                .accessibilityIdentifier("settings.newKeywordSource.\(key)")
                             }
-                        } label: {
-                            Label(
-                                newSelectedPlatforms.isEmpty
-                                    ? i18n.t("chooseSources")
-                                    : i18n.tFormat("sourcesSelectedCount", newSelectedPlatforms.count),
-                                systemImage: "line.3.horizontal.decrease.circle"
-                            )
-                            .frame(maxWidth: .infinity, alignment: .leading)
                         }
-                        .accessibilityIdentifier("settings.newKeywordSources")
+                        .frame(maxHeight: 90)
                     }
-                    
                     HStack(spacing: 10) {
                         Button(i18n.t("cancel")) {
                             newKeyword = ""
@@ -762,11 +616,12 @@ struct SettingsView: View {
                     
                     Spacer()
                 }
+                .accessibilityIdentifier("settings.addKeywordSheet")
                 .padding()
                 .background(theme.colors.bg)
                 .presentationDetents([.medium])
             }
-            .alert(i18n.t("clearAllDataTitle"), isPresented: $showingClearAllAlert) {
+            .alert(i18n.t("clearAllDataAlert"), isPresented: $showingClearAllAlert) {
                 Button(i18n.t("cancel"), role: .cancel) {}
                 Button(i18n.t("delete"), role: .destructive) {
                     db.clearAllData()
@@ -938,6 +793,182 @@ struct SettingsView: View {
         }
     }
 
+    private var localProfileSection: some View {
+        Section(header: Text(i18n.t("profiles")), footer: Text(i18n.t("profilesFooter"))) {
+            ForEach(profiles.profiles) { profile in
+                HStack {
+                    Button {
+                        do {
+                            try db.switchProfile(to: profile.id)
+                        } catch {
+                            profileError = localizedProfileMessage(error)
+                        }
+                    } label: {
+                        HStack {
+                            Image(systemName: profile.id == profiles.activeProfileID ? "checkmark.circle.fill" : "circle")
+                            VStack(alignment: .leading) {
+                                Text(profile.name)
+                                if profile.id == profiles.activeProfileID {
+                                    Text(i18n.t("active"))
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("settings.profile.\(profile.id.uuidString)")
+
+                    Spacer()
+
+                    Button {
+                        profileNameMode = .rename
+                        profileToRename = profile.id
+                        profileName = profile.name
+                        profileError = ""
+                        showingProfileNameSheet = true
+                    } label: {
+                        Image(systemName: "pencil")
+                    }
+                    .accessibilityIdentifier("settings.profileRename.\(profile.id.uuidString)")
+
+                    Button(role: .destructive) {
+                        do {
+                            try db.deleteProfile(id: profile.id)
+                        } catch {
+                            profileError = localizedProfileMessage(error)
+                        }
+                    } label: {
+                        Image(systemName: "trash")
+                    }
+                    .accessibilityIdentifier("settings.profileDelete.\(profile.id.uuidString)")
+                }
+            }
+
+            Button {
+                profileNameMode = .create
+                profileToRename = nil
+                profileName = ""
+                profileError = ""
+                showingProfileNameSheet = true
+            } label: {
+                Label(i18n.t("addProfile"), systemImage: "plus")
+            }
+            .accessibilityIdentifier("settings.addProfileButton")
+
+            Button {
+                do {
+                    profileTransferDocument = LocalProfileTransferDocument(data: try db.exportProfileTransferData())
+                    showingProfileExporter = true
+                } catch {
+                    profileError = localizedProfileMessage(error)
+                }
+            } label: {
+                Label(i18n.t("exportProfile"), systemImage: "square.and.arrow.up")
+            }
+            .accessibilityIdentifier("settings.exportProfileButton")
+
+            Button {
+                showingProfileImporter = true
+            } label: {
+                Label(i18n.t("importProfile"), systemImage: "square.and.arrow.down")
+            }
+            .accessibilityIdentifier("settings.importProfileButton")
+        }
+    }
+
+    private var amebloSection: some View {
+        Section(header: Text(i18n.t("amebloBlogs")), footer: Text(i18n.t("amebloBlogsFooter"))) {
+            TextField("https://ameblo.jp/blog-id", text: $amebloURL)
+                .keyboardType(.URL)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .accessibilityIdentifier("settings.amebloURLField")
+
+            TextField(i18n.t("blogTitleOptional"), text: $amebloTitle)
+                .accessibilityIdentifier("settings.amebloTitleField")
+
+            Button {
+                switch db.addAmebloBlog(url: amebloURL, title: amebloTitle) {
+                case .added:
+                    amebloURL = ""
+                    amebloTitle = ""
+                    amebloError = ""
+                case .invalidURL:
+                    amebloError = i18n.t("amebloInvalidURL")
+                case .duplicate:
+                    amebloError = i18n.t("amebloDuplicate")
+                case .limitReached:
+                    amebloError = i18n.t("amebloLimitReached")
+                }
+            } label: {
+                Label(i18n.t("addAmebloBlog"), systemImage: "plus.circle.fill")
+            }
+            .disabled(amebloURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .accessibilityIdentifier("settings.addAmebloButton")
+
+            if db.subscribedPlatforms.contains("ameblo") {
+                Text(i18n.t("amebloEnabled"))
+                    .font(.caption)
+                    .foregroundColor(theme.colors.textMuted)
+                    .accessibilityIdentifier("settings.amebloSubscriptionState")
+            }
+
+            if !amebloError.isEmpty {
+                Text(amebloError)
+                    .font(.caption)
+                    .foregroundColor(.red)
+                    .accessibilityIdentifier("settings.amebloError")
+            }
+
+            ForEach(db.amebloBlogs) { blog in
+                HStack(spacing: 10) {
+                    Text("✏️")
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(blog.title ?? blog.amebaID)
+                            .font(.subheadline.weight(.semibold))
+                        Text(blog.url)
+                            .font(.caption)
+                            .foregroundColor(theme.colors.textMuted)
+                    }
+                    Spacer()
+                    Button(role: .destructive) {
+                        db.removeAmebloBlog(id: blog.id)
+                    } label: {
+                        Image(systemName: "trash")
+                    }
+                    .accessibilityLabel(i18n.tFormat("removeNamed", blog.amebaID))
+                    .accessibilityIdentifier("settings.removeAmeblo.\(blog.amebaID)")
+                }
+                .accessibilityIdentifier("settings.amebloBlog.\(blog.amebaID)")
+                .accessibilityElement(children: .contain)
+            }
+            .onDelete { offsets in
+                for index in offsets {
+                    db.removeAmebloBlog(id: db.amebloBlogs[index].id)
+                }
+            }
+        }
+    }
+
+    private func sendTestNotification() async {
+        guard !isSendingNotificationTest else { return }
+        isSendingNotificationTest = true
+        defer { isSendingNotificationTest = false }
+
+        notificationTestMessage = i18n.t("notifLocalSending")
+        notificationTestSucceeded = false
+
+        do {
+            try await notifications.sendTestNotification()
+            notificationTestMessage = i18n.t("notifLocalTestSent")
+            notificationTestSucceeded = true
+        } catch {
+            notificationTestMessage = i18n.t("notifLocalTestFailed")
+            notificationTestSucceeded = false
+        }
+    }
+
     private func beginEncryptedExport() {
         encryptedBackupPassword = ""
         encryptedBackupConfirmation = ""
@@ -1049,17 +1080,26 @@ struct SettingsView: View {
 
     private func commitAlias(for term: WatchTerm) {
         let trimmed = newAliasText.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmed.isEmpty,
-           !term.aliases.contains(trimmed),
-           term.aliases.count < IngestionService.maximumAliasesPerTerm {
+        guard !trimmed.isEmpty else {
+            newAliasText = ""
+            addingAliasForId = nil
+            return
+        }
+        guard !term.aliases.contains(trimmed) else {
+            newAliasText = ""
+            addingAliasForId = nil
+            return
+        }
+        if term.aliases.count >= IngestionService.maximumAliasesPerTerm {
+            showingAliasLimitMessage = true
+        } else {
             db.updateTerm(id: term.id, aliases: term.aliases + [trimmed])
         }
         newAliasText = ""
         addingAliasForId = nil
     }
 
-    @ViewBuilder
-    private func sourceSelectionMenu(for term: WatchTerm) -> some View {
+    private func sourceSelectionIconMenu(for term: WatchTerm) -> some View {
         Menu {
             Button {
                 db.updateTerm(id: term.id, sourceMode: .all, selectedPlatforms: [])
@@ -1067,44 +1107,46 @@ struct SettingsView: View {
                 Label(i18n.t("allSources"), systemImage: term.source_mode == .all ? "checkmark" : "globe")
             }
 
-            Divider()
-
-            ForEach(selectablePlatforms, id: \.0) { key, label in
+            ForEach(allPlatforms, id: \.0) { key, label in
                 Button {
                     var selected = term.source_mode == .selected ? Set(term.selected_platforms) : []
-                    if selected.contains(key) {
+                    if term.source_mode == .all {
+                        selected = [key]
+                    } else if selected.contains(key) {
                         selected.remove(key)
                     } else {
                         selected.insert(key)
                     }
-                    db.updateTerm(
-                        id: term.id,
-                        sourceMode: selected.isEmpty ? .all : .selected,
-                        selectedPlatforms: Array(selected).sorted()
-                    )
+                    guard !selected.isEmpty else { return }
+                    db.updateTerm(id: term.id, sourceMode: .selected, selectedPlatforms: Array(selected).sorted())
                 } label: {
                     Label(label, systemImage: term.source_mode == .selected && term.selected_platforms.contains(key) ? "checkmark.square" : "square")
                 }
                 .accessibilityIdentifier("settings.keywordSource.\(term.keyword).\(key)")
             }
         } label: {
-            Label(
-                term.source_mode == .all
-                    ? i18n.t("allSources")
-                    : i18n.tFormat("sourcesSelectedCount", term.selected_platforms.count),
-                systemImage: term.source_mode == .all ? "globe" : "line.3.horizontal.decrease.circle"
-            )
-            .font(.caption)
-            .foregroundColor(theme.colors.textMuted)
+            Image(systemName: term.source_mode == .all ? "globe" : "line.3.horizontal.decrease.circle")
+                .font(.caption)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(theme.colors.divider)
+                .clipShape(Capsule())
         }
         .accessibilityIdentifier("settings.keywordSources.\(term.keyword)")
     }
 
-    private func displayName(for choice: AppFontChoice) -> String {
-        switch choice {
-        case .normal: return i18n.t("fontNormal")
-        case .comicSans: return i18n.t("fontComicSans")
+    private func setPlatformSubscription(_ key: String, isSubscribed: Bool) {
+        var list = db.subscribedPlatforms
+        if isSubscribed {
+            if !list.contains(key) { list.append(key) }
+        } else {
+            list.removeAll(where: { $0 == key })
         }
+        db.setSubscribedPlatforms(platforms: list)
+    }
+
+    private func displayName(for choice: AppFontChoice) -> String {
+        choice.displayName
     }
 
     private func displayName(for choice: AppFontSizeChoice) -> String {

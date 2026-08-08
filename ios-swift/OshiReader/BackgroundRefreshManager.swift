@@ -60,9 +60,7 @@ final class BackgroundRefreshManager {
             BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: Self.taskIdentifier)
             try BGTaskScheduler.shared.submit(request)
         } catch {
-            #if DEBUG
-            print("Background refresh scheduling failed: \(error)")
-            #endif
+            AppLogger.network.warning("Background refresh scheduling failed: \(error.localizedDescription)")
         }
     }
 

@@ -8,17 +8,13 @@ struct OshiView: View {
     
     @State private var activePage = 0
     @State private var showEditorKeyword: String? = nil
-    
-    var sortedTerms: [WatchTerm] {
-        db.terms.sorted(by: { $0.created_at < $1.created_at })
-    }
+    @State private var cachedSortedTerms: [WatchTerm]
+    @State private var cachedFeedCountsByKeyword: [String: Int]
 
-    @State private var cachedFeedCounts: [String: Int] = [:]
-
-    private func updateFeedCounts() {
-        cachedFeedCounts = db.feedItems.reduce(into: [:]) { counts, item in
-            counts[item.watch_term_keyword, default: 0] += 1
-        }
+    init() {
+        let db = LocalDB.shared
+        _cachedSortedTerms = State(initialValue: Self.sortedTerms(from: db.terms))
+        _cachedFeedCountsByKeyword = State(initialValue: Self.feedCountsByKeyword(from: db.feedItems))
     }
     
     var body: some View {
@@ -26,7 +22,7 @@ struct OshiView: View {
             ZStack {
                 theme.colors.bg.ignoresSafeArea()
                 
-                if sortedTerms.isEmpty {
+                if cachedSortedTerms.isEmpty {
                     VStack(spacing: 12) {
                         Text("(ﾉ◕ヮ◕)ﾉ*:･ﾟ✧")
                             .font(.title)
@@ -48,7 +44,7 @@ struct OshiView: View {
                                 .fontWeight(.bold)
                                 .foregroundColor(theme.colors.text)
                             Spacer()
-                            Text(i18n.tFormat("oshiTrackingCount", sortedTerms.count))
+                            Text(i18n.tFormat("oshiTrackingCount", cachedSortedTerms.count))
                                 .font(.caption)
                                 .foregroundColor(theme.colors.textMuted)
                         }
@@ -65,9 +61,9 @@ struct OshiView: View {
                         
                         // TabView Pager for horizontal paging
                         TabView(selection: $activePage) {
-                            ForEach(0..<sortedTerms.count, id: \.self) { idx in
-                                let term = sortedTerms[idx]
-                                let count = cachedFeedCounts[term.keyword, default: 0]
+                            ForEach(cachedSortedTerms.indices, id: \.self) { idx in
+                                let term = cachedSortedTerms[idx]
+                                let count = cachedFeedCountsByKeyword[term.keyword, default: 0]
                                 let layers = db.compositions[term.keyword] ?? []
                                 
                                 OshiPage(term: term, count: count, layers: layers, theme: theme, i18n: i18n) {
@@ -79,10 +75,10 @@ struct OshiView: View {
                         .tabViewStyle(.page(indexDisplayMode: .never))
                         
                         // Custom Page Dots
-                        if sortedTerms.count > 1 {
+                        if cachedSortedTerms.count > 1 {
                             HStack(spacing: 7) {
-                                ForEach(0..<sortedTerms.count, id: \.self) { idx in
-                                    Capsule()
+                                ForEach(cachedSortedTerms.indices, id: \.self) { idx in
+                                    Circle()
                                         .frame(width: idx == activePage ? 14 : 6, height: 6)
                                         .foregroundColor(idx == activePage ? theme.colors.primary : theme.colors.border)
                                         .animation(.spring(), value: activePage)
@@ -93,17 +89,47 @@ struct OshiView: View {
                     }
                 }
             }
-            .navigationTitle(i18n.t("myOshiTitle"))
+            .navigationTitle(i18n.t("oshiListTitle"))
             .navigationBarTitleDisplayMode(.inline)
             .navigationDestination(item: $showEditorKeyword) { keyword in
                 AvatarEditorView(keyword: keyword)
             }
             .accessibilityIdentifier("oshi.screen")
-            .onAppear { updateFeedCounts() }
-            .onChange(of: sortedTerms.count) { _, count in
-                activePage = min(activePage, max(0, count - 1))
+            .onAppear {
+                rebuildOshiCache()
             }
-            .onChange(of: db.feedItems) { _, _ in updateFeedCounts() }
+            .onChange(of: db.terms) {
+                rebuildOshiCache()
+            }
+            .onChange(of: db.feedItems) {
+                rebuildOshiCache()
+            }
+        }
+    }
+
+    private static func sortedTerms(from terms: [WatchTerm]) -> [WatchTerm] {
+        terms.sorted(by: { $0.created_at < $1.created_at })
+    }
+
+    private static func feedCountsByKeyword(from feedItems: [FeedItem]) -> [String: Int] {
+        feedItems.reduce(into: [:]) { counts, item in
+            counts[item.watch_term_keyword, default: 0] += 1
+        }
+    }
+
+    private func rebuildOshiCache() {
+        let sortedTerms = Self.sortedTerms(from: db.terms)
+        if cachedSortedTerms != sortedTerms {
+            cachedSortedTerms = sortedTerms
+        }
+
+        let feedCounts = Self.feedCountsByKeyword(from: db.feedItems)
+        if cachedFeedCountsByKeyword != feedCounts {
+            cachedFeedCountsByKeyword = feedCounts
+        }
+
+        if activePage >= sortedTerms.count {
+            activePage = max(sortedTerms.count - 1, 0)
         }
     }
 }
@@ -115,6 +141,9 @@ struct OshiPage: View {
     let theme: ThemeManager
     let i18n: I18nManager
     let onEdit: () -> Void
+
+    @StateObject private var db = LocalDB.shared
+    @State private var settingWallpaper = false
     
     var body: some View {
         GeometryReader { geometry in
@@ -186,7 +215,7 @@ struct OshiPage: View {
                                 .padding(.vertical, 3)
                                 .background(theme.colors.primaryBg)
                                 .foregroundColor(theme.colors.primary)
-                                .clipShape(Capsule())
+                                .cornerRadius(99)
                             
                             Text(term.collection_mode == "media_only" ? "📹 " + i18n.t("mediaOnly") : "📄 " + i18n.t("allInfo"))
                                 .font(.system(size: 12, weight: .medium))
@@ -194,7 +223,7 @@ struct OshiPage: View {
                                 .padding(.vertical, 3)
                                 .background(theme.colors.divider)
                                 .foregroundColor(theme.colors.textMuted)
-                                .clipShape(Capsule())
+                                .cornerRadius(99)
                             
                             Circle()
                                 .frame(width: 8, height: 8)
@@ -204,25 +233,54 @@ struct OshiPage: View {
                     
                     Spacer()
                     
-                    Button(action: onEdit) {
-                        HStack(spacing: 4) {
-                            Text("✏️")
-                            Text(i18n.t("edit"))
+                    VStack(alignment: .trailing, spacing: 8) {
+                        Button(action: onEdit) {
+                            HStack(spacing: 4) {
+                                Text("✏️")
+                                Text(i18n.t("edit"))
+                            }
+                            .font(.system(size: 13, weight: .bold))
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 9)
+                            .background(theme.colors.primaryBg)
+                            .foregroundColor(theme.colors.primary)
+                            .cornerRadius(12)
                         }
-                        .font(.system(size: 13, weight: .bold))
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 9)
-                        .background(theme.colors.primaryBg)
-                        .foregroundColor(theme.colors.primary)
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .accessibilityIdentifier("oshi.editButton.\(term.keyword)")
+
+                        Button {
+                            Task { await setCurrentAvatarAsWallpaper() }
+                        } label: {
+                            Text(settingWallpaper ? "..." : i18n.t("setAsWallpaper"))
+                                .font(.system(size: 12, weight: .bold))
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 8)
+                                .background(theme.colors.primary)
+                                .foregroundColor(.white)
+                                .cornerRadius(12)
+                        }
+                        .disabled(layers.isEmpty || settingWallpaper)
+                        .opacity(layers.isEmpty ? 0.45 : 1.0)
+                        .accessibilityIdentifier("oshi.setWallpaperButton.\(term.keyword)")
                     }
-                    .accessibilityIdentifier("oshi.editButton.\(term.keyword)")
                 }
                 .padding(18)
                 .background(theme.colors.card)
                 
                 Spacer()
             }
+        }
+    }
+
+    private func setCurrentAvatarAsWallpaper() async {
+        guard !layers.isEmpty, !settingWallpaper else { return }
+        settingWallpaper = true
+        defer { settingWallpaper = false }
+
+        if let fileName = await WallpaperRenderer.render(layers: layers) {
+            db.setWallpaper(url: fileName)
+        } else if let topLayer = layers.sorted(by: { $0.zIndex < $1.zIndex }).last {
+            db.setWallpaper(url: topLayer.imageUrl)
         }
     }
 }

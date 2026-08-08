@@ -10,7 +10,16 @@ struct OshiReaderApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            if Self.isUnitTesting {
+                Color.clear
+            } else {
+                ContentView()
+            }
         }
+    }
+
+    private static var isUnitTesting: Bool {
+        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil ||
+            NSClassFromString("XCTestCase") != nil
     }
 }

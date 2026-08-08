@@ -17,8 +17,10 @@ struct AvatarEditorView: View {
     @State private var activeCategory: String? = nil // Nil = popular
     @State private var searchingStickers = false
     @State private var saving = false
+    @State private var settingWallpaper = false
     
-    // Drag gestures temporary starting state
+    // Drag gesture state - isDragging gates start-position capture
+    @State private var isDragging = false
     @State private var startX: Double = 0.0
     @State private var startY: Double = 0.0
     @State private var startCropX: Double = 0.0
@@ -121,19 +123,20 @@ struct AvatarEditorView: View {
                                         if selectedId != layer.id {
                                             selectedId = layer.id
                                             cropMode = false
+                                            isDragging = false
                                         }
-                                        
-                                        // On drag start values record (since gesture state updates continuously, check if starting)
-                                        if value.translation == .zero {
+
+                                        if !isDragging {
+                                            isDragging = true
                                             startX = layer.x
                                             startY = layer.y
                                             startCropX = layer.cropX ?? 0.0
                                             startCropY = layer.cropY ?? 0.0
                                         }
-                                        
+
                                         let dx = value.translation.width / scaleFactor
                                         let dy = value.translation.height / scaleFactor
-                                        
+
                                         if let idx = layers.firstIndex(where: { $0.id == layer.id }) {
                                             if cropMode {
                                                 var modified = layers[idx]
@@ -143,7 +146,6 @@ struct AvatarEditorView: View {
                                                 layers[idx].cropX = clamped.cropX
                                                 layers[idx].cropY = clamped.cropY
                                             } else {
-                                                // Clamp movements inside canvas
                                                 let maxX = 300.0 - (baseSize * layer.scale)
                                                 let maxY = 300.0 - (baseSize * layer.scale)
                                                 layers[idx].x = max(0.0, min(maxX, startX + dx))
@@ -151,6 +153,7 @@ struct AvatarEditorView: View {
                                             }
                                         }
                                     }
+                                    .onEnded { _ in isDragging = false }
                             )
                         }
                     }
@@ -169,9 +172,8 @@ struct AvatarEditorView: View {
                         Button(action: {
                             if activeLayer != nil { cropMode.toggle() }
                         }) {
-                            Label(cropMode ? i18n.t("move") : i18n.t("crop"), systemImage: cropMode ? "arrow.up.and.down.and.arrow.left.and.right" : "crop")
+                            Text(cropMode ? i18n.t("moveModeBtn") : i18n.t("cropModeBtn"))
                                 .font(.system(size: 11, weight: .bold))
-                                .labelStyle(.titleAndIcon)
                                 .padding(.horizontal, 12)
                                 .padding(.vertical, 6)
                                 .background(cropMode ? theme.colors.primaryBg : theme.colors.divider)
@@ -183,17 +185,17 @@ struct AvatarEditorView: View {
                         .accessibilityIdentifier("avatar.cropButton")
                         
                         if cropMode {
-                            toolbarIconBtn(i18n.t("zoomIn"), systemImage: "plus.magnifyingglass", needsSelection: false) { cropZoom(0.15) }
-                            toolbarIconBtn(i18n.t("zoomOut"), systemImage: "minus.magnifyingglass", needsSelection: false) { cropZoom(-0.15) }
-                            toolbarIconBtn(i18n.t("fit"), systemImage: "arrow.down.right.and.arrow.up.left", needsSelection: false) { resetCrop() }
+                            toolbarBtn(i18n.t("zoomIn"), needsSelection: false) { cropZoom(0.15) }
+                            toolbarBtn(i18n.t("zoomOut"), needsSelection: false) { cropZoom(-0.15) }
+                            toolbarBtn(i18n.t("fitToCanvas"), needsSelection: false) { resetCrop() }
                         }
 
                         Divider().frame(height: 16)
 
-                        toolbarIconBtn(i18n.t("scaleUp"), systemImage: "plus.circle", a11y: "avatar.scaleUpButton") { scaleLayer(0.15) }
-                        toolbarIconBtn(i18n.t("scaleDown"), systemImage: "minus.circle", a11y: "avatar.scaleDownButton") { scaleLayer(-0.15) }
-                        toolbarIconBtn(i18n.t("rotateLeft"), systemImage: "rotate.left") { rotateLayer(-15) }
-                        toolbarIconBtn(i18n.t("rotateRight"), systemImage: "rotate.right") { rotateLayer(15) }
+                        toolbarBtn("＋", a11y: "avatar.scaleUpButton", size: 12) { scaleLayer(0.15) }
+                        toolbarBtn("－", a11y: "avatar.scaleDownButton", size: 12) { scaleLayer(-0.15) }
+                        toolbarBtn("⟲", size: 12) { rotateLayer(-15) }
+                        toolbarBtn("⟳", size: 12) { rotateLayer(15) }
                         toolbarBtn(i18n.t("layerForward")) { bringForward() }
                         toolbarBtn(i18n.t("layerBack")) { sendBack() }
                         toolbarBtn(i18n.t("delete"), a11y: "avatar.deleteLayerButton", destructive: true) { deleteSelected() }
@@ -224,7 +226,7 @@ struct AvatarEditorView: View {
                     Button(action: {
                         Task { await applyAsWallpaper() }
                     }) {
-                        Text(i18n.t("setAsWallpaper"))
+                        Text(settingWallpaper ? "..." : i18n.t("setAsWallpaper"))
                             .bold()
                             .foregroundColor(theme.colors.primary)
                             .frame(maxWidth: .infinity)
@@ -232,7 +234,7 @@ struct AvatarEditorView: View {
                             .background(theme.colors.primaryBg)
                             .cornerRadius(10)
                     }
-                    .disabled(layers.isEmpty)
+                    .disabled(layers.isEmpty || settingWallpaper)
                     .opacity(layers.isEmpty ? 0.5 : 1.0)
                 }
                 .padding(.horizontal, 12)
@@ -261,15 +263,13 @@ struct AvatarEditorView: View {
                 Button(action: {
                     Task { await performSearch() }
                 }) {
-                    Image(systemName: "magnifyingglass")
-                        .font(.system(size: 16, weight: .bold))
-                        .foregroundColor(.white)
+                    Text("🔍")
+                        .font(.title3)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 8)
                         .background(theme.colors.primary)
                         .cornerRadius(10)
                 }
-                .accessibilityLabel(i18n.t("search"))
                 .accessibilityIdentifier("avatar.stickerSearchButton")
             }
             .padding(.horizontal, 12)
@@ -483,10 +483,19 @@ struct AvatarEditorView: View {
     }
     
     private func applyAsWallpaper() async {
-        guard !layers.isEmpty else { return }
-        // Flatten the whole composition to an image (not just the top sticker).
+        guard !layers.isEmpty, !settingWallpaper else { return }
+        settingWallpaper = true
+        defer { settingWallpaper = false }
+
+        db.setOshiComposition(keyword: keyword, layers: layers)
+        if let topLayer = layers.sorted(by: { $0.zIndex < $1.zIndex }).last {
+            db.setOshiAvatar(keyword: keyword, imageUrl: topLayer.imageUrl)
+        }
+
         if let fileName = await WallpaperRenderer.render(layers: layers) {
             db.setWallpaper(url: fileName)
+        } else if let topLayer = layers.sorted(by: { $0.zIndex < $1.zIndex }).last {
+            db.setWallpaper(url: topLayer.imageUrl)
         }
     }
     
@@ -504,10 +513,7 @@ struct AvatarEditorView: View {
                 stickers = try await NetworkManager.shared.getPopularIrasutoya()
             }
         } catch {
-            #if DEBUG
-            print("Stickers load error: \(error)")
-            #endif
-
+            AppLogger.network.error("Stickers load error: \(error.localizedDescription)")
             stickers = []
         }
         
@@ -522,10 +528,7 @@ struct AvatarEditorView: View {
         do {
             stickers = try await NetworkManager.shared.searchIrasutoya(query: searchQuery)
         } catch {
-            #if DEBUG
-            print("Stickers search error: \(error)")
-            #endif
-
+            AppLogger.network.error("Stickers search error: \(error.localizedDescription)")
             stickers = []
         }
 

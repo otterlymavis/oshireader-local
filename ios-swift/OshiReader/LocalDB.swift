@@ -12,6 +12,11 @@ class LocalDB: ObservableObject {
     static let shared = LocalDB()
     static let maximumBackupBytes = 20 * 1024 * 1024
     static let maximumProfileTransferBytes = 22 * 1024 * 1024
+    private static let maxFeedItems = 600
+    private static let minFeedItemsPerSubscribedPlatform = 8
+    private static let minFeedItemsPerDiscussionPlatform = 25
+    private static let discussionActivityPlatforms: Set<String> = ["5ch", "girlschannel", "togetter"]
+    private static let iso8601 = ISO8601DateFormatter()
     
     // Published states for views
     @Published var terms: [WatchTerm] = []
@@ -147,10 +152,7 @@ class LocalDB: ObservableObject {
             let data = try Data(contentsOf: url)
             return try decoder.decode(T.self, from: data)
         } catch {
-            #if DEBUG
-            print("Error loading \(name): \(error)")
-            #endif
-
+            AppLogger.persistence.error("Failed to load \(name): \(error.localizedDescription)")
             return defaultValue
         }
     }
@@ -175,10 +177,7 @@ class LocalDB: ObservableObject {
                 let data = try self.encoder.encode(value)
                 try data.write(to: url, options: [.atomic])
             } catch {
-                #if DEBUG
-                print("Error saving \(name): \(error)")
-                #endif
-
+                AppLogger.persistence.error("Failed to save \(name): \(error.localizedDescription)")
             }
         }
     }
@@ -204,9 +203,7 @@ class LocalDB: ObservableObject {
                 let data = try self.encoder.encode(snapshot)
                 try data.write(to: self.fileURL(for: "feed_items"), options: [.atomic])
             } catch {
-                #if DEBUG
-                print("Error saving feed_items: \(error)")
-                #endif
+                AppLogger.persistence.error("Failed to save feed_items: \(error.localizedDescription)")
             }
         }
     }
@@ -228,9 +225,7 @@ class LocalDB: ObservableObject {
                 let data = try self.encoder.encode(snapshot)
                 try data.write(to: self.fileURL(for: "feed_items"), options: [.atomic])
             } catch {
-                #if DEBUG
-                print("Error saving feed_items: \(error)")
-                #endif
+                AppLogger.persistence.error("Failed to save feed_items: \(error.localizedDescription)")
             }
         }
         pendingFeedItemsSaveWorkItem = workItem
@@ -273,9 +268,7 @@ class LocalDB: ObservableObject {
 
     private func recoverPendingRestoreIfNeeded() {
         do { try applyPendingRestore() } catch {
-            #if DEBUG
-            print("Pending local restore could not be completed: \(error)")
-            #endif
+            AppLogger.persistence.error("Pending local restore could not be completed: \(error.localizedDescription)")
         }
     }
 
@@ -431,10 +424,9 @@ class LocalDB: ObservableObject {
         guard sourceRevision == nil || sourceRevision == dataRevision else { return 0 }
         var addedCount = 0
         var addedItems: [FeedItem] = []
-        let itemKey = { (i: FeedItem) -> String in "\(i.id)::\(i.watch_term_keyword)" }
         
         let filteredNew = newItemsBatches.flatMap { $0 }.filter { item in
-            let key = itemKey(item)
+            let key = Self.feedItemKey(item)
             let isHidden = self.hiddenItems.contains(key)
             let isSearchFallback = item.id.contains("search:") || item.title?.lowercased().contains("search:") == true
             return !isHidden && !isSearchFallback
@@ -442,11 +434,11 @@ class LocalDB: ObservableObject {
         
         var currentMap = [String: FeedItem]()
         for item in self.feedItems {
-            currentMap[itemKey(item)] = item
+            currentMap[Self.feedItemKey(item)] = item
         }
         
         for item in filteredNew {
-            let key = itemKey(item)
+            let key = Self.feedItemKey(item)
             if currentMap[key] == nil {
                 currentMap[key] = item
                 addedCount += 1
@@ -466,7 +458,7 @@ class LocalDB: ObservableObject {
                     author: item.author ?? existing.author,
                     thumbnail_url: item.thumbnail_url ?? existing.thumbnail_url,
                     media_type: existing.media_type,
-                    published_at: min(existing.published_at, item.published_at),
+                    published_at: Self.mergedPublishedAt(existing: existing, incoming: item),
                     watch_term_keyword: existing.watch_term_keyword,
                     fetched_at: item.fetched_at
                 )
@@ -474,14 +466,20 @@ class LocalDB: ObservableObject {
             }
         }
         
-        let sorted = currentMap.values.sorted(by: { $0.published_at > $1.published_at })
-        let finalItems = Array(sorted.prefix(600)) // Replicate MAX_ITEMS = 600
+        let sorted = currentMap.values.sorted(by: Self.feedItemSortPrecedes)
+        let preserveAddedItems = !self.feedItems.isEmpty
+        let preservedKeys = preserveAddedItems ? Set(addedItems.map(Self.feedItemKey)) : []
+        let finalItems = Self.cappedFeedItems(
+            sorted,
+            preserving: preservedKeys,
+            subscribedPlatforms: subscribedPlatforms
+        )
 
         // Only notify for items that survived the cap — avoids pinging for articles
         // that were immediately evicted as too old.
         if !addedItems.isEmpty {
-            let survivedKeys = Set(finalItems.map { itemKey($0) })
-            let notifyItems = addedItems.filter { survivedKeys.contains(itemKey($0)) }
+            let survivedKeys = Set(finalItems.map(Self.feedItemKey))
+            let notifyItems = addedItems.filter { survivedKeys.contains(Self.feedItemKey($0)) }
             if !notifyItems.isEmpty {
                 let terms = self.terms
                 Task {
@@ -493,6 +491,81 @@ class LocalDB: ObservableObject {
         self.feedItems = finalItems
         self.saveFeedItemsSoon()
         return addedCount
+    }
+
+    private static func feedItemKey(_ item: FeedItem) -> String {
+        "\(item.id)::\(item.watch_term_keyword)"
+    }
+
+    private static func mergedPublishedAt(existing: FeedItem, incoming: FeedItem) -> String {
+        let existingDate = parseISO8601Date(existing.published_at)
+        let incomingDate = parseISO8601Date(incoming.published_at)
+        guard let existingDate, let incomingDate else {
+            return existingDate == nil ? incoming.published_at : existing.published_at
+        }
+
+        if discussionActivityPlatforms.contains(PlatformRegistry.normalizeID(incoming.platform)) {
+            return incomingDate >= existingDate ? incoming.published_at : existing.published_at
+        }
+        return existingDate <= incomingDate ? existing.published_at : incoming.published_at
+    }
+
+    private static func feedItemSortPrecedes(_ lhs: FeedItem, _ rhs: FeedItem) -> Bool {
+        let lhsDate = parseISO8601Date(lhs.published_at) ?? .distantPast
+        let rhsDate = parseISO8601Date(rhs.published_at) ?? .distantPast
+        if lhsDate != rhsDate { return lhsDate > rhsDate }
+
+        let lhsKey = feedItemKey(lhs)
+        let rhsKey = feedItemKey(rhs)
+        if lhsKey != rhsKey { return lhsKey < rhsKey }
+        return lhs.url < rhs.url
+    }
+
+    private static func cappedFeedItems(
+        _ sortedItems: [FeedItem],
+        preserving preservedKeys: Set<String>,
+        subscribedPlatforms: [String]
+    ) -> [FeedItem] {
+        guard sortedItems.count > maxFeedItems else { return sortedItems }
+
+        var selected: [FeedItem] = []
+        var selectedKeys = Set<String>()
+
+        for item in sortedItems where preservedKeys.contains(feedItemKey(item)) {
+            let key = feedItemKey(item)
+            guard selectedKeys.insert(key).inserted else { continue }
+            selected.append(item)
+            if selected.count >= maxFeedItems { return selected.sorted(by: feedItemSortPrecedes) }
+        }
+
+        let subscribed = Set(subscribedPlatforms.filter { $0 != "custom" }.map(PlatformRegistry.normalizeID))
+        for platformId in subscribed.sorted() {
+            var keptForPlatform = 0
+            let targetCount = minRetainedFeedItems(for: platformId)
+            for item in sortedItems where PlatformRegistry.normalizeID(item.platform) == platformId {
+                let key = feedItemKey(item)
+                guard selectedKeys.insert(key).inserted else { continue }
+                selected.append(item)
+                keptForPlatform += 1
+                if selected.count >= maxFeedItems { return selected.sorted(by: feedItemSortPrecedes) }
+                if keptForPlatform >= targetCount { break }
+            }
+        }
+
+        for item in sortedItems {
+            guard selected.count < maxFeedItems else { break }
+            let key = feedItemKey(item)
+            guard selectedKeys.insert(key).inserted else { continue }
+            selected.append(item)
+        }
+
+        return selected.sorted(by: feedItemSortPrecedes)
+    }
+
+    private static func minRetainedFeedItems(for platformId: String) -> Int {
+        discussionActivityPlatforms.contains(platformId)
+            ? minFeedItemsPerDiscussionPlatform
+            : minFeedItemsPerSubscribedPlatform
     }
     
     func deleteFeedItem(id: String, watchTermKeyword: String) {
@@ -511,8 +584,6 @@ class LocalDB: ObservableObject {
         let now = Date()
         // days == 0 means "All Time" — no cutoff applied
         let cutoffDate = days > 0 ? Calendar.current.date(byAdding: .day, value: -days, to: now) : nil
-        let formatter = ISO8601DateFormatter()
-        let cutoffString = cutoffDate.map { formatter.string(from: $0) }
         
         let strictKeywordPlatforms = PlatformRegistry.strictKeywordPlatformIDs
             .union(["news", "tver"])
@@ -530,9 +601,12 @@ class LocalDB: ObservableObject {
             }
             
             // Cutoff check (skip limit check for 5ch, girlschannel, togetter)
-            let skipCutoff = item.platform == "5ch" || item.platform == "girlschannel" || item.platform == "togetter"
-            if let cutoff = cutoffString, item.published_at < cutoff && !skipCutoff {
-                return false
+            let platformKey = normalizedPlatformKey(item.platform)
+            let skipCutoff = Self.discussionActivityPlatforms.contains(platformKey)
+            if let cutoff = cutoffDate, !skipCutoff {
+                guard let itemDate = parseISO8601Date(item.published_at), itemDate >= cutoff else {
+                    return false
+                }
             }
             
             // Keyword filter
@@ -545,7 +619,7 @@ class LocalDB: ObservableObject {
             }
             
             // Strict keyword matching logic
-            if strictKeywordPlatforms.contains(item.platform), !item.watch_term_keyword.isEmpty {
+            if strictKeywordPlatforms.contains(PlatformRegistry.normalizeID(item.platform)), !item.watch_term_keyword.isEmpty {
                 let aliases = self.terms
                     .first { $0.keyword == item.watch_term_keyword }?
                     .aliases ?? []
@@ -556,14 +630,13 @@ class LocalDB: ObservableObject {
             }
             
             // Subscribed platforms
-            let platformKey = normalizedPlatformKey(item.platform)
             if !subscribedPlatforms.contains(platformKey) {
                 return false
             }
             
             return true
         }
-        .sorted(by: { $0.published_at > $1.published_at })
+        .sorted(by: Self.feedItemSortPrecedes)
         .reduce(into: ([FeedItem](), Set<String>())) { acc, item in
             // When no keyword filter, deduplicate by URL — the same article can be
             // stored once per matching watch term; only the first (most recent) copy
@@ -602,7 +675,7 @@ class LocalDB: ObservableObject {
                     url: item.url,
                     title: item.title,
                     platform: item.platform,
-                    saved_at: ISO8601DateFormatter().string(from: Date())
+                    saved_at: Self.iso8601.string(from: Date())
                 )
                 self.savedPages.insert(page, at: 0)
                 isSaved = true
@@ -654,7 +727,7 @@ class LocalDB: ObservableObject {
         runOnMain {
             if self.customUrls.contains(where: { $0.id == id }) { return }
             let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
-            let entry = CustomUrl(id: id, url: normalized, title: trimmedTitle.isEmpty ? nil : trimmedTitle, added_at: ISO8601DateFormatter().string(from: Date()))
+            let entry = CustomUrl(id: id, url: normalized, title: trimmedTitle.isEmpty ? nil : trimmedTitle, added_at: Self.iso8601.string(from: Date()))
             self.advanceDataRevision()
             self.customUrls.insert(entry, at: 0)
             self.saveToFile(name: "custom_urls", value: self.customUrls)
@@ -785,7 +858,7 @@ class LocalDB: ObservableObject {
     func exportBackupData() throws -> Data {
         flushPendingFeedItemsSave()
         let backup = LocalBackup(
-            exportedAt: ISO8601DateFormatter().string(from: Date()),
+            exportedAt: Self.iso8601.string(from: Date()),
             terms: terms,
             feedItems: feedItems,
             savedPages: savedPages,
@@ -843,10 +916,15 @@ class LocalDB: ObservableObject {
             normalizedSubscribedPlatforms.append("ameblo")
         }
         let normalizedSourcesOrder = backup.sources_order.map(Self.normalizePlatformIDs)
+        let normalizedFeedItems = Self.cappedFeedItems(
+            backup.feed_items.sorted(by: Self.feedItemSortPrecedes),
+            preserving: [],
+            subscribedPlatforms: normalizedSubscribedPlatforms
+        )
 
         let encodedFiles: [(String, Data)] = try [
             ("terms", encoder.encode(normalizedTerms)),
-            ("feed_items", encoder.encode(Array(backup.feed_items.sorted { $0.published_at > $1.published_at }.prefix(600)))),
+            ("feed_items", encoder.encode(normalizedFeedItems)),
             ("saved_pages", encoder.encode(backup.saved_pages)),
             ("custom_urls", encoder.encode(backup.custom_urls)),
             ("ameblo_blogs", encoder.encode(normalizedAmebloBlogs)),
@@ -867,7 +945,7 @@ class LocalDB: ObservableObject {
         NotificationManager.shared.clearLocalNotifications()
 
         terms = normalizedTerms
-        feedItems = Array(backup.feed_items.sorted { $0.published_at > $1.published_at }.prefix(600))
+        feedItems = normalizedFeedItems
         savedPages = backup.saved_pages
         customUrls = backup.custom_urls
         amebloBlogs = normalizedAmebloBlogs
@@ -963,13 +1041,7 @@ class LocalDB: ObservableObject {
     }
 
     static func normalizePlatformIDs(_ ids: [String]) -> [String] {
-        let knownIDs = Set(PlatformRegistry.all.map(\.id))
-        var seen = Set<String>()
-        return ids.compactMap { rawID in
-            let id = rawID.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard knownIDs.contains(id), seen.insert(id).inserted else { return nil }
-            return id
-        }
+        PlatformRegistry.normalizeIDs(ids)
     }
 
     private func invalidateContentCaches() {
@@ -996,7 +1068,7 @@ class LocalDB: ObservableObject {
 
         profileStore.resetForUITesting()
 
-        let now = ISO8601DateFormatter().string(from: Date())
+        let now = Self.iso8601.string(from: Date())
         let term = WatchTerm(id: "ui-term-oshitest", keyword: "UITest Oshi", collection_mode: "all_info", is_active: true, created_at: now)
         let feedItem = FeedItem(
             id: "ui-feed-reader",
@@ -1089,9 +1161,6 @@ class LocalDB: ObservableObject {
     }
 
     private func normalizedPlatformKey(_ platform: String) -> String {
-        if platform == "news:mdpr" { return "mdpr" }
-        if platform == "news:yahoo_ent" { return "yahoonews" }
-        if platform == "news" || platform.hasPrefix("news:") { return "news" }
-        return platform
+        PlatformRegistry.normalizeID(platform)
     }
 }

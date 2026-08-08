@@ -22,14 +22,18 @@ enum AppColorStyle: String, CaseIterable, Identifiable {
 
 enum AppFontChoice: String, CaseIterable, Identifiable {
     case normal = "normal"
-    case comicSans = "comic_sans"
+    case playful = "comic_sans"
+    case serif = "serif"
+
+    static var comicSans: AppFontChoice { .playful }
 
     var id: String { rawValue }
 
     var displayName: String {
         switch self {
         case .normal: return "Normal"
-        case .comicSans: return "Comic Sans"
+        case .playful: return "Playful"
+        case .serif: return "Serif"
         }
     }
 
@@ -37,8 +41,10 @@ enum AppFontChoice: String, CaseIterable, Identifiable {
         switch self {
         case .normal:
             return "-apple-system, BlinkMacSystemFont, \"Helvetica Neue\", Arial, sans-serif"
-        case .comicSans:
-            return "\"Comic Sans MS\", \"Comic Sans\", ChalkboardSE-Regular, Chalkboard, cursive"
+        case .playful:
+            return "\"Chalkboard SE\", \"Marker Felt\", \"Comic Sans MS\", cursive"
+        case .serif:
+            return "Georgia, \"Times New Roman\", serif"
         }
     }
 }
@@ -226,7 +232,7 @@ class ThemeManager: ObservableObject {
         case "oricon":
             return PlatformMetadata(name: "Oricon", icon: "🎤", accent: Color(red: 0.86, green: 0.12, blue: 0.22), bg: Color(red: 1.0, green: 0.92, blue: 0.94), fg: Color(red: 0.86, green: 0.12, blue: 0.22))
         case "twitter":
-            return PlatformMetadata(name: "X", icon: "𝕏", accent: Color.black, bg: Color.gray.opacity(0.16), fg: Color.primary)
+            return PlatformMetadata(name: "X", icon: "𝕏", accent: Color.black, bg: Color.gray.opacity(0.2), fg: Color.primary)
         case "5ch":
             return PlatformMetadata(name: "5ch", icon: "💬", accent: Color.orange, bg: Color(red: 1.0, green: 0.95, blue: 0.9), fg: Color.orange)
         case "girlschannel":
@@ -237,6 +243,38 @@ class ThemeManager: ObservableObject {
             return PlatformMetadata(name: "Note", icon: "📝", accent: Color(red: 0.1, green: 0.7, blue: 0.5), bg: Color(red: 0.9, green: 0.97, blue: 0.95), fg: Color(red: 0.1, green: 0.7, blue: 0.5))
         case "news":
             return PlatformMetadata(name: "News", icon: "📰", accent: Color.purple, bg: Color(red: 0.96, green: 0.9, blue: 1.0), fg: Color.purple)
+        case "smartnews":
+            return PlatformMetadata(name: "SmartNews", icon: "📰", accent: Color(red: 0.80, green: 0.00, blue: 0.00), bg: Color(red: 1.0, green: 0.92, blue: 0.92), fg: Color(red: 0.80, green: 0.00, blue: 0.00))
+        case "ameblo":
+            return PlatformMetadata(name: "Ameblo", icon: "✏️", accent: Color(red: 1.00, green: 0.42, blue: 0.00), bg: Color(red: 1.0, green: 0.94, blue: 0.88), fg: Color(red: 1.00, green: 0.42, blue: 0.00))
+        case "aera":
+            return PlatformMetadata(name: "AERA dot.", icon: "📝", accent: Color(red: 0.00, green: 0.27, blue: 0.58), bg: Color(red: 0.90, green: 0.94, blue: 1.0), fg: Color(red: 0.00, green: 0.27, blue: 0.58))
+        case "hochi":
+            return PlatformMetadata(name: "Hochi", icon: "🏅", accent: Color(red: 0.82, green: 0.10, blue: 0.10), bg: Color(red: 1.0, green: 0.92, blue: 0.92), fg: Color(red: 0.82, green: 0.10, blue: 0.10))
+        case "sponichi":
+            return PlatformMetadata(name: "Sponichi", icon: "⚽", accent: Color(red: 0.00, green: 0.27, blue: 0.60), bg: Color(red: 0.90, green: 0.94, blue: 1.0), fg: Color(red: 0.00, green: 0.27, blue: 0.60))
+        case "livedoor":
+            return PlatformMetadata(name: "Livedoor", icon: "🔴", accent: Color(red: 0.88, green: 0.00, blue: 0.20), bg: Color(red: 1.0, green: 0.92, blue: 0.94), fg: Color(red: 0.88, green: 0.00, blue: 0.20))
+        case "mantanweb":
+            return PlatformMetadata(name: "Mantan Web", icon: "🎌", accent: Color(red: 0.07, green: 0.53, blue: 0.25), bg: Color(red: 0.90, green: 1.0, blue: 0.93), fg: Color(red: 0.07, green: 0.53, blue: 0.25))
+        case "realsound":
+            return PlatformMetadata(name: "Real Sound", icon: "🎧", accent: Color(red: 0.18, green: 0.36, blue: 0.72), bg: Color(red: 0.91, green: 0.95, blue: 1.0), fg: Color(red: 0.18, green: 0.36, blue: 0.72))
+        case "cinemacafe":
+            return PlatformMetadata(name: "CinemaCafe", icon: "🎬", accent: Color(red: 0.56, green: 0.20, blue: 0.64), bg: Color(red: 0.96, green: 0.91, blue: 0.98), fg: Color(red: 0.56, green: 0.20, blue: 0.64))
+        case "thetv":
+            return PlatformMetadata(name: "TheTV", icon: "📺", accent: Color(red: 0.02, green: 0.36, blue: 0.78), bg: Color(red: 0.90, green: 0.95, blue: 1.0), fg: Color(red: 0.02, green: 0.36, blue: 0.78))
+        case "natalie":
+            return PlatformMetadata(name: "Natalie", icon: "🎵", accent: Color(red: 0.86, green: 0.14, blue: 0.22), bg: Color(red: 1.0, green: 0.92, blue: 0.94), fg: Color(red: 0.86, green: 0.14, blue: 0.22))
+        case "billboardjapan":
+            return PlatformMetadata(name: "Billboard Japan", icon: "📈", accent: Color(red: 0.05, green: 0.38, blue: 0.72), bg: Color(red: 0.90, green: 0.95, blue: 1.0), fg: Color(red: 0.05, green: 0.38, blue: 0.72))
+        case "soompi":
+            return PlatformMetadata(name: "Soompi", icon: "🇰🇷", accent: Color(red: 0.74, green: 0.16, blue: 0.30), bg: Color(red: 1.0, green: 0.92, blue: 0.95), fg: Color(red: 0.74, green: 0.16, blue: 0.30))
+        case "allkpop":
+            return PlatformMetadata(name: "allkpop", icon: "🎤", accent: Color(red: 0.48, green: 0.24, blue: 0.70), bg: Color(red: 0.96, green: 0.92, blue: 1.0), fg: Color(red: 0.48, green: 0.24, blue: 0.70))
+        case "kpopofficial":
+            return PlatformMetadata(name: "KpopOfficial", icon: "🗓️", accent: Color(red: 0.04, green: 0.52, blue: 0.54), bg: Color(red: 0.90, green: 0.98, blue: 0.98), fg: Color(red: 0.04, green: 0.52, blue: 0.54))
+        case "barks":
+            return PlatformMetadata(name: "BARKS", icon: "🎸", accent: Color(red: 0.13, green: 0.13, blue: 0.13), bg: Color(red: 0.93, green: 0.93, blue: 0.93), fg: Color(red: 0.13, green: 0.13, blue: 0.13))
         default:
             if let definition = PlatformRegistry.definition(for: platform.lowercased()) {
                 return PlatformMetadata(name: definition.name, icon: definition.icon, accent: colors.primary, bg: colors.primaryBg, fg: colors.primary)
@@ -296,11 +334,17 @@ class AppearanceManager: ObservableObject {
     // Size scaling is handled by preferredDynamicTypeSize, so we use semantic
     // sizes here to avoid double-scaling.
     var appFont: Font {
+        font(size: 17.0, relativeTo: .body)
+    }
+
+    func font(size: CGFloat, relativeTo textStyle: Font.TextStyle = .body) -> Font {
         switch fontChoice {
         case .normal:
-            return .body
-        case .comicSans:
-            return .custom("Comic Sans MS", size: 17.0, relativeTo: .body)
+            return .system(size: size, design: .default)
+        case .playful:
+            return .system(size: size, design: .rounded)
+        case .serif:
+            return .system(size: size, design: .serif)
         }
     }
 

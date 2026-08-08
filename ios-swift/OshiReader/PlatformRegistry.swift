@@ -80,7 +80,8 @@ enum PlatformRegistry {
     ]
 
     static func definition(for id: String) -> PlatformDefinition? {
-        all.first { $0.id == id }
+        let normalized = normalizeID(id)
+        return all.first { $0.id == normalized }
     }
 
     static var googleNewsSources: [PlatformDefinition] {
@@ -103,8 +104,23 @@ enum PlatformRegistry {
         let known = Set(all.map(\.id))
         var seen = Set<String>()
         return ids.compactMap { raw in
-            let id = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            let id = normalizeID(raw)
             guard known.contains(id), seen.insert(id).inserted else { return nil }
+            return id
+        }
+    }
+
+    static func normalizeID(_ rawID: String) -> String {
+        let id = rawID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        switch id {
+        case "x":
+            return "twitter"
+        case "news:mdpr":
+            return "mdpr"
+        case "news:yahoo_ent":
+            return "yahoonews"
+        default:
+            if id.hasPrefix("news:") { return "news" }
             return id
         }
     }

@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import UserNotifications
 
 enum OshiTab: String, CaseIterable, Identifiable, Hashable {
     case feed, search, saved, oshi, settings
@@ -14,7 +15,8 @@ struct ContentView: View {
     @StateObject private var notificationNavigation = NotificationNavigationManager.shared
     
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
-    @State private var selectedTab: OshiTab = .feed
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var selectedTab: OshiTab = ProcessInfo.processInfo.arguments.contains("--uitesting-start-search") ? .search : .feed
     
     init() {
         // Initial appearance before the theme preference is read from disk.
@@ -47,7 +49,6 @@ struct ContentView: View {
                         .listRowSeparator(.hidden)
                     }
                 }
-                .animation(.easeInOut(duration: 0.2), value: selectedTab)
                 .navigationTitle(i18n.t("appTitle"))
                 .listStyle(.sidebar)
             } detail: {
@@ -71,37 +72,37 @@ struct ContentView: View {
                 FeedView()
                     .tabItem {
                         Label(i18n.t("tabFeed"), systemImage: "house")
+                            .accessibilityIdentifier("tab.feed")
                     }
                     .tag(OshiTab.feed)
-                    .accessibilityIdentifier("tab.feed")
                 
                 SearchView()
                     .tabItem {
                         Label(i18n.t("tabSearch"), systemImage: "magnifyingglass")
+                            .accessibilityIdentifier("tab.search")
                     }
                     .tag(OshiTab.search)
-                    .accessibilityIdentifier("tab.search")
 
                 SavedView()
                     .tabItem {
                         Label(i18n.t("tabSaved"), systemImage: "bookmark")
+                            .accessibilityIdentifier("tab.saved")
                     }
                     .tag(OshiTab.saved)
-                    .accessibilityIdentifier("tab.saved")
                 
                 OshiView()
                     .tabItem {
                         Label(i18n.t("tabOshi"), systemImage: "star")
+                            .accessibilityIdentifier("tab.oshi")
                     }
                     .tag(OshiTab.oshi)
-                    .accessibilityIdentifier("tab.oshi")
                 
                 SettingsView()
                     .tabItem {
                         Label(i18n.t("tabSettings"), systemImage: "gearshape")
+                            .accessibilityIdentifier("tab.settings")
                     }
                     .tag(OshiTab.settings)
-                    .accessibilityIdentifier("tab.settings")
             }
             .tint(theme.colors.primary)
             // Ensure standard backgrounds
@@ -119,10 +120,23 @@ struct ContentView: View {
         .onChange(of: theme.mode) { _, newMode in
             updateTabBarAppearance(for: newMode)
         }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active {
+                UNUserNotificationCenter.current().setBadgeCount(0)
+            } else if phase == .background {
+                BackgroundRefreshManager.shared.schedule()
+            }
+        }
+        .onReceive(notificationNavigation.$selectedItem) { item in
+            if item != nil {
+                selectedTab = .feed
+            }
+        }
         .sheet(item: $notificationNavigation.selectedItem) { item in
             NavigationStack {
                 ReaderView(feedItem: item)
             }
+            .preferredColorScheme(theme.mode == .dark ? .dark : .light)
         }
     }
 

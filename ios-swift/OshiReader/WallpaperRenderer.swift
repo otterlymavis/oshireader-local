@@ -10,9 +10,9 @@ enum WallpaperRenderer {
     private static let canvasSize: CGFloat = 300
     private static let baseSize: Double = 90
 
-    /// Filename (not absolute path) under Documents. Storing the bare name keeps
-    /// it valid across launches/updates, since the container path can change.
-    static let fileName = "oshi_wallpaper.png"
+    /// Filename prefix under Documents. Storing the bare name keeps it valid
+    /// across launches/updates, since the container path can change.
+    private static let filePrefix = "oshi_wallpaper"
 
     @MainActor
     static func render(layers: [AvatarLayer]) async -> String? {
@@ -27,11 +27,26 @@ enum WallpaperRenderer {
         }
         guard let png = compose(loaded)?.pngData() else { return nil }
 
+        return writeRenderedPNG(png)
+    }
+
+#if DEBUG
+    @MainActor
+    static func writeRenderedPNGForTesting(_ png: Data) -> String? {
+        writeRenderedPNG(png)
+    }
+#endif
+
+    @MainActor
+    private static func writeRenderedPNG(_ png: Data) -> String? {
+        let fileName = "\(filePrefix)_\(UUID().uuidString).png"
         let url = localURL(for: fileName)
         do {
             try png.write(to: url, options: .atomic)
+            removeOldRenderedWallpapers(except: fileName)
             return fileName
         } catch {
+            AppLogger.network.error("Wallpaper render write failed: \(error.localizedDescription)")
             return nil
         }
     }
@@ -52,6 +67,21 @@ enum WallpaperRenderer {
     @MainActor
     static func localURL(for fileName: String) -> URL {
         LocalProfileStore.shared.assetURL(for: fileName)
+    }
+
+    @MainActor
+    private static func removeOldRenderedWallpapers(except retainedFileName: String) {
+        let retainedURL = localURL(for: retainedFileName)
+        let directory = retainedURL.deletingLastPathComponent()
+        guard let contents = try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil
+        ) else { return }
+        for url in contents where
+            url.lastPathComponent.hasPrefix(filePrefix) &&
+            url.lastPathComponent != retainedFileName {
+            try? FileManager.default.removeItem(at: url)
+        }
     }
 
     /// Static, gesture-free mirror of the editor's layer layout.

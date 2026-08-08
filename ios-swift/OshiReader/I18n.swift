@@ -307,6 +307,12 @@ class I18nManager: ObservableObject {
             "zh-TW": "搜尋文章...",
             "zh-CN": "搜索文章..."
         ],
+        "clearSearch": [
+            "en": "Clear search",
+            "ja": "検索をクリア",
+            "zh-TW": "清除搜尋",
+            "zh-CN": "清除搜索"
+        ],
         "settingsTitle": [
             "en": "Settings",
             "ja": "設定",
@@ -349,6 +355,30 @@ class I18nManager: ObservableObject {
             "zh-TW": "關鍵字管理",
             "zh-CN": "关键字管理"
         ],
+        "hidePost": [
+            "en": "Hide Post",
+            "ja": "投稿を非表示",
+            "zh-TW": "隱藏貼文",
+            "zh-CN": "隐藏帖子"
+        ],
+        "hidePostConfirm": [
+            "en": "Hide Post",
+            "ja": "非表示にする",
+            "zh-TW": "隱藏貼文",
+            "zh-CN": "隐藏帖子"
+        ],
+        "hidePostTitleFmt": [
+            "en": "Hide “%@”?",
+            "ja": "「%@」を非表示にしますか？",
+            "zh-TW": "隱藏「%@」？",
+            "zh-CN": "隐藏“%@”？"
+        ],
+        "hidePostMessage": [
+            "en": "This hides only this post from your feed. The keyword stays followed.",
+            "ja": "この投稿だけをフィードから非表示にします。キーワードのフォローは継続されます。",
+            "zh-TW": "這只會從動態中隱藏這篇貼文。關鍵字仍會繼續追蹤。",
+            "zh-CN": "这只会从动态中隐藏这篇帖子。关键词仍会继续追踪。"
+        ],
         "addKeyword": [
             "en": "Add Keyword",
             "ja": "キーワード追加",
@@ -360,6 +390,60 @@ class I18nManager: ObservableObject {
             "ja": "キーワードを入力...",
             "zh-TW": "關鍵字（例：偶像名稱）",
             "zh-CN": "关键字（例：偶像名字）"
+        ],
+        "invalidUrl": [
+            "en": "Invalid URL",
+            "ja": "無効なURL",
+            "zh-TW": "無效的網址",
+            "zh-CN": "无效的链接"
+        ],
+        "readerLoadingPage": [
+            "en": "Loading page...",
+            "ja": "ページを読み込み中...",
+            "zh-TW": "正在載入頁面...",
+            "zh-CN": "正在加载页面..."
+        ],
+        "readerLoadFailed": [
+            "en": "Page could not be loaded.",
+            "ja": "ページを読み込めませんでした。",
+            "zh-TW": "無法載入頁面。",
+            "zh-CN": "无法加载页面。"
+        ],
+        "readerSignInRequired": [
+            "en": "X requires sign-in to show this content.",
+            "ja": "Xはこの内容を表示するにはログインが必要です。",
+            "zh-TW": "X 需要登入才能顯示此內容。",
+            "zh-CN": "X 需要登录才能显示此内容。"
+        ],
+        "readerSignInButton": [
+            "en": "Sign in",
+            "ja": "ログイン",
+            "zh-TW": "登入",
+            "zh-CN": "登录"
+        ],
+        "readerSignInReturnMessage": [
+            "en": "Signed in? Go back to reload your search.",
+            "ja": "ログインしましたか？戻って検索を再読み込みします。",
+            "zh-TW": "已登入？返回以重新載入搜尋結果。",
+            "zh-CN": "已登录？返回以重新加载搜索结果。"
+        ],
+        "readerSignInReturnButton": [
+            "en": "Back to search",
+            "ja": "検索に戻る",
+            "zh-TW": "返回搜尋",
+            "zh-CN": "返回搜索"
+        ],
+        "readerCouldNotDisplay": [
+            "en": "This page couldn't be displayed in the app.",
+            "ja": "このページはアプリ内で表示できませんでした。",
+            "zh-TW": "此頁面無法在應用程式內顯示。",
+            "zh-CN": "此页面无法在应用内显示。"
+        ],
+        "readerOpenInBrowser": [
+            "en": "Open in Browser",
+            "ja": "ブラウザで開く",
+            "zh-TW": "在瀏覽器中開啟",
+            "zh-CN": "在浏览器中打开"
         ],
         "readerModeText": [
             "en": "Reader Text Mode",
@@ -385,6 +469,12 @@ class I18nManager: ObservableObject {
             "zh-TW": "圖片",
             "zh-CN": "图片"
         ],
+        "imageActions": [
+            "en": "Image",
+            "ja": "画像",
+            "zh-TW": "圖片",
+            "zh-CN": "图片"
+        ],
         "shareImage": [
             "en": "Share Image",
             "ja": "画像を共有",
@@ -403,6 +493,12 @@ class I18nManager: ObservableObject {
             "zh-TW": "開啟圖片",
             "zh-CN": "打开图片"
         ],
+        "imageLoadError": [
+            "en": "Could not read this image.",
+            "ja": "画像を読み込めませんでした。",
+            "zh-TW": "無法讀取此圖片。",
+            "zh-CN": "无法读取此图片。"
+        ],
         "imageReadFailed": [
             "en": "Could not read this image.",
             "ja": "この画像を読み込めませんでした。",
@@ -412,20 +508,32 @@ class I18nManager: ObservableObject {
         "photosAccessRequired": [
             "en": "Photos access is required to save images.",
             "ja": "画像を保存するには写真へのアクセスが必要です。",
-            "zh-TW": "需要照片權限才能儲存圖片。",
-            "zh-CN": "需要照片权限才能保存图片。"
+            "zh-TW": "需要相簿存取權限才能儲存圖片。",
+            "zh-CN": "需要照片访问权限才能保存图片。"
         ],
         "imageSavedToPhotos": [
             "en": "Saved to Photos.",
             "ja": "写真に保存しました。",
-            "zh-TW": "已儲存到照片。",
+            "zh-TW": "已儲存到相簿。",
             "zh-CN": "已保存到照片。"
+        ],
+        "imageSaveError": [
+            "en": "Could not save this image.",
+            "ja": "画像を保存できませんでした。",
+            "zh-TW": "無法儲存此圖片。",
+            "zh-CN": "无法保存此图片。"
         ],
         "imageSaveFailed": [
             "en": "Could not save this image.",
             "ja": "この画像を保存できませんでした。",
             "zh-TW": "無法儲存此圖片。",
             "zh-CN": "无法保存此图片。"
+        ],
+        "readerTitle": [
+            "en": "Reader",
+            "ja": "リーダー",
+            "zh-TW": "閱讀器",
+            "zh-CN": "阅读器"
         ],
         "noLargeImagesFound": [
             "en": "No large images found on this page.",
@@ -444,6 +552,36 @@ class I18nManager: ObservableObject {
             "ja": "画像を%d件、写真に保存しました。",
             "zh-TW": "已儲存 %d 張圖片到照片。",
             "zh-CN": "已保存 %d 张图片到照片。"
+        ],
+        "saveSelectedImages": [
+            "en": "Save (%d)",
+            "ja": "保存（%d）",
+            "zh-TW": "儲存（%d）",
+            "zh-CN": "保存（%d）"
+        ],
+        "imageNoSelectedImages": [
+            "en": "No images selected.",
+            "ja": "画像が選択されていません。",
+            "zh-TW": "未選取圖片。",
+            "zh-CN": "未选择图片。"
+        ],
+        "imageSelectionError": [
+            "en": "Image selection is unavailable. Please try again.",
+            "ja": "画像選択を利用できません。もう一度お試しください。",
+            "zh-TW": "無法使用圖片選取功能，請再試一次。",
+            "zh-CN": "无法使用图片选择功能，请重试。"
+        ],
+        "savedImagesToPhotos": [
+            "en": "Saved %d image(s) to Photos.",
+            "ja": "%d 枚の画像を保存しました。",
+            "zh-TW": "已儲存 %d 張圖片到相簿。",
+            "zh-CN": "已保存 %d 张图片到照片。"
+        ],
+        "imageNoneSaved": [
+            "en": "No images could be saved.",
+            "ja": "画像を保存できませんでした。",
+            "zh-TW": "沒有圖片可以儲存。",
+            "zh-CN": "没有图片可以保存。"
         ],
         "noImagesSaved": [
             "en": "No images could be saved.",
@@ -518,16 +656,34 @@ class I18nManager: ObservableObject {
             "zh-CN": "移动"
         ],
         "zoomIn": [
-            "en": "Zoom In",
+            "en": "Zoom +",
             "ja": "拡大",
             "zh-TW": "放大",
             "zh-CN": "放大"
         ],
         "zoomOut": [
-            "en": "Zoom Out",
+            "en": "Zoom -",
             "ja": "縮小",
             "zh-TW": "縮小",
             "zh-CN": "缩小"
+        ],
+        "cropModeBtn": [
+            "en": "Crop",
+            "ja": "切り取り",
+            "zh-TW": "裁切",
+            "zh-CN": "裁剪"
+        ],
+        "moveModeBtn": [
+            "en": "Move",
+            "ja": "移動",
+            "zh-TW": "移動",
+            "zh-CN": "移动"
+        ],
+        "fitToCanvas": [
+            "en": "Fit",
+            "ja": "合わせる",
+            "zh-TW": "符合",
+            "zh-CN": "适应"
         ],
         "fit": [
             "en": "Fit",
@@ -633,6 +789,12 @@ class I18nManager: ObservableObject {
             "zh-TW": "推播通知",
             "zh-CN": "推送通知"
         ],
+        "notificationSetupHint": [
+            "en": "Allow notifications to receive alerts for new matches.",
+            "ja": "新しい一致の通知を受け取るには、通知を許可してください。",
+            "zh-TW": "允許通知即可接收新相符項目的提醒。",
+            "zh-CN": "允许通知即可接收新匹配项目的提醒。"
+        ],
         "enableNotifications": [
             "en": "Enable Notifications",
             "ja": "通知を有効にする",
@@ -650,6 +812,24 @@ class I18nManager: ObservableObject {
             "ja": "テスト通知を送信",
             "zh-TW": "傳送測試通知",
             "zh-CN": "发送测试通知"
+        ],
+        "notifLocalSending": [
+            "en": "Sending local test…",
+            "ja": "ローカルテストを送信中…",
+            "zh-TW": "正在傳送本機測試…",
+            "zh-CN": "正在发送本地测试…"
+        ],
+        "notifLocalTestSent": [
+            "en": "Local test notification sent.",
+            "ja": "ローカルテスト通知を送信しました。",
+            "zh-TW": "已傳送本機測試通知。",
+            "zh-CN": "已发送本地测试通知。"
+        ],
+        "notifLocalTestFailed": [
+            "en": "Local notification test failed. Check iOS notification settings.",
+            "ja": "ローカル通知テストに失敗しました。iOSの通知設定を確認してください。",
+            "zh-TW": "本機通知測試失敗，請檢查 iOS 通知設定。",
+            "zh-CN": "本地通知测试失败，请检查 iOS 通知设置。"
         ],
         "notificationStatusEnabled": [
             "en": "Enabled",
@@ -814,6 +994,12 @@ class I18nManager: ObservableObject {
             "ja": "このデバイスのKeychainにのみ保存されます。Xの結果には自分のBearer Tokenが必要です。未設定の場合、そのソースはスキップされます。",
             "zh-TW": "僅儲存在此裝置的 Keychain。X 結果需要你自己的 Bearer Token；未設定時會略過該來源。",
             "zh-CN": "仅存储在此设备的 Keychain。X 结果需要你自己的 Bearer Token；未设置时会跳过该来源。"
+        ],
+        "themeStyle": [
+            "en": "Style",
+            "ja": "スタイル",
+            "zh-TW": "樣式",
+            "zh-CN": "样式"
         ],
         "style": [
             "en": "Style",
@@ -1075,9 +1261,15 @@ class I18nManager: ObservableObject {
         ],
         "clearAllData": [
             "en": "Clear All Data",
-            "ja": "すべてのデータを削除",
+            "ja": "データをすべて削除",
             "zh-TW": "清除所有資料",
             "zh-CN": "清除所有数据"
+        ],
+        "clearAllDataAlert": [
+            "en": "Clear All Data?",
+            "ja": "データをすべて削除しますか？",
+            "zh-TW": "清除所有資料？",
+            "zh-CN": "清除所有数据？"
         ],
         "clearAllDataTitle": [
             "en": "Clear All Data?",
@@ -1087,9 +1279,9 @@ class I18nManager: ObservableObject {
         ],
         "clearAllDataMessage": [
             "en": "This removes keywords, feed items, saved pages, custom URLs, avatars, hidden items, wallpaper, and source order from this device.",
-            "ja": "このデバイスからキーワード、フィード項目、保存済みページ、カスタムURL、アバター、非表示項目、壁紙、ソース順を削除します。",
-            "zh-TW": "這會從此裝置移除關鍵字、動態項目、已儲存頁面、自訂網址、頭像、隱藏項目、壁紙與來源排序。",
-            "zh-CN": "这会从此设备移除关键字、动态项目、已保存页面、自定义网址、头像、隐藏项目、壁纸和来源排序。"
+            "ja": "キーワード、フィードアイテム、保存ページ、カスタムURL、アバター、非表示アイテム、壁紙、ソース順序がこのデバイスから削除されます。",
+            "zh-TW": "將從此裝置移除關鍵字、動態項目、已儲存頁面、自訂URL、頭貼、隱藏項目、壁紙及來源順序。",
+            "zh-CN": "将从此设备移除关键词、动态项目、已保存页面、自定义URL、头像、隐藏项目、壁纸及来源顺序。"
         ],
 
         // MARK: - OshiView
@@ -1183,23 +1375,35 @@ class I18nManager: ObservableObject {
             "zh-TW": "載入更多（剩餘 %d）",
             "zh-CN": "加载更多（剩余 %d）"
         ],
+        "feedLoadMoreFmt": [
+            "en": "Load more (%d remaining)",
+            "ja": "もっと見る（残り%d件）",
+            "zh-TW": "載入更多（剩餘%d則）",
+            "zh-CN": "加载更多（剩余%d条）"
+        ],
         "addCustomFeed": [
             "en": "Add Custom RSS/Web Feed",
             "ja": "カスタムRSS/Webフィードを追加",
-            "zh-TW": "新增自訂 RSS/Web 來源",
-            "zh-CN": "添加自定义 RSS/Web 来源"
+            "zh-TW": "新增自訂RSS/網頁來源",
+            "zh-CN": "添加自定义RSS/网页来源"
         ],
         "feedTitlePlaceholder": [
-            "en": "Feed/Webpage Title...",
-            "ja": "フィード/Webページのタイトル...",
-            "zh-TW": "來源/網頁標題...",
-            "zh-CN": "来源/网页标题..."
+            "en": "Feed/Webpage Title…",
+            "ja": "フィード/ページタイトル…",
+            "zh-TW": "來源/網頁標題…",
+            "zh-CN": "来源/网页标题…"
+        ],
+        "urlPlaceholder": [
+            "en": "https://…",
+            "ja": "https://…",
+            "zh-TW": "https://…",
+            "zh-CN": "https://…"
         ],
         "reorderSources": [
             "en": "Reorder Sources",
-            "ja": "ソースを並べ替え",
-            "zh-TW": "重新排序來源",
-            "zh-CN": "重新排序来源"
+            "ja": "ソースを並び替え",
+            "zh-TW": "重新排列來源",
+            "zh-CN": "重新排列来源"
         ],
         "noCustomUrlsAdded": [
             "en": "No custom URLs added yet",
@@ -1381,6 +1585,66 @@ class I18nManager: ObservableObject {
             "zh-TW": "還原暫存資料不完整。",
             "zh-CN": "恢复暂存数据不完整。"
         ],
+        "searchGroupNews": [
+            "en": "News",
+            "ja": "ニュース",
+            "zh-TW": "新聞",
+            "zh-CN": "新闻"
+        ],
+        "searchGroupEntertainment": [
+            "en": "Entertainment",
+            "ja": "エンタメ",
+            "zh-TW": "娛樂",
+            "zh-CN": "娱乐"
+        ],
+        "searchGroupMagazines": [
+            "en": "Magazines",
+            "ja": "雑誌",
+            "zh-TW": "雜誌",
+            "zh-CN": "杂志"
+        ],
+        "searchGroupVideo": [
+            "en": "Video",
+            "ja": "動画",
+            "zh-TW": "影片",
+            "zh-CN": "视频"
+        ],
+        "searchGroupWriting": [
+            "en": "Writing",
+            "ja": "ライター",
+            "zh-TW": "寫作",
+            "zh-CN": "写作"
+        ],
+        "searchGroupSocial": [
+            "en": "Social",
+            "ja": "SNS",
+            "zh-TW": "社群",
+            "zh-CN": "社交"
+        ],
+        "searchGroupCommunity": [
+            "en": "Community",
+            "ja": "コミュニティ",
+            "zh-TW": "社區",
+            "zh-CN": "社区"
+        ],
+        "searchGroupWeb": [
+            "en": "Web",
+            "ja": "ウェブ",
+            "zh-TW": "網頁",
+            "zh-CN": "网页"
+        ],
+        "searchGroupShopping": [
+            "en": "Shopping",
+            "ja": "ショッピング",
+            "zh-TW": "購物",
+            "zh-CN": "购物"
+        ],
+        "searchGroupCustom": [
+            "en": "Custom",
+            "ja": "カスタム",
+            "zh-TW": "自訂",
+            "zh-CN": "自定义"
+        ],
         "openNotification": [
             "en": "Open",
             "ja": "開く",
@@ -1396,5 +1660,15 @@ class I18nManager: ObservableObject {
 
     func tFormat(_ key: String, _ value: Int) -> String {
         t(key).replacingOccurrences(of: "%d", with: String(value))
+    }
+
+    func tFormat(_ key: String, _ value: String) -> String {
+        t(key).replacingOccurrences(of: "%@", with: value)
+    }
+
+    func tSearchGroup(_ group: String) -> String {
+        let key = "searchGroup\(group)"
+        let result = t(key)
+        return result == key ? group : result
     }
 }

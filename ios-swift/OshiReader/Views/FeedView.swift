@@ -10,10 +10,12 @@ actor FeedThumbnailLoader {
     static let avatar = FeedThumbnailLoader(maxPixelSize: 900)
 
     private let cache = NSCache<NSURL, UIImage>()
+    private let session: URLSession
     private var inFlight: [URL: Task<UIImage?, Never>] = [:]
     private let maxPixelSize: Int
 
-    init(maxPixelSize: Int = 144) {
+    init(session: URLSession = .shared, maxPixelSize: Int = 144) {
+        self.session = session
         self.maxPixelSize = maxPixelSize
         cache.countLimit = 100
         cache.totalCostLimit = 24 * 1024 * 1024
@@ -24,21 +26,14 @@ actor FeedThumbnailLoader {
         if let existing = inFlight[url] { return await existing.value }
 
         let maxPixelSize = maxPixelSize
+        let session = session
         let task = Task<UIImage?, Never> {
-            guard let (data, response) = try? await URLSession.shared.data(from: url),
+            guard !Task.isCancelled,
+                  let (data, response) = try? await session.data(from: url),
                   let http = response as? HTTPURLResponse,
                   (200...299).contains(http.statusCode),
-                  let source = CGImageSourceCreateWithData(data as CFData, nil),
-                  let image = CGImageSourceCreateThumbnailAtIndex(
-                    source,
-                    0,
-                    [
-                        kCGImageSourceCreateThumbnailFromImageAlways: true,
-                        kCGImageSourceCreateThumbnailWithTransform: true,
-                        kCGImageSourceThumbnailMaxPixelSize: maxPixelSize
-                    ] as CFDictionary
-                  ) else { return nil }
-            return UIImage(cgImage: image)
+                  !Task.isCancelled else { return nil }
+            return Self.downsample(data: data, maxPixelSize: maxPixelSize)
         }
         inFlight[url] = task
         let result = await task.value
@@ -51,11 +46,33 @@ actor FeedThumbnailLoader {
         }
         return result
     }
+
+    nonisolated static func downsample(data: Data, maxPixelSize: Int) -> UIImage? {
+        guard maxPixelSize > 0,
+              let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let image = CGImageSourceCreateThumbnailAtIndex(
+                source,
+                0,
+                [
+                    kCGImageSourceCreateThumbnailFromImageAlways: true,
+                    kCGImageSourceCreateThumbnailWithTransform: true,
+                    kCGImageSourceThumbnailMaxPixelSize: maxPixelSize
+                ] as CFDictionary
+              ) else { return nil }
+        return UIImage(cgImage: image)
+    }
 }
 
 private struct FeedThumbnailView: View {
     let url: URL
+    let size: CGFloat
+
     @State private var image: UIImage?
+
+    init(url: URL, size: CGFloat = 72) {
+        self.url = url
+        self.size = size
+    }
 
     var body: some View {
         Group {
@@ -63,21 +80,18 @@ private struct FeedThumbnailView: View {
                 Image(uiImage: image)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
-                    .transition(.opacity)
             } else {
                 Color.gray.opacity(0.1)
-                    .transition(.opacity)
             }
         }
-        .frame(width: 72, height: 72)
+        .frame(width: size, height: size)
         .clipped()
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .animation(.easeIn(duration: 0.2), value: image != nil)
+        .cornerRadius(8)
         .task(id: url) {
             image = nil
-            let loaded = await FeedThumbnailLoader.shared.image(for: url)
+            let loadedImage = await FeedThumbnailLoader.shared.image(for: url)
             guard !Task.isCancelled else { return }
-            image = loaded
+            image = loadedImage
         }
     }
 }
@@ -97,16 +111,32 @@ struct FeedView: View {
     
     @State private var hasLoadedOnce = false
     @State private var displayedCount: Int = 20
+    @State private var cachedFilteredItems: [FeedItem]
+    @State private var cachedVisibleItems: [FeedItem]
     @State private var showFilterSheet = false
     @State private var showAddUrlSheet = false
     @State private var showReorderSheet = false
     @State private var showSourceStatusSheet = false
+    @State private var pendingHiddenFeedItem: FeedItem? = nil
     
     @State private var customUrlString = ""
     @State private var customUrlTitle = ""
     
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var selectedItem: FeedItem? = nil
+
+    init() {
+        let db = LocalDB.shared
+        let initialFilteredItems = Self.makeFilteredItems(
+            db: db,
+            keyword: nil,
+            platform: nil,
+            mediaFilter: "all",
+            days: 30
+        )
+        _cachedFilteredItems = State(initialValue: initialFilteredItems)
+        _cachedVisibleItems = State(initialValue: Array(initialFilteredItems.prefix(20)))
+    }
     
     private let timeRanges = [
         (label: "allTime", days: 0),
@@ -120,26 +150,40 @@ struct FeedView: View {
         Set(db.savedPages.map(\.id))
     }
 
-    // Full filtered list (all matching items)
-    var filteredItems: [FeedItem] {
-        var result = db.queryFeed(keyword: selectedKeyword, days: daysFilter)
-        if let platform = selectedPlatform {
-            result = result.filter { matchesPlatform($0, platformId: platform) }
+    private var canLoadMore: Bool {
+        displayedCount < min(cachedFilteredItems.count, 100)
+    }
+
+    private var remainingLoadMoreCount: Int {
+        max(min(cachedFilteredItems.count, 100) - displayedCount, 0)
+    }
+
+    private func makeFilteredItems() -> [FeedItem] {
+        Self.makeFilteredItems(
+            db: db,
+            keyword: selectedKeyword,
+            platform: selectedPlatform,
+            mediaFilter: mediaFilter,
+            days: daysFilter
+        )
+    }
+
+    private static func makeFilteredItems(
+        db: LocalDB,
+        keyword: String?,
+        platform: String?,
+        mediaFilter: String,
+        days: Int
+    ) -> [FeedItem] {
+        var result = db.queryFeed(keyword: keyword, days: days)
+        if let platform {
+            result = result.filter { Self.matchesPlatform($0, platformId: platform) }
         }
         if mediaFilter == "media_only" {
             let mediaPlatforms: Set<String> = ["youtube", "niconico", "tver"]
             result = result.filter { $0.media_type == "video" || mediaPlatforms.contains($0.platform) }
         }
         return result
-    }
-
-    // Page-limited slice shown in the list
-    var visibleItems: [FeedItem] {
-        Array(filteredItems.prefix(displayedCount))
-    }
-
-    private var canLoadMore: Bool {
-        displayedCount < min(filteredItems.count, 100)
     }
     
     var orderedPlatforms: [String] {
@@ -198,347 +242,21 @@ struct FeedView: View {
     
     private var mainContentColumn: some View {
         ZStack(alignment: .bottomTrailing) {
-            VStack(spacing: 0) {
-                // Filter Summary bar (collapsible trigger)
-                VStack(alignment: .leading, spacing: 0) {
-                    Button(action: { showFilterSheet = true }) {
-                        HStack {
-                            Image(systemName: "slider.horizontal.3")
-                                .foregroundColor(filterCount > 0 ? theme.colors.primary : theme.colors.textMuted)
-                            Text(i18n.t("filter"))
-                                .font(.subheadline)
-                                .fontWeight(.semibold)
-                                .foregroundColor(filterCount > 0 ? theme.colors.primary : theme.colors.textSub)
-
-                            if filterCount > 0 {
-                                Text("\(filterCount)")
-                                    .font(.caption2)
-                                    .bold()
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 2)
-                                    .background(theme.colors.primary)
-                                    .foregroundColor(.white)
-                                    .clipShape(Capsule())
-                            }
-
-                            Spacer()
-                            Image(systemName: showFilterSheet ? "chevron.up" : "chevron.down")
-                                .foregroundColor(theme.colors.textMuted)
-                                .font(.caption)
-                        }
-                        .padding(.horizontal, 14)
-                        .padding(.top, 10)
-                        .padding(.bottom, filterCount > 0 ? 6 : 10)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .contentShape(Rectangle())
-                    }
-                    .accessibilityElement(children: .combine)
-                    .accessibilityLabel(i18n.t("filter"))
-                    .accessibilityValue(filterCount > 0 ? i18n.tFormat("activeFiltersCount", filterCount) : "")
-                    .accessibilityIdentifier("feed.filterButton")
-                    .buttonStyle(.plain)
-
-                    if filterCount > 0 {
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            HStack(spacing: 6) {
-                                if let sk = selectedKeyword {
-                                    PillView(text: sk, theme: theme)
-                                }
-                                if let sp = selectedPlatform {
-                                    let meta = theme.metadata(for: sp)
-                                    PillView(text: "\(meta.icon) \(meta.name)", bgColor: meta.bg, fgColor: meta.fg)
-                                }
-                                if mediaFilter == "media_only" {
-                                    PillView(text: "📹 " + i18n.t("mediaOnly"), theme: theme)
-                                }
-                            }
-                            .padding(.horizontal, 14)
-                            .padding(.bottom, 8)
-                        }
-                    }
-                }
-                .background(theme.colors.card)
-                .overlay(
-                    Rectangle()
-                        .frame(height: 0.5)
-                        .foregroundColor(theme.colors.divider),
-                    alignment: .bottom
-                )
-                
-                // Horizontal platform strip
-                if !orderedPlatforms.isEmpty {
-                    HStack(spacing: 0) {
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            HStack(spacing: 8) {
-                                // "All" button
-                                Button(action: {
-                                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                                    selectedPlatform = nil
-                                }) {
-                                    HStack(spacing: 6) {
-                                        Text("🌐")
-                                            .font(.system(size: 16))
-                                        Text(i18n.t("all"))
-                                            .font(.system(size: 12, weight: selectedPlatform == nil ? .bold : .medium))
-                                            .foregroundColor(selectedPlatform == nil ? .white : theme.colors.textMuted)
-                                            .lineLimit(1)
-                                    }
-                                    .padding(.horizontal, 10)
-                                    .frame(minWidth: 64, minHeight: 44)
-                                    .background(selectedPlatform == nil ? theme.colors.primary : theme.colors.divider)
-                                    .clipShape(RoundedRectangle(cornerRadius: 10))
-                                }
-                                .accessibilityLabel(i18n.t("all"))
-                                .accessibilityHint(selectedPlatform != nil ? i18n.t("showsAllPlatformsHint") : "")
-                                .accessibilityIdentifier("feed.platform.all")
-                                
-                                // Individual platforms
-                                ForEach(orderedPlatforms, id: \.self) { platformId in
-                                    let meta = theme.metadata(for: platformId)
-                                    let isSelected = selectedPlatform == platformId
-                                    let bg = theme.style == .standard
-                                        ? (isSelected ? theme.colors.primary : theme.standardBadgeBg)
-                                        : (isSelected ? meta.accent : meta.bg)
-                                    let fg = theme.style == .standard
-                                        ? (isSelected ? Color.white : theme.standardBadgeFg)
-                                        : (isSelected ? Color.white : meta.fg)
-                                    Button(action: {
-                                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                                        selectedPlatform = isSelected ? nil : platformId
-                                        if !isSelected && !hasItems(for: platformId) {
-                                            Task {
-                                                await ingestPlatform(platformId)
-                                            }
-                                        }
-                                    }) {
-                                        HStack(spacing: 6) {
-                                            Text(meta.icon)
-                                                .font(.system(size: 16))
-                                            Text(meta.name)
-                                                .font(.system(size: 12, weight: isSelected ? .bold : .medium))
-                                                .foregroundColor(fg)
-                                                .lineLimit(1)
-                                                .minimumScaleFactor(0.82)
-                                        }
-                                        .padding(.horizontal, 10)
-                                        .frame(minWidth: 64, minHeight: 44)
-                                        .background(bg)
-                                        .clipShape(RoundedRectangle(cornerRadius: 10))
-                                    }
-                                    .accessibilityLabel(meta.name)
-                                    .accessibilityHint(
-                                        isSelected
-                                            ? i18n.t("deselectFilterHint")
-                                            : i18n.t("filterByPlatformHint").replacingOccurrences(of: "%@", with: meta.name)
-                                    )
-                                    .accessibilityIdentifier("feed.platform.\(platformId)")
-                                }
-                            }
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 6)
-                        }
-                        
-                        // Reorder button
-                        Button(action: { showReorderSheet.toggle() }) {
-                            Image(systemName: "line.3.horizontal")
-                                .font(.system(size: 16, weight: .semibold))
-                                .foregroundColor(theme.colors.textMuted)
-                                .frame(width: 44, height: 44)
-                                .background(theme.colors.divider)
-                                .cornerRadius(10)
-                                .padding(.trailing, 10)
-                        }
-                        .accessibilityIdentifier("feed.reorderSourcesButton")
-                    }
-                    .background(theme.colors.card)
-                    .overlay(
-                        Rectangle()
-                            .frame(height: 0.5)
-                            .foregroundColor(theme.colors.divider),
-                        alignment: .bottom
-                    )
-                }
-
-                HStack(spacing: 7) {
-                    Image(systemName: refreshDiagnostics.lastSucceeded == false ? "exclamationmark.triangle" : "arrow.triangle.2.circlepath")
-                        .font(.caption)
-                    Text(refreshDiagnostics.statusText)
-                        .font(.caption)
-                        .lineLimit(1)
-                    Spacer()
-                }
-                .foregroundColor(refreshDiagnostics.lastSucceeded == false ? .orange : theme.colors.textMuted)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 6)
-                .accessibilityIdentifier("feed.refreshStatus")
-
-                if !refreshDiagnostics.visibleSourceHealthSummaries.isEmpty {
-                    Button {
-                        showSourceStatusSheet = true
-                    } label: {
-                        HStack {
-                            Text(refreshDiagnostics.sourceSummaryText)
-                            Spacer()
-                            Image(systemName: "chevron.right")
-                                .font(.caption2)
-                        }
-                        .font(.caption2)
-                        .foregroundColor(theme.colors.textMuted)
-                        .padding(.horizontal, 14)
-                        .padding(.bottom, 5)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("feed.sourceStatus")
-                }
-                
-                // Main Feed List
-                if refreshCoordinator.isRefreshing && filteredItems.isEmpty {
-                    Spacer()
-                    ProgressView()
-                        .tint(theme.colors.primary)
-                    Spacer()
-                } else if filteredItems.isEmpty {
-                    Spacer()
-                    VStack(spacing: 12) {
-                        Text("≽՞•ﻌ•՞≼")
-                            .font(.system(size: 40))
-                        Text(i18n.t("feedEmpty"))
-                            .font(.headline)
-                            .foregroundColor(theme.colors.primary)
-                        Text(i18n.t("feedEmptyBody"))
-                            .font(.subheadline)
-                            .foregroundColor(theme.colors.textMuted)
-                            .multilineTextAlignment(.center)
-                            .padding(.horizontal, 32)
-                    }
-                    Spacer()
-                } else {
-                    List {
-                        ForEach(visibleItems) { item in
-                            if horizontalSizeClass == .regular {
-                                Button(action: { openFeedItem(item) }) {
-                                    FeedCard(item: item, isSaved: savedItemIds.contains(item.id), theme: theme)
-                                        .overlay(
-                                            RoundedRectangle(cornerRadius: 12)
-                                                .stroke(theme.colors.primary, lineWidth: selectedItem?.id == item.id ? 2 : 0)
-                                        )
-                                }
-                                .buttonStyle(PlainButtonStyle())
-                                .accessibilityIdentifier("feed.card.\(item.id)")
-                                .listRowInsets(EdgeInsets(top: 4, leading: 14, bottom: 4, trailing: 14))
-                                .listRowBackground(Color.clear)
-                                .listRowSeparator(.hidden)
-                                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                                    Button(role: .destructive) {
-                                        db.deleteFeedItem(id: item.id, watchTermKeyword: item.watch_term_keyword)
-                                        if selectedItem?.id == item.id { selectedItem = nil }
-                                    } label: {
-                                        Label(i18n.t("delete"), systemImage: "trash")
-                                    }
-                                }
-                                .swipeActions(edge: .leading, allowsFullSwipe: true) {
-                                    Button {
-                                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                                        _ = db.toggleSaved(item: item)
-                                    } label: {
-                                        Label(savedItemIds.contains(item.id) ? i18n.t("unsave") : i18n.t("save"),
-                                              systemImage: savedItemIds.contains(item.id) ? "bookmark.slash" : "bookmark")
-                                    }
-                                    .tint(theme.colors.primary)
-                                }
-                            } else {
-                                NavigationLink(destination: ReaderView(feedItem: item)
-                                    .onAppear { markRecentUse(for: item) }) {
-                                    FeedCard(item: item, isSaved: savedItemIds.contains(item.id), theme: theme)
-                                }
-                                .buttonStyle(PlainButtonStyle())
-                                .accessibilityIdentifier("feed.card.\(item.id)")
-                                .listRowInsets(EdgeInsets(top: 4, leading: 14, bottom: 4, trailing: 14))
-                                .listRowBackground(Color.clear)
-                                .listRowSeparator(.hidden)
-                                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                                    Button(role: .destructive) {
-                                        db.deleteFeedItem(id: item.id, watchTermKeyword: item.watch_term_keyword)
-                                    } label: {
-                                        Label(i18n.t("delete"), systemImage: "trash")
-                                    }
-                                }
-                                .swipeActions(edge: .leading, allowsFullSwipe: true) {
-                                    Button {
-                                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                                        _ = db.toggleSaved(item: item)
-                                    } label: {
-                                        Label(savedItemIds.contains(item.id) ? i18n.t("unsave") : i18n.t("save"),
-                                              systemImage: savedItemIds.contains(item.id) ? "bookmark.slash" : "bookmark")
-                                    }
-                                    .tint(theme.colors.primary)
-                                }
-                            }
-                        }
-
-                        if canLoadMore {
-                            Button {
-                                displayedCount = min(displayedCount + 20, 100)
-                            } label: {
-                                HStack {
-                                    Spacer()
-                                    Text(i18n.tFormat("loadMoreRemaining", min(filteredItems.count, 100) - displayedCount))
-                                        .font(.subheadline)
-                                        .foregroundColor(theme.colors.primary)
-                                    Spacer()
-                                }
-                                .padding(.vertical, 12)
-                            }
-                            .listRowBackground(Color.clear)
-                            .listRowSeparator(.hidden)
-                            .accessibilityIdentifier("feed.loadMoreButton")
-                        }
-                    }
-                    .listStyle(.plain)
-                    .refreshable {
-                        await refreshFeed()
-                    }
-                }
-            }
+            feedContentStack
             
             // Floating Action Button
-            Button(action: { showAddUrlSheet.toggle() }) {
-                Image(systemName: "plus")
-                    .font(.title2)
-                    .foregroundColor(.white)
-                    .frame(width: 52, height: 52)
-                    .background(theme.colors.primary)
-                    .clipShape(Circle())
-                    .shadow(color: Color.black.opacity(0.25), radius: 8, x: 0, y: 3)
-            }
-            .accessibilityIdentifier("feed.addCustomUrlButton")
-            .padding(.trailing, 20)
-            .padding(.bottom, 24)
+            floatingAddButton
         }
         .navigationTitle(i18n.t("appTitle"))
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
-                if refreshCoordinator.isRefreshing {
-                    ProgressView()
-                        .tint(theme.colors.primary)
-                } else {
-                    Button(action: {
-                        Task {
-                            await refreshFeed()
-                        }
-                    }) {
-                        Image(systemName: "arrow.clockwise")
-                            .foregroundColor(theme.colors.primary)
-                    }
-                    .accessibilityIdentifier("feed.refreshButton")
-                }
+                refreshToolbarContent
             }
         }
         .sheet(isPresented: $showFilterSheet) {
             FilterPanel(selectedKeyword: $selectedKeyword, mediaFilter: $mediaFilter, daysFilter: $daysFilter, theme: theme, i18n: i18n, timeRanges: timeRanges)
-                .presentationDetents([.medium, .large])
+                .presentationDetents([.medium])
         }
         .sheet(isPresented: $showAddUrlSheet) {
             AddUrlSheet(customUrlString: $customUrlString, customUrlTitle: $customUrlTitle, theme: theme, i18n: i18n) {
@@ -562,21 +280,32 @@ struct FeedView: View {
         .sheet(isPresented: $showSourceStatusSheet) {
             SourceStatusSheet(summaries: refreshDiagnostics.visibleSourceHealthSummaries, theme: theme)
         }
-        .onChange(of: selectedKeyword) { _, keyword in
-            displayedCount = 20
-            if let keyword {
-                recentTermUsage.markUsed(keyword: keyword, terms: db.terms)
+        .alert(
+            i18n.tFormat("hidePostTitleFmt", pendingHiddenFeedItem?.title ?? pendingHiddenFeedItem?.watch_term_keyword ?? ""),
+            isPresented: Binding(
+                get: { pendingHiddenFeedItem != nil },
+                set: { if !$0 { pendingHiddenFeedItem = nil } }
+            )
+        ) {
+            Button(i18n.t("cancel"), role: .cancel) {
+                pendingHiddenFeedItem = nil
             }
-        }
-        .onChange(of: selectedPlatform) { _, _ in displayedCount = 20 }
-        .onChange(of: daysFilter) { _, newDays in
-            displayedCount = 20
-            if newDays == 0 {
-                Task { await refreshFeed() }
+            Button(i18n.t("hidePostConfirm"), role: .destructive) {
+                confirmHidePost()
             }
+        } message: {
+            Text(i18n.t("hidePostMessage"))
         }
-        .onChange(of: mediaFilter) { _, _ in displayedCount = 20 }
+        .onChange(of: selectedKeyword) { _, keyword in handleSelectedKeywordChange(keyword) }
+        .onChange(of: selectedPlatform) { _, _ in rebuildFeedCache(resetDisplayedCount: true) }
+        .onChange(of: daysFilter) { _, newDays in handleDaysFilterChange(newDays) }
+        .onChange(of: mediaFilter) { _, _ in rebuildFeedCache(resetDisplayedCount: true) }
+        .onChange(of: db.feedItems) { _, _ in rebuildFeedCache() }
+        .onChange(of: db.subscribedPlatforms) { _, _ in rebuildFeedCache(resetDisplayedCount: true) }
+        .onChange(of: db.terms) { _, _ in rebuildFeedCache(resetDisplayedCount: true) }
+        .onChange(of: db.hiddenItems) { _, _ in rebuildFeedCache(resetDisplayedCount: true) }
         .onAppear {
+            rebuildFeedCache()
             guard !hasLoadedOnce else { return }
             hasLoadedOnce = true
             Task {
@@ -587,6 +316,243 @@ struct FeedView: View {
             }
         }
     }
+
+    private var feedContentStack: some View {
+        VStack(spacing: 0) {
+            filterSummaryBar
+            platformStrip
+            refreshStatusRows
+            feedMainState
+        }
+    }
+
+    @ViewBuilder
+    private var platformStrip: some View {
+        if !orderedPlatforms.isEmpty {
+            HStack(spacing: 0) {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        allPlatformFilterButton()
+                        ForEach(orderedPlatforms, id: \.self) { platformId in
+                            platformFilterButton(for: platformId)
+                        }
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 6)
+                }
+
+                Button(action: { showReorderSheet.toggle() }) {
+                    ReorderSourcesButtonLabel(color: theme.colors.textMuted, background: theme.colors.divider)
+                }
+                .accessibilityIdentifier("feed.reorderSourcesButton")
+            }
+            .background(theme.colors.card)
+            .overlay(
+                Rectangle()
+                    .frame(height: 0.5)
+                    .foregroundColor(theme.colors.divider),
+                alignment: .bottom
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var feedMainState: some View {
+        if refreshCoordinator.isRefreshing && cachedFilteredItems.isEmpty {
+            feedLoadingState
+        } else if cachedFilteredItems.isEmpty {
+            emptyFeedState
+        } else {
+            feedList
+        }
+    }
+
+    private var floatingAddButton: some View {
+        Button(action: { showAddUrlSheet.toggle() }) {
+            AddFeedButtonLabel(background: theme.colors.primary)
+        }
+        .accessibilityIdentifier("feed.addCustomUrlButton")
+        .padding(.trailing, 20)
+        .padding(.bottom, 24)
+    }
+
+    private var filterSummaryBar: some View {
+        Button(action: { showFilterSheet.toggle() }) {
+            HStack {
+                Image(systemName: "slider.horizontal.3")
+                    .foregroundColor(filterCount > 0 ? theme.colors.primary : theme.colors.textMuted)
+                Text(i18n.t("filter"))
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                    .foregroundColor(filterCount > 0 ? theme.colors.primary : theme.colors.textSub)
+
+                if filterCount > 0 {
+                    Text("\(filterCount)")
+                        .font(.caption2)
+                        .bold()
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(theme.colors.primary)
+                        .foregroundColor(.white)
+                        .clipShape(Capsule())
+                }
+
+                activeFilterPills
+
+                Spacer()
+                Image(systemName: showFilterSheet ? "chevron.up" : "chevron.down")
+                    .foregroundColor(theme.colors.textMuted)
+                    .font(.caption)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(theme.colors.card)
+            .overlay(
+                Rectangle()
+                    .frame(height: 0.5)
+                    .foregroundColor(theme.colors.divider),
+                alignment: .bottom
+            )
+        }
+        .accessibilityIdentifier("feed.filterButton")
+    }
+
+    private var refreshStatusRows: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 6) {
+                Image(systemName: refreshCoordinator.isRefreshing ? "arrow.triangle.2.circlepath" : "clock")
+                    .font(.caption2)
+                Text(refreshDiagnostics.statusText)
+                    .font(.caption)
+                    .lineLimit(1)
+                Spacer()
+            }
+            .foregroundColor(theme.colors.textMuted)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 6)
+            .background(theme.colors.card)
+            .accessibilityIdentifier("feed.refreshStatus")
+
+            if !refreshDiagnostics.visibleSourceHealthSummaries.isEmpty || !refreshDiagnostics.sourceStatuses.isEmpty {
+                Button {
+                    showSourceStatusSheet = true
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: refreshDiagnostics.hasSourceFailures ? "exclamationmark.triangle" : "chart.bar.xaxis")
+                            .font(.caption2)
+                        Text(refreshDiagnostics.sourceSummaryText)
+                            .font(.caption)
+                            .lineLimit(1)
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.caption2)
+                    }
+                    .foregroundColor(refreshDiagnostics.hasSourceFailures ? .orange : theme.colors.textMuted)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 6)
+                    .background(theme.colors.card)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("feed.sourceStatus")
+            }
+        }
+        .overlay(
+            Rectangle()
+                .frame(height: 0.5)
+                .foregroundColor(theme.colors.divider),
+            alignment: .bottom
+        )
+    }
+
+    @ViewBuilder
+    private var refreshToolbarContent: some View {
+        if refreshCoordinator.isRefreshing {
+            ProgressView()
+                .tint(theme.colors.primary)
+        } else {
+            Button(action: {
+                Task {
+                    await refreshFeed()
+                }
+            }) {
+                Image(systemName: "arrow.clockwise")
+                    .foregroundColor(theme.colors.primary)
+            }
+            .accessibilityIdentifier("feed.refreshButton")
+        }
+    }
+
+    @ViewBuilder
+    private var activeFilterPills: some View {
+        if let keyword = selectedKeyword {
+            PillView(text: keyword, theme: theme)
+        }
+        if let platform = selectedPlatform {
+            let metadata = theme.metadata(for: platform)
+            PillView(text: "\(metadata.icon) \(metadata.name)", bgColor: metadata.bg, fgColor: metadata.fg)
+        }
+        if mediaFilter == "media_only" {
+            PillView(text: "📹 " + i18n.t("mediaOnly"), theme: theme)
+        }
+    }
+
+    private var feedLoadingState: some View {
+        Group {
+            Spacer()
+            ProgressView()
+                .tint(theme.colors.primary)
+            Spacer()
+        }
+    }
+
+    private var emptyFeedState: some View {
+        Group {
+            Spacer()
+            VStack(spacing: 12) {
+                Text("≽՞•ﻌ•՞≼")
+                    .font(.system(size: 40))
+                Text(i18n.t("feedEmpty"))
+                    .font(.headline)
+                    .foregroundColor(theme.colors.primary)
+                Text(i18n.t("feedEmptyBody"))
+                    .font(.subheadline)
+                    .foregroundColor(theme.colors.textMuted)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 32)
+            }
+            Spacer()
+        }
+    }
+
+    private var feedList: some View {
+        List {
+            ForEach(cachedVisibleItems) { item in
+                feedListRow(for: item)
+            }
+
+            if canLoadMore {
+                Button {
+                    loadMoreFeedItems()
+                } label: {
+                    HStack {
+                        Spacer()
+                        Text(i18n.tFormat("feedLoadMoreFmt", remainingLoadMoreCount))
+                            .font(.subheadline)
+                            .foregroundColor(theme.colors.primary)
+                        Spacer()
+                    }
+                    .padding(.vertical, 12)
+                }
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+                .accessibilityIdentifier("feed.loadMoreButton")
+            }
+        }
+        .listStyle(.plain)
+        .refreshable {
+            await refreshFeed()
+        }
+    }
     
     private var filterCount: Int {
         var count = 0
@@ -594,6 +560,48 @@ struct FeedView: View {
         if selectedPlatform != nil { count += 1 }
         if mediaFilter == "media_only" { count += 1 }
         return count
+    }
+
+    private func handleSelectedKeywordChange(_ keyword: String?) {
+        rebuildFeedCache(resetDisplayedCount: true)
+        if let keyword {
+            recentTermUsage.markUsed(keyword: keyword, terms: db.terms)
+        }
+    }
+
+    private func handleDaysFilterChange(_ newDays: Int) {
+        rebuildFeedCache(resetDisplayedCount: true)
+        if newDays == 0 {
+            Task { await refreshFeed() }
+        }
+    }
+
+    private func rebuildFeedCache(resetDisplayedCount: Bool = false) {
+        let effectiveDisplayedCount = resetDisplayedCount ? 20 : displayedCount
+        if displayedCount != effectiveDisplayedCount {
+            displayedCount = effectiveDisplayedCount
+        }
+
+        let filtered = makeFilteredItems()
+        if cachedFilteredItems != filtered {
+            cachedFilteredItems = filtered
+        }
+        updateVisibleFeedCache(displayedCount: effectiveDisplayedCount, filteredItems: filtered)
+    }
+
+    private func updateVisibleFeedCache(displayedCount: Int, filteredItems: [FeedItem]? = nil) {
+        let sourceItems = filteredItems ?? cachedFilteredItems
+        let visible = Array(sourceItems.prefix(displayedCount))
+        if cachedVisibleItems != visible {
+            cachedVisibleItems = visible
+        }
+    }
+
+    private func loadMoreFeedItems() {
+        let nextCount = min(displayedCount + 20, 100)
+        guard nextCount != displayedCount else { return }
+        displayedCount = nextCount
+        updateVisibleFeedCache(displayedCount: nextCount)
     }
     
     private func refreshFeed() async {
@@ -632,21 +640,161 @@ struct FeedView: View {
         selectedItem = item
     }
 
-    private func hasItems(for platformId: String) -> Bool {
-        db.feedItems.contains { matchesPlatform($0, platformId: platformId) }
+    private func platformButtonBackground(isSelected: Bool, metadata: PlatformMetadata) -> Color {
+        if theme.style == .standard {
+            return isSelected ? theme.colors.primary : theme.standardBadgeBg
+        }
+        return isSelected ? metadata.accent : metadata.bg
     }
 
-    private func matchesPlatform(_ item: FeedItem, platformId: String) -> Bool {
-        if platformId == "mdpr" {
-            return item.platform == "mdpr" || item.platform == "news:mdpr"
+    private func platformButtonForeground(isSelected: Bool, metadata: PlatformMetadata) -> Color {
+        if theme.style == .standard {
+            return isSelected ? Color.white : theme.standardBadgeFg
         }
-        if platformId == "yahoonews" {
-            return item.platform == "yahoonews" || item.platform == "news:yahoo_ent"
+        return isSelected ? Color.white : metadata.fg
+    }
+
+    private func allPlatformFilterButton() -> some View {
+        let isSelected = selectedPlatform == nil
+        let background = isSelected ? theme.colors.primary : theme.colors.divider
+        let foreground = isSelected ? Color.white : theme.colors.textMuted
+
+        return Button(action: { selectedPlatform = nil }) {
+            PlatformFilterButtonLabel(
+                icon: "🌐",
+                name: i18n.t("all"),
+                isSelected: isSelected,
+                background: background,
+                foreground: foreground
+            )
         }
-        if platformId == "news" {
-            return item.platform == "news" || item.platform.hasPrefix("news:")
+        .accessibilityIdentifier("feed.platform.all")
+    }
+
+    private func platformFilterButton(for platformId: String) -> some View {
+        let metadata = theme.metadata(for: platformId)
+        let isSelected = selectedPlatform == platformId
+        let background = platformButtonBackground(isSelected: isSelected, metadata: metadata)
+        let foreground = platformButtonForeground(isSelected: isSelected, metadata: metadata)
+
+        return Button(action: {
+            selectedPlatform = isSelected ? nil : platformId
+            if !isSelected && !hasItems(for: platformId) {
+                Task {
+                    await ingestPlatform(platformId)
+                }
+            }
+        }) {
+            PlatformFilterButtonLabel(
+                icon: metadata.icon,
+                name: metadata.name,
+                isSelected: isSelected,
+                background: background,
+                foreground: foreground
+            )
         }
-        return item.platform == platformId
+        .accessibilityIdentifier("feed.platform.\(platformId)")
+    }
+
+    @ViewBuilder
+    private func feedListRow(for item: FeedItem) -> some View {
+        if horizontalSizeClass == .regular {
+            Button(action: { openFeedItem(item) }) {
+                FeedCard(item: item, isSaved: savedItemIds.contains(item.id), theme: theme)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12)
+                            .stroke(theme.colors.primary, lineWidth: selectedItem?.id == item.id ? 2 : 0)
+                    )
+            }
+            .buttonStyle(PlainButtonStyle())
+            .accessibilityIdentifier("feed.card")
+            .listRowInsets(EdgeInsets(top: 4, leading: 14, bottom: 4, trailing: 14))
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                hidePostButton(for: item)
+                Button(role: .destructive) {
+                    deleteFeedItem(item, clearSelection: true)
+                } label: {
+                    Label(i18n.t("delete"), systemImage: "trash")
+                }
+            }
+            .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                saveToggleButton(for: item)
+            }
+            .contextMenu {
+                saveToggleButton(for: item)
+                hidePostButton(for: item)
+            }
+        } else {
+            NavigationLink(destination: ReaderView(feedItem: item)
+                .onAppear { markRecentUse(for: item) }) {
+                FeedCard(item: item, isSaved: savedItemIds.contains(item.id), theme: theme)
+            }
+            .buttonStyle(PlainButtonStyle())
+            .accessibilityIdentifier("feed.card")
+            .listRowInsets(EdgeInsets(top: 4, leading: 14, bottom: 4, trailing: 14))
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                hidePostButton(for: item)
+                Button(role: .destructive) {
+                    deleteFeedItem(item, clearSelection: false)
+                } label: {
+                    Label(i18n.t("delete"), systemImage: "trash")
+                }
+            }
+            .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                saveToggleButton(for: item)
+            }
+            .contextMenu {
+                saveToggleButton(for: item)
+                hidePostButton(for: item)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func saveToggleButton(for item: FeedItem) -> some View {
+        Button {
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            _ = db.toggleSaved(item: item)
+        } label: {
+            Label(savedItemIds.contains(item.id) ? i18n.t("unsave") : i18n.t("save"),
+                  systemImage: savedItemIds.contains(item.id) ? "bookmark.slash" : "bookmark")
+        }
+        .tint(theme.colors.primary)
+    }
+
+    @ViewBuilder
+    private func hidePostButton(for item: FeedItem) -> some View {
+        Button(role: .destructive) {
+            pendingHiddenFeedItem = item
+        } label: {
+            Label(i18n.t("hidePost"), systemImage: "eye.slash")
+        }
+        .tint(.red)
+    }
+
+    private func deleteFeedItem(_ item: FeedItem, clearSelection: Bool) {
+        db.deleteFeedItem(id: item.id, watchTermKeyword: item.watch_term_keyword)
+        if clearSelection, selectedItem?.id == item.id {
+            selectedItem = nil
+        }
+    }
+
+    private func confirmHidePost() {
+        guard let item = pendingHiddenFeedItem else { return }
+        pendingHiddenFeedItem = nil
+        deleteFeedItem(item, clearSelection: true)
+    }
+
+    private func hasItems(for platformId: String) -> Bool {
+        db.feedItems.contains { Self.matchesPlatform($0, platformId: platformId) }
+    }
+
+    private static func matchesPlatform(_ item: FeedItem, platformId: String) -> Bool {
+        PlatformRegistry.normalizeID(item.platform) == platformId
     }
 
 }
@@ -750,10 +898,11 @@ struct PillView: View {
     var bgColor: Color? = nil
     var fgColor: Color? = nil
     var theme: ThemeManager? = nil
+    @StateObject private var appearance = AppearanceManager.shared
     
     var body: some View {
         Text(text)
-            .font(.caption2)
+            .font(appearance.font(size: 11))
             .fontWeight(.medium)
             .padding(.horizontal, 8)
             .padding(.vertical, 3)
@@ -763,10 +912,62 @@ struct PillView: View {
     }
 }
 
+private struct PlatformFilterButtonLabel: View {
+    let icon: String
+    let name: String
+    let isSelected: Bool
+    let background: Color
+    let foreground: Color
+
+    var body: some View {
+        VStack(spacing: 3) {
+            Text(icon)
+                .font(.system(size: 18))
+            Text(name)
+                .font(.system(size: 11, weight: isSelected ? .bold : .medium))
+                .foregroundColor(foreground)
+                .lineLimit(1)
+        }
+        .frame(width: 58, height: 58)
+        .background(background)
+        .cornerRadius(10)
+    }
+}
+
+private struct ReorderSourcesButtonLabel: View {
+    let color: Color
+    let background: Color
+
+    var body: some View {
+        Text("≡")
+            .font(.title3)
+            .foregroundColor(color)
+            .frame(width: 44, height: 58)
+            .background(background)
+            .cornerRadius(10)
+            .padding(.trailing, 10)
+    }
+}
+
+private struct AddFeedButtonLabel: View {
+    let background: Color
+
+    var body: some View {
+        Image(systemName: "plus")
+            .font(.title2)
+            .foregroundColor(.white)
+            .frame(width: 52, height: 52)
+            .background(background)
+            .clipShape(Circle())
+            .shadow(color: Color.black.opacity(0.25), radius: 8, x: 0, y: 3)
+    }
+}
+
 struct FeedCard: View {
     let item: FeedItem
     let isSaved: Bool
     let theme: ThemeManager
+    @StateObject private var appearance = AppearanceManager.shared
     
     var body: some View {
         let meta = theme.metadata(for: item.platform)
@@ -779,24 +980,26 @@ struct FeedCard: View {
                 // Platform tag badge
                 HStack(spacing: 3) {
                     Text(meta.icon)
-                        .font(.caption)
+                        .font(appearance.font(size: 12))
                     Text(meta.name)
-                        .font(.system(size: 11, weight: .bold))
+                        .font(appearance.font(size: 11))
+                        .fontWeight(.bold)
                 }
                 .padding(.horizontal, 6)
                 .padding(.vertical, 3)
                 .background(badgeBg)
                 .foregroundColor(badgeFg)
-                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .cornerRadius(6)
                 
                 if !item.watch_term_keyword.isEmpty {
                     Text(item.watch_term_keyword)
-                        .font(.system(size: 11, weight: .semibold))
+                        .font(appearance.font(size: 11))
+                        .fontWeight(.semibold)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 3)
                         .background(theme.colors.divider)
                         .foregroundColor(theme.colors.textSub)
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                        .cornerRadius(6)
                 }
                 
                 Spacer()
@@ -808,7 +1011,7 @@ struct FeedCard: View {
                 }
                 
                 Text(relativeTime(from: item.published_at))
-                    .font(.caption2)
+                    .font(appearance.font(size: 11))
                     .foregroundColor(theme.colors.textMuted)
             }
             
@@ -816,7 +1019,7 @@ struct FeedCard: View {
                 VStack(alignment: .leading, spacing: 4) {
                     if let title = cleanDisplayText(item.title) {
                         Text(title)
-                            .font(.subheadline)
+                            .font(appearance.font(size: 15))
                             .fontWeight(.bold)
                             .foregroundColor(titleColor)
                             .lineLimit(2)
@@ -825,7 +1028,7 @@ struct FeedCard: View {
                     
                     if let author = cleanDisplayText(item.author) {
                         Text(author)
-                            .font(.caption)
+                            .font(appearance.font(size: 12))
                             .fontWeight(.medium)
                             .foregroundColor(theme.colors.textMuted)
                             .lineLimit(1)
@@ -833,7 +1036,7 @@ struct FeedCard: View {
                     
                     if let content = cleanDisplayText(item.content_text) {
                         Text(content)
-                            .font(.caption)
+                            .font(appearance.font(size: 12))
                             .foregroundColor(theme.colors.textSub)
                             .lineLimit(2)
                             .multilineTextAlignment(.leading)
@@ -851,16 +1054,20 @@ struct FeedCard: View {
         }
         .padding(12)
         .background(theme.colors.card)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .cornerRadius(12)
         .shadow(color: Color.black.opacity(theme.mode == .dark ? 0.2 : 0.04), radius: 5, x: 0, y: 2)
+        .accessibilityIdentifier("feed.card.\(item.id)")
     }
     
+    private static let relativeFormatter: RelativeDateTimeFormatter = {
+        let f = RelativeDateTimeFormatter()
+        f.unitsStyle = .abbreviated
+        return f
+    }()
+
     private func relativeTime(from isoDate: String) -> String {
         guard let date = parseISO8601Date(isoDate) else { return "" }
-        
-        let formatter2 = RelativeDateTimeFormatter()
-        formatter2.unitsStyle = .abbreviated
-        return formatter2.localizedString(for: date, relativeTo: Date())
+        return Self.relativeFormatter.localizedString(for: date, relativeTo: Date())
     }
 }
 
@@ -969,7 +1176,7 @@ struct FilterButton: View {
                 .padding(.vertical, 7)
                 .background(isSelected ? theme.colors.primary : theme.colors.divider)
                 .foregroundColor(isSelected ? .white : theme.colors.textSub)
-                .clipShape(Capsule())
+                .cornerRadius(999)
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(text)
@@ -1048,7 +1255,7 @@ struct AddUrlSheet: View {
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(theme.colors.border, lineWidth: 1))
                 .accessibilityIdentifier("customUrl.titleField")
             
-            TextField("https://...", text: $customUrlString)
+            TextField(i18n.t("urlPlaceholder"), text: $customUrlString)
                 .padding()
                 .background(theme.colors.card)
                 .cornerRadius(8)

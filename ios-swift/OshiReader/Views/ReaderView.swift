@@ -1,4 +1,5 @@
 import Photos
+import SafariServices
 import SwiftUI
 import UIKit
 import WebKit
@@ -9,6 +10,12 @@ struct ReaderImageAction: Identifiable {
     let alt: String?
 }
 
+enum ReaderWebLoadState {
+    case loading
+    case loaded
+    case failed
+}
+
 struct ReaderView: View {
     let feedItem: FeedItem
 
@@ -17,20 +24,54 @@ struct ReaderView: View {
     @StateObject private var i18n = I18nManager.shared
     @StateObject private var appearance = AppearanceManager.shared
 
-    @State private var readerMode = true
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+
+    @State private var readerMode: Bool
     @State private var readerTheme: AppThemeMode = .light
     @State private var fontSize: CGFloat = 16.0
     @State private var isTranslated = false
     @State private var imageAction: ReaderImageAction?
     @State private var saveImageStatus = ""
     @State private var showingSaveImageStatus = false
-    @State private var saveAllImagesCounter = 0
-    @State private var isSavingAllImages = false
+    @State private var selectImagesCounter = 0
+    @State private var imageSelectionActionCounter = 0
+    @State private var imageSelectionAction = ""
+    @State private var isSelectingImages = false
+    @State private var selectedImageCount = 0
+    @State private var isSavingSelectedImages = false
+    @State private var webLoadState: ReaderWebLoadState = .loading
+    @State private var showSignInBanner = false
+    @State private var isSigningIntoX = false
+    @State private var showOpenInBrowserBanner = false
+
+    init(feedItem: FeedItem) {
+        self.feedItem = feedItem
+        _readerMode = State(initialValue: Self.initialReaderMode(for: feedItem))
+        _isTranslated = State(initialValue: UserDefaults.standard.bool(forKey: LocalProfileStore.defaultsKey("auto_translate_reader")) && !Self.usesSystemSafari(for: feedItem))
+    }
+
+    static func initialReaderMode(for feedItem: FeedItem) -> Bool {
+        if usesSystemSafari(for: feedItem) {
+            return false
+        }
+        return !feedItem.id.hasPrefix("search:")
+    }
+
+    static func usesSystemSafari(for feedItem: FeedItem) -> Bool {
+        feedItem.platform == "5ch"
+    }
+
+    var originalPageUrl: URL? {
+        guard let normalized = normalizedReaderUrl(feedItem.url, platform: feedItem.platform) else { return nil }
+        return URL(string: normalized)
+    }
 
     var targetUrl: URL? {
-        guard let normalized = normalizedReaderUrl(feedItem.url, platform: feedItem.platform),
-              let originalUrl = URL(string: normalized) else { return nil }
-        if isTranslated {
+        if isSigningIntoX {
+            return URL(string: "https://x.com/login")
+        }
+        guard let originalUrl = originalPageUrl else { return nil }
+        if isTranslated, !Self.usesSystemSafari(for: feedItem) {
             let targetLang: String
             switch i18n.lang {
             case "ja": targetLang = "ja"
@@ -54,37 +95,101 @@ struct ReaderView: View {
     var body: some View {
         VStack(spacing: 0) {
             if let url = targetUrl {
-                WebViewHelper(
-                    url: url,
-                    cacheId: feedItem.id,
-                    cacheGeneration: db.contentCacheGeneration,
-                    themeMode: readerTheme,
-                    fontSize: fontSize,
-                    readerMode: readerMode,
-                    saveAllImagesCounter: saveAllImagesCounter,
-                    onImageAction: { imageAction = $0 },
-                    onSaveAllImages: { urls in saveAllImages(urls) }
-                )
-                .background(bgColor)
+                ZStack {
+                    if Self.usesSystemSafari(for: feedItem) {
+                        SafariReaderView(url: url)
+                            .background(bgColor)
+                            .onAppear {
+                                webLoadState = .loaded
+                            }
+                    } else {
+                        WebViewHelper(
+                            url: url,
+                            cacheId: feedItem.id,
+                            cacheGeneration: db.contentCacheGeneration,
+                            platform: feedItem.platform,
+                            themeMode: readerTheme,
+                            fontSize: fontSize,
+                            fontFamilyCSS: appearance.readerFontFamilyCSS,
+                            readerMode: readerMode,
+                            selectImagesCounter: selectImagesCounter,
+                            imageSelectionActionCounter: imageSelectionActionCounter,
+                            imageSelectionAction: imageSelectionAction,
+                            onLoadStateChange: { state in
+                                webLoadState = state
+                                if state == .loading {
+                                    isSelectingImages = false
+                                    isSavingSelectedImages = false
+                                    selectedImageCount = 0
+                                    showSignInBanner = false
+                                    showOpenInBrowserBanner = false
+                                }
+                            },
+                            onImageAction: { imageAction = $0 },
+                            onImageSelectionState: { selectedImageCount = $0 },
+                            onImageSelectionUnavailable: {
+                                isSelectingImages = false
+                                isSavingSelectedImages = false
+                                selectedImageCount = 0
+                            },
+                            onImageSelectionFailure: {
+                                isSelectingImages = false
+                                isSavingSelectedImages = false
+                                selectedImageCount = 0
+                                saveImageStatus = i18n.t("imageSelectionError")
+                                showingSaveImageStatus = true
+                            },
+                            onSelectedImages: { urls in saveSelectedImages(urls) },
+                            onContentBlocked: {
+                                if feedItem.platform == "twitter" {
+                                    if !isSigningIntoX { showSignInBanner = true }
+                                } else {
+                                    showOpenInBrowserBanner = true
+                                }
+                            }
+                        )
+                        .background(bgColor)
+                    }
+
+                    if !Self.usesSystemSafari(for: feedItem), webLoadState != .loaded {
+                        readerLoadStateOverlay
+                            .allowsHitTesting(webLoadState == .failed)
+                    }
+
+                    VStack {
+                        if isSigningIntoX {
+                            signInReturnBanner
+                        } else if showSignInBanner {
+                            signInPromptBanner
+                        } else if showOpenInBrowserBanner {
+                            openInBrowserBanner
+                        }
+                        Spacer()
+                    }
+                }
             } else {
-                Text(i18n.t("invalidURL"))
+                Text(i18n.t("invalidUrl"))
                     .foregroundColor(theme.colors.textMuted)
             }
 
-            readerControlBar
+            if !Self.usesSystemSafari(for: feedItem) {
+                readerControlBar
+            }
         }
         .background(bgColor)
-        .navigationTitle(feedItem.title ?? "Reader")
+        .navigationTitle(feedItem.title ?? i18n.t("readerTitle"))
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
-                Button {
-                    isTranslated.toggle()
-                } label: {
-                    Image(systemName: "translate")
-                        .foregroundColor(isTranslated ? theme.colors.primary : theme.colors.textMuted)
+                if !Self.usesSystemSafari(for: feedItem) {
+                    Button {
+                        isTranslated.toggle()
+                    } label: {
+                        Image(systemName: "translate")
+                            .foregroundColor(isTranslated ? theme.colors.primary : theme.colors.textMuted)
+                    }
+                    .accessibilityIdentifier("reader.translateButton")
                 }
-                .accessibilityIdentifier("reader.translateButton")
             }
 
             ToolbarItem(placement: .navigationBarTrailing) {
@@ -98,23 +203,45 @@ struct ReaderView: View {
                 .accessibilityIdentifier("reader.bookmarkButton")
             }
 
-            ToolbarItem(placement: .navigationBarTrailing) {
-                if isSavingAllImages {
-                    ProgressView().tint(theme.colors.primary)
-                } else {
-                    Button {
-                        isSavingAllImages = true
-                        saveAllImagesCounter += 1
-                    } label: {
-                        Image(systemName: "photo.on.rectangle.angled")
-                            .foregroundColor(theme.colors.primary)
+            ToolbarItemGroup(placement: .navigationBarTrailing) {
+                if !Self.usesSystemSafari(for: feedItem) {
+                    if isSavingSelectedImages {
+                        ProgressView().tint(theme.colors.primary)
+                    } else if isSelectingImages {
+                        Button(i18n.t("cancel")) {
+                            imageSelectionAction = "cancel"
+                            imageSelectionActionCounter += 1
+                            isSelectingImages = false
+                            selectedImageCount = 0
+                        }
+                        .accessibilityIdentifier("reader.cancelImageSelectionButton")
+                        Button {
+                            imageSelectionAction = "finish"
+                            imageSelectionActionCounter += 1
+                            isSavingSelectedImages = true
+                        } label: {
+                            Image(systemName: "square.and.arrow.down")
+                                .foregroundColor(theme.colors.primary)
+                        }
+                        .accessibilityLabel(i18n.tFormat("saveSelectedImages", selectedImageCount))
+                        .disabled(selectedImageCount == 0)
+                        .accessibilityIdentifier("reader.saveSelectedImagesButton")
+                    } else {
+                        Button {
+                            isSelectingImages = true
+                            selectedImageCount = 0
+                            selectImagesCounter += 1
+                        } label: {
+                            Image(systemName: "checklist")
+                                .foregroundColor(theme.colors.primary)
+                        }
+                        .accessibilityIdentifier("reader.selectImagesButton")
                     }
-                    .accessibilityIdentifier("reader.saveAllImagesButton")
                 }
             }
 
             ToolbarItem(placement: .navigationBarTrailing) {
-                if let url = URL(string: feedItem.url) {
+                if let url = originalPageUrl {
                     ShareLink(item: url) {
                         Image(systemName: "square.and.arrow.up")
                             .foregroundColor(theme.colors.primary)
@@ -123,7 +250,7 @@ struct ReaderView: View {
                 }
             }
         }
-        .confirmationDialog(i18n.t("image"), isPresented: Binding(
+        .confirmationDialog(i18n.t("imageActions"), isPresented: Binding(
             get: { imageAction != nil },
             set: { isPresented in
                 if !isPresented {
@@ -143,7 +270,7 @@ struct ReaderView: View {
                 }
             }
         }
-        .alert(i18n.t("image"), isPresented: $showingSaveImageStatus) {
+        .alert(i18n.t("imageActions"), isPresented: $showingSaveImageStatus) {
             Button(i18n.t("ok"), role: .cancel) {}
         } message: {
             Text(saveImageStatus)
@@ -155,74 +282,232 @@ struct ReaderView: View {
                 isTranslated = true
             }
         }
+        .onChange(of: appearance.fontSizeChoice) {
+            fontSize = appearance.readerFontSize
+        }
     }
 
     private var readerControlBar: some View {
-        VStack(spacing: 8) {
-            HStack(spacing: 10) {
-                Button(action: { readerMode.toggle() }) {
-                    Label(readerMode ? i18n.t("readerModeTextShort") : i18n.t("readerModeWebShort"),
-                          systemImage: readerMode ? "doc.plaintext" : "globe")
-                        .font(.caption)
-                        .fontWeight(.bold)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.8)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 7)
-                        .background(theme.colors.divider)
-                        .foregroundColor(theme.colors.primary)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                }
-                .accessibilityLabel(readerMode ? i18n.t("readerModeText") : i18n.t("readerModeWeb"))
-                .accessibilityIdentifier("reader.modeToggleButton")
-
-                Spacer(minLength: 8)
-
-                Picker(i18n.t("readerTheme"), selection: $readerTheme) {
-                    Image(systemName: "sun.max.fill").tag(AppThemeMode.light)
-                    Image(systemName: "moon.fill").tag(AppThemeMode.dark)
-                    Image(systemName: "doc.text.magnifyingglass").tag(AppThemeMode.sepia)
-                }
-                .pickerStyle(.segmented)
-                .frame(minWidth: 112, maxWidth: 132)
+        Group {
+            if horizontalSizeClass == .compact {
+                compactReaderControlBar
+            } else {
+                regularReaderControlBar
             }
+        }
+        .background(theme.colors.card)
+        .overlay(Rectangle().frame(height: 0.5).foregroundColor(theme.colors.divider), alignment: .top)
+    }
 
-            if readerMode {
-                HStack(spacing: 8) {
-                    Button(action: { fontSize = max(12.0, fontSize - 2.0) }) {
-                        Text("A-")
-                            .font(.subheadline)
-                            .fontWeight(.semibold)
-                            .foregroundColor(theme.colors.textSub)
-                            .frame(minWidth: 36, minHeight: 30)
-                    }
-                    .accessibilityLabel(i18n.t("decreaseTextSize"))
-
-                    Text("\(Int(fontSize))")
-                        .font(.caption)
-                        .foregroundColor(theme.colors.textMuted)
-                        .frame(minWidth: 30)
-
-                    Button(action: { fontSize = min(28.0, fontSize + 2.0) }) {
-                        Text("A+")
-                            .font(.subheadline)
-                            .fontWeight(.semibold)
-                            .foregroundColor(theme.colors.textSub)
-                            .frame(minWidth: 36, minHeight: 30)
-                    }
-                    .accessibilityLabel(i18n.t("increaseTextSize"))
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 4)
-                .frame(maxWidth: .infinity)
-                .background(theme.colors.divider)
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-            }
+    private var regularReaderControlBar: some View {
+        HStack(spacing: 12) {
+            readerModeButton(showTitle: true)
+            Spacer()
+            fontSizeControls
+            Spacer()
+            themePicker(width: 112)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
+    }
+
+    private var compactReaderControlBar: some View {
+        HStack(spacing: 8) {
+            readerModeButton(showTitle: false)
+            Spacer(minLength: 4)
+            fontSizeControls
+                .layoutPriority(1)
+            Spacer(minLength: 4)
+            themePicker(width: 104)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+    }
+
+    private func readerModeButton(showTitle: Bool) -> some View {
+        Button(action: { readerMode.toggle() }) {
+            if showTitle {
+                Label(readerMode ? i18n.t("readerModeText") : i18n.t("readerModeWeb"),
+                      systemImage: readerMode ? "doc.plaintext" : "globe")
+            } else {
+                Image(systemName: readerMode ? "doc.plaintext" : "globe")
+            }
+        }
+        .font(.caption)
+        .fontWeight(.bold)
+        .frame(minWidth: showTitle ? nil : 38, minHeight: 34)
+        .padding(.horizontal, showTitle ? 10 : 0)
+        .padding(.vertical, showTitle ? 6 : 0)
+        .background(theme.colors.divider)
+        .foregroundColor(theme.colors.primary)
+        .cornerRadius(8)
+        .accessibilityLabel(readerMode ? i18n.t("readerModeText") : i18n.t("readerModeWeb"))
+        .accessibilityValue(readerMode ? "reader" : "web")
+        .accessibilityIdentifier("reader.modeToggleButton")
+    }
+
+    private var fontSizeControls: some View {
+        HStack(spacing: 10) {
+            Button(action: { fontSize = max(12.0, fontSize - 2.0) }) {
+                Text("A-")
+                    .font(.subheadline)
+                    .foregroundColor(theme.colors.textSub)
+            }
+
+            Text("\(Int(fontSize))")
+                .font(.caption)
+                .foregroundColor(theme.colors.textMuted)
+                .frame(width: 22)
+
+            Button(action: { fontSize = min(28.0, fontSize + 2.0) }) {
+                Text("A+")
+                    .font(.subheadline)
+                    .foregroundColor(theme.colors.textSub)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(theme.colors.divider)
+        .cornerRadius(8)
+        .opacity(readerMode ? 1 : 0.45)
+        .disabled(!readerMode)
+    }
+
+    private func themePicker(width: CGFloat) -> some View {
+        Picker("Theme", selection: $readerTheme) {
+            Image(systemName: "sun.max.fill").tag(AppThemeMode.light)
+            Image(systemName: "moon.fill").tag(AppThemeMode.dark)
+            Image(systemName: "doc.text.magnifyingglass").tag(AppThemeMode.sepia)
+        }
+        .pickerStyle(.segmented)
+        .frame(width: width)
+    }
+
+    private var signInPromptBanner: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "lock.fill")
+                .foregroundColor(theme.colors.textSub)
+            Text(i18n.t("readerSignInRequired"))
+                .font(.caption)
+                .foregroundColor(theme.colors.textSub)
+                .lineLimit(2)
+            Spacer(minLength: 8)
+            Button(i18n.t("readerSignInButton")) {
+                showSignInBanner = false
+                isSigningIntoX = true
+            }
+            .font(.caption)
+            .fontWeight(.semibold)
+            .foregroundColor(theme.colors.primary)
+            .accessibilityIdentifier("reader.signInButton")
+            Button {
+                showSignInBanner = false
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundColor(theme.colors.textMuted)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
         .background(theme.colors.card)
-        .overlay(Rectangle().frame(height: 0.5).foregroundColor(theme.colors.divider), alignment: .top)
+        .cornerRadius(10)
+        .shadow(color: .black.opacity(0.12), radius: 6, y: 2)
+        .padding(10)
+    }
+
+    private var signInReturnBanner: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "arrow.uturn.backward.circle.fill")
+                .foregroundColor(theme.colors.textSub)
+            Text(i18n.t("readerSignInReturnMessage"))
+                .font(.caption)
+                .foregroundColor(theme.colors.textSub)
+                .lineLimit(2)
+            Spacer(minLength: 8)
+            Button(i18n.t("readerSignInReturnButton")) {
+                isSigningIntoX = false
+            }
+            .font(.caption)
+            .fontWeight(.semibold)
+            .foregroundColor(theme.colors.primary)
+            .accessibilityIdentifier("reader.signInReturnButton")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(theme.colors.card)
+        .cornerRadius(10)
+        .shadow(color: .black.opacity(0.12), radius: 6, y: 2)
+        .padding(10)
+    }
+
+    private var openInBrowserBanner: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "exclamationmark.triangle")
+                .foregroundColor(theme.colors.textSub)
+            Text(i18n.t("readerCouldNotDisplay"))
+                .font(.caption)
+                .foregroundColor(theme.colors.textSub)
+                .lineLimit(2)
+            Spacer(minLength: 8)
+            Button(i18n.t("readerOpenInBrowser")) {
+                showOpenInBrowserBanner = false
+                openInExternalBrowser()
+            }
+            .font(.caption)
+            .fontWeight(.semibold)
+            .foregroundColor(theme.colors.primary)
+            .accessibilityIdentifier("reader.openInBrowserButton")
+            Button {
+                showOpenInBrowserBanner = false
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundColor(theme.colors.textMuted)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(theme.colors.card)
+        .cornerRadius(10)
+        .shadow(color: .black.opacity(0.12), radius: 6, y: 2)
+        .padding(10)
+    }
+
+    private func openInExternalBrowser() {
+        guard let url = targetUrl else { return }
+        UIApplication.shared.open(url)
+    }
+
+    private var readerLoadStateOverlay: some View {
+        VStack(spacing: 12) {
+            if webLoadState == .loading {
+                ProgressView()
+                    .tint(theme.colors.primary)
+                Text(i18n.t("readerLoadingPage"))
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(theme.colors.textSub)
+            } else {
+                Image(systemName: "exclamationmark.triangle")
+                    .font(.system(size: 26, weight: .semibold))
+                    .foregroundColor(theme.colors.textMuted)
+                Text(i18n.t("readerLoadFailed"))
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(theme.colors.textSub)
+                    .multilineTextAlignment(.center)
+                Button(i18n.t("readerOpenInBrowser")) {
+                    openInExternalBrowser()
+                }
+                .font(.system(size: 13, weight: .semibold))
+                .padding(.horizontal, 14)
+                .padding(.vertical, 7)
+                .background(theme.colors.primary)
+                .foregroundColor(.white)
+                .cornerRadius(8)
+                .accessibilityIdentifier("reader.failedOpenInBrowserButton")
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(webLoadState == .loading ? bgColor.opacity(0.82) : bgColor)
+        .accessibilityIdentifier(webLoadState == .loading ? "reader.loadingState" : "reader.failedState")
     }
 
     private var bgColor: Color {
@@ -236,10 +521,14 @@ struct ReaderView: View {
     private func saveImage(_ url: URL) {
         Task {
             do {
-                let (data, _) = try await URLSession.shared.data(from: url)
+                let (data, response) = try await URLSession.shared.data(for: imageRequest(for: url))
+                if let httpResponse = response as? HTTPURLResponse,
+                   !(200...299).contains(httpResponse.statusCode) {
+                    throw URLError(.badServerResponse)
+                }
                 guard let image = UIImage(data: data) else {
                     await MainActor.run {
-                        saveImageStatus = i18n.t("imageReadFailed")
+                        saveImageStatus = i18n.t("imageLoadError")
                         showingSaveImageStatus = true
                     }
                     return
@@ -261,17 +550,19 @@ struct ReaderView: View {
                 }
             } catch {
                 await MainActor.run {
-                    saveImageStatus = i18n.t("imageSaveFailed")
+                    saveImageStatus = i18n.t("imageSaveError")
                     showingSaveImageStatus = true
                 }
             }
         }
     }
 
-    private func saveAllImages(_ urls: [URL]) {
+    private func saveSelectedImages(_ urls: [URL]) {
         guard !urls.isEmpty else {
-            isSavingAllImages = false
-            saveImageStatus = i18n.t("noLargeImagesFound")
+            isSelectingImages = false
+            isSavingSelectedImages = false
+            selectedImageCount = 0
+            saveImageStatus = i18n.t("imageNoSelectedImages")
             showingSaveImageStatus = true
             return
         }
@@ -279,7 +570,9 @@ struct ReaderView: View {
             let auth = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
             guard auth == .authorized || auth == .limited else {
                 await MainActor.run {
-                    isSavingAllImages = false
+                    isSelectingImages = false
+                    isSavingSelectedImages = false
+                    selectedImageCount = 0
                     saveImageStatus = i18n.t("photosAccessRequired")
                     showingSaveImageStatus = true
                 }
@@ -289,7 +582,8 @@ struct ReaderView: View {
             await withTaskGroup(of: Bool.self) { group in
                 for url in urls {
                     group.addTask {
-                        guard let (data, _) = try? await URLSession.shared.data(from: url),
+                        guard let (data, response) = try? await URLSession.shared.data(for: imageRequest(for: url)),
+                              (response as? HTTPURLResponse).map({ (200...299).contains($0.statusCode) }) ?? true,
                               let image = UIImage(data: data) else { return false }
                         do {
                             try await PHPhotoLibrary.shared().performChanges {
@@ -304,13 +598,25 @@ struct ReaderView: View {
                 for await ok in group where ok { saved += 1 }
             }
             await MainActor.run {
-                isSavingAllImages = false
+                isSelectingImages = false
+                isSavingSelectedImages = false
+                selectedImageCount = 0
                 saveImageStatus = saved > 0
-                    ? (saved == 1 ? i18n.t("oneImageSavedToPhotos") : i18n.tFormat("imagesSavedToPhotos", saved))
-                    : i18n.t("noImagesSaved")
+                    ? i18n.tFormat("savedImagesToPhotos", saved)
+                    : i18n.t("imageNoneSaved")
                 showingSaveImageStatus = true
             }
         }
+    }
+
+    private func imageRequest(for imageURL: URL) -> URLRequest {
+        var request = URLRequest(url: imageURL)
+        request.setValue("image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8", forHTTPHeaderField: "Accept")
+        request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1", forHTTPHeaderField: "User-Agent")
+        if let pageURL = originalPageUrl {
+            request.setValue(pageURL.absoluteString, forHTTPHeaderField: "Referer")
+        }
+        return request
     }
 }
 
@@ -318,12 +624,33 @@ struct WebViewHelper: UIViewRepresentable {
     let url: URL
     let cacheId: String
     let cacheGeneration: Int
+    let platform: String
     let themeMode: AppThemeMode
     let fontSize: CGFloat
+    let fontFamilyCSS: String
     let readerMode: Bool
-    let saveAllImagesCounter: Int
+    let selectImagesCounter: Int
+    let imageSelectionActionCounter: Int
+    let imageSelectionAction: String
+    let onLoadStateChange: (ReaderWebLoadState) -> Void
     let onImageAction: (ReaderImageAction) -> Void
-    let onSaveAllImages: (([URL]) -> Void)?
+    let onImageSelectionState: (Int) -> Void
+    let onImageSelectionUnavailable: () -> Void
+    let onImageSelectionFailure: () -> Void
+    let onSelectedImages: ([URL]) -> Void
+    let onContentBlocked: () -> Void
+
+    private static let uiTestImageFixtureHTML = """
+    <!doctype html>
+    <html><head><title>UITest image fixture</title></head>
+    <body><article>
+    <div class="oshi-uitest-image-row">
+    <button class="oshi-uitest-image-button" aria-label="fixture image one"><img class="oshi-uitest-image" src="https://example.com/fixture-image-one.jpg" alt="fixture image one" width="400" height="300"></button>
+    <button class="oshi-uitest-image-button" aria-label="fixture image two"><img class="oshi-uitest-image" src="https://example.com/fixture-image-two.jpg" alt="fixture image two" width="400" height="300"></button>
+    </div>
+    <p>This cached article contains deterministic image-selection fixtures.</p>
+    </article></body></html>
+    """
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -340,23 +667,45 @@ struct WebViewHelper: UIViewRepresentable {
         webView.isOpaque = false
         webView.backgroundColor = .clear
         webView.scrollView.backgroundColor = .clear
+        if platform == "twitter" {
+            webView.customUserAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1"
+        }
         return webView
     }
 
     func updateUIView(_ uiView: WKWebView, context: Context) {
         context.coordinator.parent = self
-        if uiView.url == nil || (uiView.url?.absoluteString != url.absoluteString && !uiView.isLoading) {
-            uiView.load(URLRequest(url: url))
+        let requestURL = url.absoluteString
+        if context.coordinator.currentRequestURL != requestURL {
+            context.coordinator.currentRequestURL = requestURL
+            context.coordinator.beginNewRequest()
+            onLoadStateChange(.loading)
+            if ProcessInfo.processInfo.arguments.contains("--uitesting-reader-images") {
+                uiView.loadHTMLString(Self.uiTestImageFixtureHTML, baseURL: url)
+            } else {
+                uiView.load(URLRequest(url: url))
+            }
         } else {
             uiView.evaluateJavaScript(styleInjectionJS(), completionHandler: nil)
         }
-        if saveAllImagesCounter != context.coordinator.lastSaveAllCounter {
-            context.coordinator.lastSaveAllCounter = saveAllImagesCounter
-            let callback = onSaveAllImages
-            uiView.evaluateJavaScript("(function(){ if(!window.__oshiCollectImages) return false; window.__oshiCollectImages(); return true; })()") { result, _ in
-                // If the function wasn't injected yet (page still loading), reset the spinner
-                if let ran = result as? Bool, !ran {
-                    DispatchQueue.main.async { callback?([]) }
+        if selectImagesCounter != context.coordinator.lastSelectImagesCounter {
+            context.coordinator.lastSelectImagesCounter = selectImagesCounter
+            uiView.evaluateJavaScript("(function(){ if(!window.__oshiBeginImageSelection) return false; window.__oshiBeginImageSelection(); return true; })()") { result, _ in
+                guard (result as? Bool) == true else {
+                    DispatchQueue.main.async { onImageSelectionUnavailable() }
+                    return
+                }
+            }
+        }
+        if imageSelectionActionCounter != context.coordinator.lastImageSelectionActionCounter {
+            context.coordinator.lastImageSelectionActionCounter = imageSelectionActionCounter
+            let functionName = imageSelectionAction == "finish"
+                ? "__oshiFinishImageSelection"
+                : "__oshiCancelImageSelection"
+            uiView.evaluateJavaScript("(function(){ if(!window.\(functionName)) return false; window.\(functionName)(); return true; })()") { result, _ in
+                guard (result as? Bool) == true else {
+                    DispatchQueue.main.async { onImageSelectionFailure() }
+                    return
                 }
             }
         }
@@ -372,6 +721,13 @@ struct WebViewHelper: UIViewRepresentable {
         let bgColorHex: String
         let textColorHex: String
         let linkHex: String
+        let uiTestFixtureCSS = ProcessInfo.processInfo.arguments.contains("--uitesting-reader-images")
+            ? """
+            .oshi-uitest-image-row { display: flex !important; gap: 8px !important; }
+            button.oshi-uitest-image-button { display: block !important; width: 48% !important; height: 280px !important; padding: 0 !important; border: 0 !important; background: #d8d8dc !important; }
+            img.oshi-uitest-image { width: 100% !important; height: 280px !important; background: #d8d8dc !important; }
+            """
+            : ""
 
         switch themeMode {
         case .light:
@@ -395,12 +751,14 @@ struct WebViewHelper: UIViewRepresentable {
                 background-color: \(bgColorHex) !important;
                 color: \(textColorHex) !important;
                 font-size: \(fontSize)px !important;
-                font-family: \(AppearanceManager.shared.readerFontFamilyCSS) !important;
                 line-height: 1.75 !important;
                 padding: 16px !important;
                 max-width: 760px !important;
                 margin: 0 auto !important;
                 word-break: break-word !important;
+            }
+            body, body * {
+                font-family: \(fontFamilyCSS) !important;
             }
             nav, header, footer, aside, iframe, [role=navigation], [role=banner], [role=contentinfo],
             .sidebar, .ad, .ads, .adbox, .ad_box, .ad_area, .adsbygoogle, .advert, .advertisement,
@@ -413,9 +771,45 @@ struct WebViewHelper: UIViewRepresentable {
                 overflow: hidden !important;
             }
             img, video { max-width: 100% !important; height: auto !important; border-radius: 8px !important; }
+            \(uiTestFixtureCSS)
             pre, code { white-space: pre-wrap !important; word-break: break-word !important; }
             a { color: \(linkHex) !important; }
+            [data-oshireader-reader-root="true"] {
+                display: block !important;
+                max-width: 720px !important;
+                margin: 0 auto !important;
+                padding: 2px 0 28px !important;
+            }
+            [data-oshireader-reader-root="true"] p,
+            [data-oshireader-reader-root="true"] li,
+            [data-oshireader-reader-root="true"] blockquote {
+                font-size: \(fontSize)px !important;
+                line-height: 1.82 !important;
+                letter-spacing: 0 !important;
+            }
+            [data-oshireader-reader-root="true"] h1,
+            [data-oshireader-reader-root="true"] h2,
+            [data-oshireader-reader-root="true"] h3 {
+                color: \(textColorHex) !important;
+                line-height: 1.28 !important;
+                letter-spacing: 0 !important;
+                margin: 1.2em 0 0.55em !important;
+            }
+            [data-oshireader-reader-root="true"] p {
+                margin: 0 0 1.05em !important;
+            }
+            [data-oshireader-reader-root="true"] figure {
+                margin: 1.3em 0 !important;
+            }
+            [data-oshireader-reader-root="true"] figcaption,
+            [data-oshireader-reader-root="true"] time,
+            [data-oshireader-reader-root="true"] small {
+                color: \(textColorHex) !important;
+                opacity: 0.72 !important;
+            }
             """
+        } else if platform == "twitter" {
+            readerCSS = ""
         } else {
             readerCSS = """
             body {
@@ -427,6 +821,9 @@ struct WebViewHelper: UIViewRepresentable {
 
         return """
         (function() {
+            document.querySelectorAll('[data-oshireader-reader-root="true"]').forEach(function(el) {
+                el.removeAttribute('data-oshireader-reader-root');
+            });
             var style = document.getElementById('oshireader-injected-style');
             if (!style) {
                 style = document.createElement('style');
@@ -434,19 +831,74 @@ struct WebViewHelper: UIViewRepresentable {
                 document.head.appendChild(style);
             }
             style.innerHTML = `\(readerCSS)`;
+            if (\(readerMode ? "true" : "false")) {
+                var selectors = [
+                    'article',
+                    'main',
+                    '[role="main"]',
+                    '.article',
+                    '.post',
+                    '.entry-content',
+                    '.article-body',
+                    '.story-body',
+                    '.content',
+                    '#content'
+                ];
+                var best = null;
+                var bestScore = 0;
+                selectors.forEach(function(selector) {
+                    document.querySelectorAll(selector).forEach(function(el) {
+                        var text = el.innerText ? el.innerText.replace(/\\s+/g, ' ').trim() : '';
+                        var paragraphs = el.querySelectorAll('p, li, blockquote').length;
+                        var rect = el.getBoundingClientRect();
+                        var score = text.length + (paragraphs * 80) + Math.min(rect.height || 0, 1400);
+                        if (text.length >= 240 && rect.width > 0 && rect.height > 0 && score > bestScore) {
+                            best = el;
+                            bestScore = score;
+                        }
+                    });
+                });
+                if (best) best.setAttribute('data-oshireader-reader-root', 'true');
+            }
         })();
         """
     }
 
     class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
         var parent: WebViewHelper
-        var lastSaveAllCounter = 0
+        var lastSelectImagesCounter = 0
+        var lastImageSelectionActionCounter = 0
+        var currentRequestURL: String?
+        private var hasCommittedPage = false
+        private var pendingFailure: DispatchWorkItem?
 
         init(_ parent: WebViewHelper) {
             self.parent = parent
         }
 
+        func beginNewRequest() {
+            hasCommittedPage = false
+            pendingFailure?.cancel()
+        }
+
+        func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+            pendingFailure?.cancel()
+            DispatchQueue.main.async { self.parent.onImageSelectionUnavailable() }
+            if !hasCommittedPage {
+                DispatchQueue.main.async { self.parent.onLoadStateChange(.loading) }
+            }
+        }
+
+        func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+            hasCommittedPage = true
+            pendingFailure?.cancel()
+            DispatchQueue.main.async { self.parent.onLoadStateChange(.loaded) }
+        }
+
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            hasCommittedPage = true
+            pendingFailure?.cancel()
+            DispatchQueue.main.async { self.parent.onLoadStateChange(.loaded) }
             webView.evaluateJavaScript(parent.styleInjectionJS(), completionHandler: nil)
             let cacheId = parent.cacheId
             let cacheGeneration = parent.cacheGeneration
@@ -458,19 +910,117 @@ struct WebViewHelper: UIViewRepresentable {
                     sourceGeneration: cacheGeneration
                 )
             }
+            checkForBlockedContent(in: webView)
         }
 
+        private func checkForBlockedContent(in webView: WKWebView) {
+            let requestURLAtCheckTime = currentRequestURL
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self, weak webView] in
+                guard let self, let webView, self.currentRequestURL == requestURLAtCheckTime else { return }
+                webView.evaluateJavaScript(Self.contentDisplayabilityJS) { result, _ in
+                    guard let metrics = result as? [String: Any],
+                          ReaderContentDisplayability.shouldShowBlockedBanner(metrics: metrics) else { return }
+                    DispatchQueue.main.async { self.parent.onContentBlocked() }
+                }
+            }
+        }
+
+        private static let contentDisplayabilityJS = """
+        (function() {
+          var body = document.body;
+          var doc = document.documentElement;
+          var text = body && body.innerText ? body.innerText.replace(/\\s+/g, ' ').trim() : '';
+          var title = document.title ? document.title.trim() : '';
+          var url = location.href || '';
+          var selectors = 'article, main, [role="main"], .article, .post, .entry-content, .content, #content';
+          var visibleTextNodes = 0;
+
+          if (body) {
+            var candidates = body.querySelectorAll('p, h1, h2, h3, li, blockquote, pre');
+            for (var i = 0; i < candidates.length; i++) {
+              var rect = candidates[i].getBoundingClientRect();
+              var nodeText = candidates[i].innerText ? candidates[i].innerText.trim() : '';
+              if (nodeText.length >= 12 && rect.width > 0 && rect.height > 0) visibleTextNodes++;
+              if (visibleTextNodes >= 3) break;
+            }
+          }
+
+          return {
+            textLength: text.length,
+            titleLength: title.length,
+            hasReaderContainer: !!(body && body.querySelector(selectors)),
+            linkCount: body ? body.querySelectorAll('a[href]').length : 0,
+            imageCount: body ? body.querySelectorAll('img, picture, video, iframe').length : 0,
+            visibleTextNodes: visibleTextNodes,
+            height: Math.max(
+              body ? body.scrollHeight : 0,
+              doc ? doc.scrollHeight : 0,
+              body ? body.offsetHeight : 0,
+              doc ? doc.offsetHeight : 0
+            ),
+            blockedText: /sign in|log in|enable javascript|unsupported browser|cannot display|couldn't display|not available|access denied|forbidden|attention required|cloudflare/i.test(text + ' ' + title),
+            urlLooksBlank: /about:blank|\\/sorry\\/|\\/signin|\\/login/i.test(url)
+          };
+        })();
+        """
+
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-            loadCachedPage(in: webView)
+            handleLoadFailure(error, in: webView)
         }
 
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-            loadCachedPage(in: webView)
+            handleLoadFailure(error, in: webView)
         }
 
-        private func loadCachedPage(in webView: WKWebView) {
-            guard let html = LocalDB.shared.getContentCache(id: parent.cacheId) else { return }
+        private func handleLoadFailure(_ error: Error, in webView: WKWebView) {
+            let nsError = error as NSError
+            AppLogger.network.warning("Reader load failed domain=\(nsError.domain, privacy: .public) code=\(nsError.code) url=\(webView.url?.absoluteString ?? self.parent.url.absoluteString, privacy: .public)")
+
+            if isBenignNavigationFailure(error) || hasCommittedPage {
+                if hasCommittedPage {
+                    DispatchQueue.main.async { self.parent.onLoadStateChange(.loaded) }
+                }
+                return
+            }
+
+            if !loadCachedPage(in: webView) {
+                if parent.platform == "twitter" {
+                    DispatchQueue.main.async { self.parent.onContentBlocked() }
+                }
+                pendingFailure?.cancel()
+                let failure = DispatchWorkItem { [weak self, weak webView] in
+                    guard let self, let webView, !self.hasCommittedPage else { return }
+                    webView.evaluateJavaScript("document.readyState") { result, _ in
+                        if self.hasCommittedPage || result is String {
+                            DispatchQueue.main.async { self.parent.onLoadStateChange(.loaded) }
+                        } else {
+                            DispatchQueue.main.async { self.parent.onLoadStateChange(.failed) }
+                        }
+                    }
+                }
+                pendingFailure = failure
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: failure)
+            }
+        }
+
+        private func isBenignNavigationFailure(_ error: Error) -> Bool {
+            let nsError = error as NSError
+            if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled {
+                return true
+            }
+            if nsError.domain == "WebKitErrorDomain" && nsError.code == 102 {
+                return true
+            }
+            return false
+        }
+
+        private func loadCachedPage(in webView: WKWebView) -> Bool {
+            guard let html = LocalDB.shared.getContentCache(id: parent.cacheId) else { return false }
+            pendingFailure?.cancel()
+            hasCommittedPage = false
+            DispatchQueue.main.async { self.parent.onLoadStateChange(.loading) }
             webView.loadHTMLString(html, baseURL: parent.url)
+            return true
         }
 
         func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
@@ -478,9 +1028,25 @@ struct WebViewHelper: UIViewRepresentable {
                 decisionHandler(.allow)
                 return
             }
-            if shouldBlockReaderRequest(url.absoluteString) {
+            let scheme = url.scheme?.lowercased() ?? ""
+            if ["mailto", "tel", "sms", "facetime", "facetime-audio"].contains(scheme) {
+                decisionHandler(.cancel)
+                UIApplication.shared.open(url)
+                return
+            }
+            if parent.platform != "5ch", shouldBlockReaderRequest(url.absoluteString) {
                 decisionHandler(.cancel)
                 return
+            }
+            let host = url.host ?? ""
+            let hostRange = NSRange(host.startIndex..., in: host)
+            if _ReaderRegex.fivechHost?.firstMatch(in: host, range: hostRange) != nil {
+                let rewritten = normalize5chReaderUrl(url.absoluteString)
+                if rewritten != url.absoluteString, let rewrittenUrl = URL(string: rewritten) {
+                    decisionHandler(.cancel)
+                    webView.load(URLRequest(url: rewrittenUrl))
+                    return
+                }
             }
             decisionHandler(.allow)
         }
@@ -493,13 +1059,80 @@ struct WebViewHelper: UIViewRepresentable {
                let rawUrl = body["url"] as? String,
                let url = URL(string: rawUrl) {
                 parent.onImageAction(ReaderImageAction(url: url, alt: body["alt"] as? String))
-            } else if type == "all-images",
+            } else if type == "image-selection-state",
+                      let count = body["count"] as? Int {
+                DispatchQueue.main.async { self.parent.onImageSelectionState(count) }
+            } else if type == "selected-images",
                       let rawUrls = body["urls"] as? [String] {
                 let urls = rawUrls.compactMap { URL(string: $0) }
-                DispatchQueue.main.async { self.parent.onSaveAllImages?(urls) }
+                DispatchQueue.main.async { self.parent.onSelectedImages(urls) }
             }
         }
     }
+}
+
+struct SafariReaderView: UIViewControllerRepresentable {
+    let url: URL
+
+    func makeUIViewController(context: Context) -> SFSafariViewController {
+        let configuration = SFSafariViewController.Configuration()
+        configuration.entersReaderIfAvailable = false
+        let controller = SFSafariViewController(url: url, configuration: configuration)
+        controller.dismissButtonStyle = .close
+        return controller
+    }
+
+    func updateUIViewController(_ controller: SFSafariViewController, context: Context) {}
+}
+
+enum ReaderContentDisplayability {
+    static func shouldShowBlockedBanner(metrics: [String: Any]) -> Bool {
+        let textLength = intMetric("textLength", in: metrics)
+        let titleLength = intMetric("titleLength", in: metrics)
+        let linkCount = intMetric("linkCount", in: metrics)
+        let imageCount = intMetric("imageCount", in: metrics)
+        let visibleTextNodes = intMetric("visibleTextNodes", in: metrics)
+        let height = intMetric("height", in: metrics)
+        let hasReaderContainer = metrics["hasReaderContainer"] as? Bool ?? false
+        let blockedText = metrics["blockedText"] as? Bool ?? false
+        let urlLooksBlank = metrics["urlLooksBlank"] as? Bool ?? false
+
+        let hasMeaningfulStructure = hasReaderContainer
+            || visibleTextNodes >= 2
+            || linkCount >= 3
+            || imageCount >= 2
+            || height >= 900
+            || titleLength >= 8
+
+        if hasMeaningfulStructure && !blockedText && !urlLooksBlank {
+            return false
+        }
+        return (textLength < 40 && !hasMeaningfulStructure) || (blockedText && textLength < 180) || urlLooksBlank
+    }
+
+    private static func intMetric(_ key: String, in metrics: [String: Any]) -> Int {
+        if let value = metrics[key] as? Int { return value }
+        if let value = metrics[key] as? Double { return Int(value) }
+        if let value = metrics[key] as? NSNumber { return value.intValue }
+        return 0
+    }
+}
+
+private enum _ReaderRegex {
+    static let schemeAllowlist = try? NSRegularExpression(
+        pattern: #"^(about:|data:|blob:|file:|mailto:|tel:)"#,
+        options: .caseInsensitive
+    )
+    static let adBlocklist = try? NSRegularExpression(
+        pattern: #"(2mdn|doubleclick|googlesyndication|googleadservices|adservice\.google|googletagmanager|google-analytics|analytics\.yahoo|yjtag\.yahoo|yads\.c\.yimg|ad\.yahoo|ad-stir|ad-generation|admatrix|adingo|fam-ad|fluct|genieessp|gmossp|i-mobile|im-apps|impact-ad|microad|nend|popin|taboola|outbrain|/adserver[/.?_-]|/ads?[/.?_-]|/advert|/banner|/sponsor|/promoted)"#,
+        options: .caseInsensitive
+    )
+    static let itestHost = try? NSRegularExpression(pattern: #"^itest\.5ch\.(net|io)$"#)
+    static let fivechHost = try? NSRegularExpression(pattern: #"(^|\.)5ch\.(net|io)$"#)
+    static let twochHost = try? NSRegularExpression(pattern: #"(^|\.)2ch\.sc$"#)
+    static let itestPath = try? NSRegularExpression(pattern: #"^/([^/]+)/test/read\.cgi/([^/]+)/(\d{9,})"#)
+    static let fivechPath = try? NSRegularExpression(pattern: #"/test/read\.cgi/([^/]+)/(\d{9,})"#)
+    static let oriconArticle = try? NSRegularExpression(pattern: #"/(?:news|article)/(\d+)"#)
 }
 
 private func normalizedReaderUrl(_ rawUrl: String, platform: String) -> String? {
@@ -507,7 +1140,7 @@ private func normalizedReaderUrl(_ rawUrl: String, platform: String) -> String? 
     if platform == "5ch" {
         return normalize5chReaderUrl(stripped)
     }
-    if platform == "oricon", let article = stripped.match(#"/(?:news|article)/(\d+)"#) {
+    if platform == "oricon", let article = stripped.match(_ReaderRegex.oriconArticle) {
         return "https://www.oricon.co.jp/news/\(article)/full/"
     }
     return stripped
@@ -521,23 +1154,32 @@ private func stripTrackingParams(_ rawUrl: String) -> String {
         let key = item.name.lowercased()
         return !blockedKeys.contains(key) && !blockedPrefixes.contains(where: { key.hasPrefix($0) })
     }
+    if components.queryItems?.isEmpty == true {
+        components.queryItems = nil
+    }
     return components.url?.absoluteString ?? rawUrl
 }
 
 private func normalize5chReaderUrl(_ rawUrl: String) -> String {
     guard let url = URL(string: rawUrl), let host = url.host else { return rawUrl }
-    let isItest = host.range(of: #"^itest\.5ch\.(net|io)$"#, options: .regularExpression) != nil
-    let isFiveCh = host.range(of: #"(^|\.)5ch\.(net|io)$"#, options: .regularExpression) != nil
-    guard isItest || isFiveCh else { return rawUrl }
+    let hostRange = NSRange(host.startIndex..., in: host)
+    let isItest = _ReaderRegex.itestHost?.firstMatch(in: host, range: hostRange) != nil
+    let isFiveCh = _ReaderRegex.fivechHost?.firstMatch(in: host, range: hostRange) != nil
+    let isTwoCh = _ReaderRegex.twochHost?.firstMatch(in: host, range: hostRange) != nil
+    guard isItest || isFiveCh || isTwoCh else { return rawUrl }
 
-    if isItest, let match = url.path.match(#"^/([^/]+)/test/read\.cgi/([^/]+)/(\d{9,})"#) {
+    if isTwoCh {
+        return rawUrl
+    }
+
+    if isItest, let match = url.path.match(_ReaderRegex.itestPath) {
         let parts = match.components(separatedBy: "|")
         if parts.count == 3 {
             return "https://itest.5ch.io/\(parts[0])/test/read.cgi/\(parts[1])/\(parts[2])/"
         }
     }
 
-    guard let match = url.path.match(#"/test/read\.cgi/([^/]+)/(\d{9,})"#) else { return rawUrl }
+    guard let match = url.path.match(_ReaderRegex.fivechPath) else { return rawUrl }
     let parts = match.components(separatedBy: "|")
     guard parts.count == 2 else { return rawUrl }
     let server = host.components(separatedBy: ".").first ?? ""
@@ -546,19 +1188,16 @@ private func normalize5chReaderUrl(_ rawUrl: String) -> String {
 }
 
 private func shouldBlockReaderRequest(_ rawUrl: String) -> Bool {
-    if rawUrl.range(of: #"^(about:|data:|blob:|file:|mailto:|tel:)"#, options: [.regularExpression, .caseInsensitive]) != nil {
-        return false
-    }
-    return rawUrl.range(
-        of: #"(2mdn|doubleclick|googlesyndication|googleadservices|adservice\.google|googletagmanager|google-analytics|analytics\.yahoo|yjtag\.yahoo|yads\.c\.yimg|ad\.yahoo|ad-stir|ad-generation|admatrix|adingo|fam-ad|fluct|genieessp|gmossp|i-mobile|im-apps|impact-ad|microad|nend|popin|taboola|outbrain|/adserver[/.?_-]|/ads?[/.?_-]|/advert|/banner|/sponsor|/promoted)"#,
-        options: [.regularExpression, .caseInsensitive]
-    ) != nil
+    let range = NSRange(rawUrl.startIndex..., in: rawUrl)
+    if _ReaderRegex.schemeAllowlist?.firstMatch(in: rawUrl, range: range) != nil { return false }
+    return _ReaderRegex.adBlocklist?.firstMatch(in: rawUrl, range: range) != nil
 }
 
 private let readerInjectedJS = """
 (function () {
   if (window.__OSHIREADER_IMAGE_ACTIONS__) return true;
   window.__OSHIREADER_IMAGE_ACTIONS__ = true;
+  if (window.top !== window) return true;
 
   function absoluteUrl(value) {
     if (!value) return '';
@@ -601,39 +1240,120 @@ private let readerInjectedJS = """
     return true;
   }
 
-  window.__oshiCollectImages = function() {
-    var seen = new Set();
-    var urls = [];
-    var imgs = document.querySelectorAll('img');
-    imgs.forEach(function(img) {
-      var url = img.currentSrc || img.src || img.getAttribute('data-src') ||
-                img.getAttribute('data-original') || img.getAttribute('data-lazy-src') ||
-                srcFromSrcset(img.getAttribute('srcset') || img.getAttribute('data-srcset') || '');
-      url = absoluteUrl(url);
-      if (!url || !/^https?:\\/\\//i.test(url)) return;
-      if (seen.has(url)) return;
+  var imageSelectionMode = false;
+  var selectedImageUrls = new Set();
+  var imageSelectionStyle = null;
 
-      // Exclude images that are too small to be article photos
-      var w = img.naturalWidth || img.width || 0;
-      var h = img.naturalHeight || img.height || 0;
-      if (w > 0 && h > 0 && (w < 300 || h < 200)) return;
+  function selectableImageUrl(img) {
+    var placeholderPattern = /\\/(thumb(nail)?s?|icon|avatar|profile|logo|favicon|placeholder|sprite|emoji|badge|sticker|banner|ad)[_\\-./#]|[_\\-](thumb|icon|avatar|logo|small|xs|sm|tiny|mini)[._]|\\b1x1\\b|\\/1\\/1\\.|pixel|beacon/i;
+    var currentUrl = absoluteUrl(img.currentSrc || '');
+    var sourceUrl = absoluteUrl(img.src || img.getAttribute('src') || '');
+    var naturalWidth = img.naturalWidth || 0;
+    var naturalHeight = img.naturalHeight || 0;
+    var hasSmallNaturalImage = naturalWidth > 0 && naturalHeight > 0 && (naturalWidth < 300 || naturalHeight < 200);
+    var isUsableCandidate = function(candidate) {
+      if (!/^https?:\\/\\//i.test(candidate) || placeholderPattern.test(candidate)) return false;
+      if (hasSmallNaturalImage && (candidate === currentUrl || candidate === sourceUrl)) return false;
+      return true;
+    };
+    var primaryCandidates = [
+      currentUrl,
+      sourceUrl,
+      srcFromSrcset(img.getAttribute('srcset') || '')
+    ].map(absoluteUrl).filter(Boolean);
+    var lazyCandidates = [
+      img.getAttribute('data-src'),
+      img.getAttribute('data-original'),
+      img.getAttribute('data-lazy-src'),
+      srcFromSrcset(img.getAttribute('data-srcset') || '')
+    ].map(absoluteUrl).filter(Boolean);
+    var url = primaryCandidates.concat(lazyCandidates).find(isUsableCandidate) || '';
+    if (!url || !/^https?:\\/\\//i.test(url)) return '';
+    var w = naturalWidth || img.width || 0;
+    var h = naturalHeight || img.height || 0;
+    if (hasSmallNaturalImage && url !== currentUrl && url !== sourceUrl) {
+      w = img.width || 0;
+      h = img.height || 0;
+    }
+    if (placeholderPattern.test(img.currentSrc || img.src || '') && img.getBoundingClientRect) {
+      var rect = img.getBoundingClientRect();
+      w = Math.max(w, rect.width || 0);
+      h = Math.max(h, rect.height || 0);
+    }
+    if (w > 0 && h > 0 && (w < 300 || h < 200)) return '';
+    var lower = url.toLowerCase().replace(/\\?.*$/, '');
+    if (placeholderPattern.test(lower)) return '';
+    return url;
+  }
 
-      // Exclude by URL pattern: thumbnails, icons, avatars, logos, tracking pixels
-      var lower = url.toLowerCase().replace(/\\?.*$/, '');
-      if (/\\/(thumb(nail)?s?|icon|avatar|profile|logo|favicon|placeholder|sprite|emoji|badge|sticker|banner|ad)[_\\-./#]|[_\\-](thumb|icon|avatar|logo|small|xs|sm|tiny|mini)[._]|\\b1x1\\b|\\/1\\/1\\.|pixel|beacon/.test(lower)) return;
+  function postSelectionState() {
+    window.webkit.messageHandlers.oshireader.postMessage({ type: 'image-selection-state', count: selectedImageUrls.size });
+  }
 
-      seen.add(url);
-      urls.push(url);
-    });
-    window.webkit.messageHandlers.oshireader.postMessage({ type: 'all-images', urls: urls });
+  function updateSelectionStyle(img, selected) {
+    img.setAttribute('data-oshireader-selected', selected ? 'true' : 'false');
+  }
+
+  function toggleImageSelection(img) {
+    var url = selectableImageUrl(img);
+    if (!url) return false;
+    if (selectedImageUrls.has(url)) {
+      selectedImageUrls.delete(url);
+      document.querySelectorAll('img[data-oshireader-selected="true"]').forEach(function(candidate) {
+        if (selectableImageUrl(candidate) === url) updateSelectionStyle(candidate, false);
+      });
+    } else {
+      selectedImageUrls.add(url);
+      updateSelectionStyle(img, true);
+    }
+    postSelectionState();
+    return true;
+  }
+
+  window.__oshiBeginImageSelection = function() {
+    imageSelectionMode = true;
+    selectedImageUrls = new Set();
+    if (!imageSelectionStyle) {
+      imageSelectionStyle = document.createElement('style');
+      imageSelectionStyle.id = 'oshireader-image-selection-style';
+      imageSelectionStyle.textContent = 'img[data-oshireader-selected="true"] { outline: 4px solid #7C3AED !important; outline-offset: 3px !important; opacity: .78 !important; }';
+      document.head.appendChild(imageSelectionStyle);
+    }
+    postSelectionState();
+  };
+
+  window.__oshiCancelImageSelection = function() {
+    imageSelectionMode = false;
+    selectedImageUrls = new Set();
+    document.querySelectorAll('img[data-oshireader-selected="true"]').forEach(function(img) { updateSelectionStyle(img, false); });
+    postSelectionState();
+  };
+
+  window.__oshiFinishImageSelection = function() {
+    var urls = Array.from(selectedImageUrls);
+    imageSelectionMode = false;
+    selectedImageUrls = new Set();
+    document.querySelectorAll('img[data-oshireader-selected="true"]').forEach(function(img) { updateSelectionStyle(img, false); });
+    window.webkit.messageHandlers.oshireader.postMessage({ type: 'selected-images', urls: urls });
   };
 
   document.addEventListener('click', function(event) {
     var el = event.target;
     var depth = 0;
     while (el && el.nodeType === 1 && depth < 6) {
-      if ((el.tagName || '').toUpperCase() === 'IMG') {
-        if (postImage(el)) {
+      var image = (el.tagName || '').toUpperCase() === 'IMG' ? el : null;
+      if (!image && el.closest) {
+        var control = el.closest('a,button,[role="button"]');
+        image = control && control.querySelector ? control.querySelector('img') : null;
+      }
+      if (image) {
+        if (imageSelectionMode) {
+          toggleImageSelection(image);
+          event.preventDefault();
+          event.stopPropagation();
+          return;
+        }
+        if (postImage(image)) {
           event.preventDefault();
           event.stopPropagation();
         }
@@ -645,6 +1365,13 @@ private let readerInjectedJS = """
   }, true);
 
   document.addEventListener('contextmenu', function(event) {
+    if (imageSelectionMode) {
+      if (event.target && (event.target.tagName || '').toUpperCase() === 'IMG') {
+        toggleImageSelection(event.target);
+      }
+      event.preventDefault();
+      return;
+    }
     if (postImage(event.target)) event.preventDefault();
   }, true);
   return true;
@@ -653,8 +1380,8 @@ true;
 """
 
 private extension String {
-    func match(_ pattern: String) -> String? {
-        guard let regex = try? NSRegularExpression(pattern: pattern),
+    func match(_ regex: NSRegularExpression?) -> String? {
+        guard let regex,
               let match = regex.firstMatch(in: self, range: NSRange(startIndex..., in: self)) else {
             return nil
         }
@@ -667,5 +1394,11 @@ private extension String {
             captures.append(String(self[range]))
         }
         return captures.joined(separator: "|")
+    }
+
+    func match(_ pattern: String) -> String? {
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = match(regex) else { return nil }
+        return match
     }
 }

@@ -59,20 +59,29 @@ func parseISO8601Date(_ value: String) -> Date? {
     _ISO8601Cache.cachedDate(from: value)
 }
 
+private enum _DisplayTextRegex {
+    static let htmlTags = try! NSRegularExpression(pattern: "<[^>]+>")
+    static let whitespace = try! NSRegularExpression(pattern: "\\s+")
+}
+
 func cleanDisplayText(_ value: String?) -> String? {
     guard var text = value else { return nil }
+    var range = NSRange(text.startIndex..., in: text)
+    text = _DisplayTextRegex.htmlTags.stringByReplacingMatches(in: text, range: range, withTemplate: "")
     let replacements = [
         "&amp;": "&",
         "&quot;": "\"",
         "&#39;": "'",
         "&apos;": "'",
-        "&nbsp;": " "
+        "&nbsp;": " ",
+        "&lt;": "<",
+        "&gt;": ">"
     ]
     for (needle, replacement) in replacements {
         text = text.replacingOccurrences(of: needle, with: replacement)
     }
-    text = text.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
-    text = text.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+    range = NSRange(text.startIndex..., in: text)
+    text = _DisplayTextRegex.whitespace.stringByReplacingMatches(in: text, range: range, withTemplate: " ")
     let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
     return trimmed.isEmpty ? nil : trimmed
 }
@@ -84,6 +93,9 @@ enum SourceMode: String, Codable, Hashable {
 }
 
 struct WatchTerm: Identifiable, Codable, Hashable {
+    static let allInfoCollectionMode = "all_info"
+    static let mediaOnlyCollectionMode = "media_only"
+
     let id: String
     var keyword: String
     var collection_mode: String // "all_info" | "media_only"
@@ -98,10 +110,10 @@ struct WatchTerm: Identifiable, Codable, Hashable {
         case id, keyword, collection_mode, source_mode, selected_platforms, is_active, notify_on_new, aliases, created_at
     }
 
-    init(id: String = UUID().uuidString, keyword: String, collection_mode: String = "all_info", source_mode: SourceMode = .all, selected_platforms: [String] = [], is_active: Bool = true, notify_on_new: Bool = false, aliases: [String] = [], created_at: String = _ISO8601Cache.withoutFractional.string(from: Date())) {
+    init(id: String = UUID().uuidString, keyword: String, collection_mode: String = Self.allInfoCollectionMode, source_mode: SourceMode = .all, selected_platforms: [String] = [], is_active: Bool = true, notify_on_new: Bool = false, aliases: [String] = [], created_at: String = _ISO8601Cache.withoutFractional.string(from: Date())) {
         self.id = id
         self.keyword = keyword
-        self.collection_mode = collection_mode
+        self.collection_mode = Self.normalizedCollectionMode(collection_mode)
         self.source_mode = source_mode == .selected && selected_platforms.isEmpty ? .all : source_mode
         self.selected_platforms = source_mode == .selected ? selected_platforms : []
         self.is_active = is_active
@@ -121,7 +133,9 @@ struct WatchTerm: Identifiable, Codable, Hashable {
             self.id = UUID().uuidString
         }
         self.keyword = try container.decode(String.self, forKey: .keyword)
-        self.collection_mode = try container.decode(String.self, forKey: .collection_mode)
+        self.collection_mode = Self.normalizedCollectionMode(
+            try container.decodeIfPresent(String.self, forKey: .collection_mode)
+        )
         let decodedMode = try container.decodeIfPresent(SourceMode.self, forKey: .source_mode) ?? .all
         let decodedPlatforms = try container.decodeIfPresent([String].self, forKey: .selected_platforms) ?? []
         self.source_mode = decodedMode == .selected && decodedPlatforms.isEmpty ? .all : decodedMode
@@ -130,6 +144,15 @@ struct WatchTerm: Identifiable, Codable, Hashable {
         self.notify_on_new = try container.decodeIfPresent(Bool.self, forKey: .notify_on_new) ?? false
         self.aliases = try container.decodeIfPresent([String].self, forKey: .aliases) ?? []
         self.created_at = try container.decodeIfPresent(String.self, forKey: .created_at) ?? _ISO8601Cache.withoutFractional.string(from: Date())
+    }
+
+    private static func normalizedCollectionMode(_ value: String?) -> String {
+        switch value?.trimmingCharacters(in: .whitespacesAndNewlines) {
+        case mediaOnlyCollectionMode:
+            return mediaOnlyCollectionMode
+        default:
+            return allInfoCollectionMode
+        }
     }
 }
 
@@ -188,7 +211,7 @@ struct AmebloBlog: Codable, Hashable, Identifiable {
     let title: String?
     let added_at: String
 
-    init?(url rawURL: String, title: String? = nil, addedAt: String = ISO8601DateFormatter().string(from: Date())) {
+    init?(url rawURL: String, title: String? = nil, addedAt: String = _ISO8601Cache.withoutFractional.string(from: Date())) {
         guard let normalized = Self.normalizeURL(rawURL) else { return nil }
         self.id = "ameblo:\(normalized.amebaID)"
         self.url = normalized.url

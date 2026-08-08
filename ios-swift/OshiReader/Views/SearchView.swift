@@ -1,5 +1,7 @@
 import SwiftUI
 
+private let _searchISO8601 = ISO8601DateFormatter()
+
 struct SearchLink: Identifiable {
     let id: String
     let group: String
@@ -20,7 +22,7 @@ struct SearchView: View {
     @StateObject private var i18n = I18nManager.shared
 
     @State private var keyword = ""
-    @State private var selectedGroup = "News"
+    @State private var selectedGroup = ProcessInfo.processInfo.arguments.contains("--uitesting-search-social") ? "Social" : "News"
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var selectedItem: FeedItem? = nil
     @FocusState private var fieldFocused: Bool
@@ -140,11 +142,14 @@ struct SearchView: View {
                 if !keyword.isEmpty {
                     Button {
                         keyword = ""
+                        selectedItem = nil
+                        fieldFocused = false
                     } label: {
                         Image(systemName: "xmark.circle.fill")
                             .foregroundColor(theme.colors.textMuted)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel(i18n.t("clearSearch"))
                     .accessibilityIdentifier("search.clearButton")
                 }
             }
@@ -152,10 +157,10 @@ struct SearchView: View {
             .padding(.horizontal, 12)
             .background(theme.colors.divider)
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(theme.colors.border, lineWidth: 1))
-            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .cornerRadius(8)
 
             if activeTerms.isEmpty {
-                Text(i18n.t("addWatchKeywordsHint"))
+                Text(i18n.t("searchAddKeywordHint"))
                     .font(.system(size: 13))
                     .foregroundColor(theme.colors.textMuted)
             } else {
@@ -176,7 +181,7 @@ struct SearchView: View {
         .padding(12)
         .background(theme.colors.card)
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(theme.colors.border, lineWidth: 1))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .cornerRadius(8)
     }
 
     private var categoryStrip: some View {
@@ -191,7 +196,7 @@ struct SearchView: View {
                         HStack(spacing: 7) {
                             Image(systemName: meta.symbol)
                                 .font(.system(size: 14, weight: .semibold))
-                            Text(group)
+                            Text(i18n.tSearchGroup(group))
                                 .font(.system(size: 13, weight: active ? .bold : .semibold))
                             Text("\(links.count)")
                                 .font(.system(size: 12, weight: .bold))
@@ -216,16 +221,18 @@ struct SearchView: View {
     private var selectedGroupSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text(selectedGroup)
+                Text(i18n.tSearchGroup(selectedGroup))
                     .font(.system(size: 15, weight: .bold))
                     .foregroundColor(theme.colors.text)
                 Spacer()
-                Text(selectedGroup == "Custom" ? i18n.t("savedURLs") : (trimmedKeyword.isEmpty ? i18n.t("enterKeyword") : trimmedKeyword))
+                Text(selectedGroup == "Custom" ? i18n.t("searchSavedUrls") : (trimmedKeyword.isEmpty ? i18n.t("searchEnterKeyword") : trimmedKeyword))
                     .font(.system(size: 12, weight: .medium))
                     .foregroundColor(theme.colors.textMuted)
             }
 
-            if selectedLinks.isEmpty {
+            if selectedGroup != "Custom" && trimmedKeyword.isEmpty {
+                emptyKeywordPrompt
+            } else if selectedLinks.isEmpty {
                 Text(i18n.t("noCustomUrlsAdded"))
                     .font(.system(size: 13))
                     .foregroundColor(theme.colors.textMuted)
@@ -240,6 +247,28 @@ struct SearchView: View {
                 }
             }
         }
+    }
+
+    private var emptyKeywordPrompt: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "keyboard")
+                .font(.system(size: 28, weight: .regular))
+                .foregroundColor(theme.colors.textMuted)
+            Text(i18n.t("searchEnterKeyword"))
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundColor(theme.colors.text)
+                .accessibilityIdentifier("search.emptyKeywordTitle")
+            Text(i18n.t("searchEmptyKeywordBody"))
+                .font(.system(size: 12))
+                .foregroundColor(theme.colors.textMuted)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 28)
+        .background(theme.colors.card)
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(theme.colors.border, lineWidth: 1))
+        .cornerRadius(8)
     }
 
     private func searchLinkNavigationRow(_ link: SearchLink) -> some View {
@@ -304,7 +333,7 @@ struct SearchView: View {
         .padding(.vertical, 10)
         .background(theme.colors.card)
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(theme.colors.border, lineWidth: 1))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .cornerRadius(8)
         .opacity(disabled ? 0.45 : 1)
     }
 
@@ -333,7 +362,7 @@ struct SearchView: View {
         let query = trimmedKeyword
         let url = link.makeUrl(query)
         let title = link.group == "Custom" ? link.label : "\(link.label): \(query)"
-        let now = ISO8601DateFormatter().string(from: Date())
+        let now = _searchISO8601.string(from: Date())
         return FeedItem(
             id: link.group == "Custom" ? link.id : "search:\(link.id):\(query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query)",
             platform: link.platform,

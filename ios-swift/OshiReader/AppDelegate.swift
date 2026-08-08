@@ -1,16 +1,17 @@
 import UIKit
 import UserNotifications
 
+@MainActor
 final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     func application(
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
-        // Fully local app — notifications are delivered locally, so there is no
-        // remote/APNs registration here. We do need to be the notification
-        // center delegate so new-item alerts can show while the app is open.
+        // Fully local app: the notification center delegate lets new-item
+        // alerts show while the app is open.
         UNUserNotificationCenter.current().delegate = self
         NotificationManager.shared.registerNotificationCategories()
+        application.setMinimumBackgroundFetchInterval(BackgroundRefreshManager.minimumInterval)
         BackgroundRefreshManager.shared.register()
         BackgroundRefreshManager.shared.schedule()
         return true
@@ -25,9 +26,21 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         BackgroundRefreshManager.shared.schedule()
     }
 
+    func application(
+        _ application: UIApplication,
+        performFetchWithCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
+    ) {
+        AppLogger.network.notice("Legacy background fetch started")
+        Task { @MainActor in
+            let refreshed = await BackgroundRefreshManager.shared.refreshNow()
+            AppLogger.network.notice("Legacy background fetch completed success=\(refreshed)")
+            completionHandler(refreshed ? .newData : .failed)
+        }
+    }
+
     // Present locally scheduled new-item alerts as a banner with sound while
     // the app is active; background refresh may also schedule these alerts.
-    func userNotificationCenter(
+    nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification,
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
@@ -35,7 +48,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         completionHandler([.banner, .list, .sound, .badge])
     }
 
-    func userNotificationCenter(
+    nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void

@@ -28,6 +28,7 @@ final class NotificationManager: ObservableObject {
     @Published private(set) var authorizationStatus: UNAuthorizationStatus = .notDetermined
 
     private let center: NotificationCenterClient
+    private let maximumAttachmentBytes: Int64 = 10 * 1024 * 1024
     private var localNotificationGeneration = 0
     private var authorizationRequestTask: Task<(granted: Bool, status: UNAuthorizationStatus), Never>?
 
@@ -146,13 +147,7 @@ final class NotificationManager: ObservableObject {
         return canScheduleNotifications
     }
 
-    // Remote/APNs push has been removed — the app is fully local and delivers
-    // new-item alerts via local notifications (see notifyForNewItems).
-    nonisolated static func deviceTokenString(_ data: Data) -> String {
-        data.map { String(format: "%02x", $0) }.joined()
-    }
-
-    func notifyForNewItems(_ items: [FeedItem], terms: [WatchTerm]) async {
+    func notifyForNewItems(_ items: [FeedItem], terms: [WatchTerm], includeAttachments: Bool = true) async {
         guard !items.isEmpty else { return }
         let generation = localNotificationGeneration
         await refreshAuthorizationStatus()
@@ -169,19 +164,27 @@ final class NotificationManager: ObservableObject {
         }
 
         let matchingItems = items.filter { notifiedKeywords.contains($0.watch_term_keyword) }
-        let counts = Dictionary(grouping: matchingItems) {
+        let itemsByKeyword = Dictionary(grouping: matchingItems) {
             $0.watch_term_keyword
-        }.mapValues(\.count)
+        }
 
-        for (keyword, count) in counts where count > 0 {
+        for (keyword, keywordItems) in itemsByKeyword where !keywordItems.isEmpty {
             guard generation == localNotificationGeneration else { return }
             guard let term = notifiedTermsByKeyword[keyword] else { continue }
-            let representative = matchingItems.first { $0.watch_term_keyword == keyword }
+            let count = keywordItems.count
+            let representative = keywordItems.sorted {
+                (parseISO8601Date($0.published_at) ?? .distantPast) >
+                (parseISO8601Date($1.published_at) ?? .distantPast)
+            }.first
             let content = UNMutableNotificationContent()
             content.title = "New items for \(keyword)"
-            content.body = "\(count) new item\(count == 1 ? "" : "s") found."
+            content.body = notificationBody(for: representative, count: count)
             content.sound = .default
             content.categoryIdentifier = Self.categoryIdentifier
+            if includeAttachments,
+               let attachment = await notificationAttachment(for: representative) {
+                content.attachments = [attachment]
+            }
             if let representative {
                 var userInfo: [String: Any] = [
                     "feed_item_id": representative.id,
@@ -214,11 +217,70 @@ final class NotificationManager: ObservableObject {
                     return
                 }
             } catch {
-                #if DEBUG
-                print("Notification scheduling failed for \(keyword): \(error)")
-                #endif
-
+                AppLogger.notifications.error("Notification scheduling failed for \(keyword): \(error.localizedDescription)")
             }
+        }
+    }
+
+    private func notificationBody(for item: FeedItem?, count: Int) -> String {
+        let preview = cleanDisplayText(item?.title)
+            ?? cleanDisplayText(item?.content_text)
+            ?? item?.url
+            ?? "\(count) new item\(count == 1 ? "" : "s") found."
+        let limitedPreview = preview.count > 140 ? "\(preview.prefix(137))..." : preview
+        guard count > 1 else { return limitedPreview }
+        return "\(limitedPreview)\n+\(count - 1) more"
+    }
+
+    private func notificationAttachment(for item: FeedItem?) async -> UNNotificationAttachment? {
+        guard let rawURL = item?.thumbnail_url,
+              let url = URL(string: rawURL),
+              ["http", "https"].contains(url.scheme?.lowercased()) else {
+            return nil
+        }
+
+        do {
+            var request = URLRequest(url: url)
+            request.timeoutInterval = 5
+            let (tempURL, response) = try await URLSession.shared.download(for: request)
+            guard let http = response as? HTTPURLResponse,
+                  (200...299).contains(http.statusCode),
+                  http.mimeType?.lowercased().hasPrefix("image/") == true,
+                  http.expectedContentLength <= 0 || http.expectedContentLength <= maximumAttachmentBytes,
+                  notificationFileSize(at: tempURL) <= maximumAttachmentBytes else {
+                return nil
+            }
+
+            let extensionHint = notificationAttachmentExtension(for: http, url: url)
+            let destination = FileManager.default.temporaryDirectory
+                .appendingPathComponent("oshireader-notification-\(UUID().uuidString).\(extensionHint)")
+            try? FileManager.default.removeItem(at: destination)
+            try FileManager.default.moveItem(at: tempURL, to: destination)
+            return try UNNotificationAttachment(identifier: "preview", url: destination)
+        } catch {
+            AppLogger.notifications.warning("Notification preview attachment failed: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    private func notificationFileSize(at url: URL) -> Int64 {
+        let values = try? url.resourceValues(forKeys: [.fileSizeKey])
+        return Int64(values?.fileSize ?? Int.max)
+    }
+
+    private func notificationAttachmentExtension(for response: HTTPURLResponse, url: URL) -> String {
+        switch response.mimeType?.lowercased() {
+        case "image/png":
+            return "png"
+        case "image/gif":
+            return "gif"
+        case "image/webp":
+            return "webp"
+        case "image/heic", "image/heif":
+            return "heic"
+        default:
+            let ext = url.pathExtension.lowercased()
+            return ["jpg", "jpeg"].contains(ext) ? ext : "jpg"
         }
     }
 

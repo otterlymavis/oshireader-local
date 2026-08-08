@@ -1,50 +1,141 @@
 import Foundation
 
+private let _notificationNavigationISO8601 = ISO8601DateFormatter()
+
 @MainActor
 final class NotificationNavigationManager: ObservableObject {
     static let shared = NotificationNavigationManager()
 
     @Published var selectedItem: FeedItem?
 
+    private struct NotificationPayload {
+        let item: FeedItem
+        let hasPlatform: Bool
+        let hasMediaType: Bool
+        let hasPublishedAt: Bool
+        let hasWatchTermKeyword: Bool
+    }
+
     private init() {}
 
     func open(userInfo: [AnyHashable: Any]) {
-        selectedItem = item(from: userInfo)
+        guard let payload = notificationPayload(from: userInfo) else { return }
+        selectedItem = Self.preferredNotificationItem(
+            payload.item,
+            cachedItems: LocalDB.shared.feedItems,
+            hasPlatform: payload.hasPlatform,
+            hasMediaType: payload.hasMediaType,
+            hasPublishedAt: payload.hasPublishedAt,
+            hasWatchTermKeyword: payload.hasWatchTermKeyword
+        )
         if let keyword = selectedItem?.watch_term_keyword {
             RecentTermUsageStore.shared.markUsed(keyword: keyword, terms: LocalDB.shared.terms)
         }
     }
 
     func save(userInfo: [AnyHashable: Any]) {
-        guard let item = item(from: userInfo) else { return }
+        guard let payload = notificationPayload(from: userInfo) else { return }
+        let item = Self.preferredNotificationItem(
+            payload.item,
+            cachedItems: LocalDB.shared.feedItems,
+            hasPlatform: payload.hasPlatform,
+            hasMediaType: payload.hasMediaType,
+            hasPublishedAt: payload.hasPublishedAt,
+            hasWatchTermKeyword: payload.hasWatchTermKeyword
+        )
         if !LocalDB.shared.savedPages.contains(where: { $0.id == item.id }) {
             _ = LocalDB.shared.toggleSaved(item: item)
         }
     }
 
-    private func item(from userInfo: [AnyHashable: Any]) -> FeedItem? {
-        guard let id = userInfo["feed_item_id"] as? String else { return nil }
-        let keyword = userInfo["watch_term_keyword"] as? String
-        if let cached = LocalDB.shared.feedItems.first(where: {
-            $0.id == id && (keyword == nil || $0.watch_term_keyword == keyword)
-        }) {
-            return cached
+    static func preferredNotificationItem(
+        _ notificationItem: FeedItem,
+        cachedItems: [FeedItem],
+        hasPlatform: Bool = true,
+        hasMediaType: Bool = true,
+        hasPublishedAt: Bool = true,
+        hasWatchTermKeyword: Bool = true
+    ) -> FeedItem {
+        let existing = cachedItems.first {
+            $0.id == notificationItem.id &&
+                (
+                    notificationItem.watch_term_keyword.isEmpty ||
+                    $0.watch_term_keyword == notificationItem.watch_term_keyword
+                )
         }
+        guard let existing else { return notificationItem }
 
-        guard let url = userInfo["url"] as? String else { return nil }
-        let now = ISO8601DateFormatter().string(from: Date())
         return FeedItem(
-            id: id,
-            platform: userInfo["platform"] as? String ?? "web",
-            url: url,
-            title: userInfo["title"] as? String,
-            content_text: userInfo["content_text"] as? String,
-            author: userInfo["author"] as? String,
-            thumbnail_url: userInfo["thumbnail_url"] as? String,
-            media_type: userInfo["media_type"] as? String ?? "article",
-            published_at: userInfo["published_at"] as? String ?? now,
-            watch_term_keyword: keyword ?? "",
-            fetched_at: userInfo["fetched_at"] as? String ?? now
+            id: notificationItem.id,
+            platform: hasPlatform && notificationItem.platform != "web" ? notificationItem.platform : existing.platform,
+            url: notificationItem.url,
+            title: notificationItem.title ?? existing.title,
+            content_text: notificationItem.content_text ?? existing.content_text,
+            author: notificationItem.author ?? existing.author,
+            thumbnail_url: notificationItem.thumbnail_url ?? existing.thumbnail_url,
+            media_type: hasMediaType ? notificationItem.media_type : existing.media_type,
+            published_at: hasPublishedAt ? notificationItem.published_at : existing.published_at,
+            watch_term_keyword: hasWatchTermKeyword && !notificationItem.watch_term_keyword.isEmpty
+                ? notificationItem.watch_term_keyword
+                : existing.watch_term_keyword,
+            fetched_at: existing.fetched_at
         )
+    }
+
+    private func notificationPayload(from userInfo: [AnyHashable: Any]) -> NotificationPayload? {
+        guard let id = stringValue(userInfo["feed_item_id"]),
+              let url = stringValue(userInfo["url"]) else { return nil }
+        let now = _notificationNavigationISO8601.string(from: Date())
+        let platform = stringValue(userInfo["platform"]) ?? Self.inferredPlatform(itemID: id, itemURL: url)
+        let mediaType = stringValue(userInfo["media_type"])
+        let publishedAt = stringValue(userInfo["published_at"])
+        let watchTermKeyword = stringValue(userInfo["watch_term_keyword"])
+        let item = FeedItem(
+            id: id,
+            platform: platform ?? "web",
+            url: url,
+            title: stringValue(userInfo["title"]),
+            content_text: stringValue(userInfo["content_text"]),
+            author: stringValue(userInfo["author"]),
+            thumbnail_url: stringValue(userInfo["thumbnail_url"]),
+            media_type: mediaType ?? "article",
+            published_at: publishedAt ?? now,
+            watch_term_keyword: watchTermKeyword ?? "",
+            fetched_at: stringValue(userInfo["fetched_at"]) ?? now
+        )
+        return NotificationPayload(
+            item: item,
+            hasPlatform: platform != nil,
+            hasMediaType: mediaType != nil,
+            hasPublishedAt: publishedAt != nil,
+            hasWatchTermKeyword: watchTermKeyword != nil
+        )
+    }
+
+    private static func inferredPlatform(itemID: String, itemURL: String) -> String? {
+        let lowercasedID = itemID.lowercased()
+        if lowercasedID.hasPrefix("youtube:") { return "youtube" }
+        if lowercasedID.hasPrefix("5ch:") || lowercasedID.hasPrefix("2ch.sc:") { return "5ch" }
+
+        guard let host = URL(string: itemURL)?.host?.lowercased() else { return nil }
+        if host == "youtube.com" || host == "www.youtube.com" || host == "youtu.be" || host.hasSuffix(".youtube.com") {
+            return "youtube"
+        }
+        if host == "5ch.io" || host == "5ch.net" || host == "itest.5ch.io" || host == "itest.5ch.net" || host == "2ch.sc" || host.hasSuffix(".5ch.io") || host.hasSuffix(".5ch.net") || host.hasSuffix(".2ch.sc") {
+            return "5ch"
+        }
+        return nil
+    }
+
+    private func stringValue(_ value: Any?) -> String? {
+        guard let value else { return nil }
+        if let text = value as? String {
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        if let number = value as? NSNumber {
+            return number.stringValue
+        }
+        return nil
     }
 }
