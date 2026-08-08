@@ -9,6 +9,27 @@ struct SearchLink: Identifiable {
     let domain: String
     let platform: String
     let makeUrl: (String) -> String
+
+    func feedItem(keyword: String, now: String = _searchISO8601.string(from: Date())) -> FeedItem {
+        let query = keyword.trimmingCharacters(in: .whitespacesAndNewlines)
+        let url = makeUrl(query)
+        let isCustom = group == "Custom"
+        let title = isCustom ? label : "\(label): \(query)"
+        return FeedItem(
+            id: isCustom ? id : "search:\(id):\(query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query)",
+            platform: platform,
+            url: url,
+            title: title,
+            content_text: nil,
+            author: domain,
+            thumbnail_url: nil,
+            media_type: "article",
+            published_at: now,
+            watch_term_keyword: isCustom ? "" : query,
+            fetched_at: now,
+            source: isCustom ? "custom_url" : nil
+        )
+    }
 }
 
 private struct SearchGroupMeta {
@@ -359,23 +380,7 @@ struct SearchView: View {
     }
 
     private func feedItem(for link: SearchLink) -> FeedItem {
-        let query = trimmedKeyword
-        let url = link.makeUrl(query)
-        let title = link.group == "Custom" ? link.label : "\(link.label): \(query)"
-        let now = _searchISO8601.string(from: Date())
-        return FeedItem(
-            id: link.group == "Custom" ? link.id : "search:\(link.id):\(query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query)",
-            platform: link.platform,
-            url: url,
-            title: title,
-            content_text: nil,
-            author: link.domain,
-            thumbnail_url: nil,
-            media_type: "article",
-            published_at: now,
-            watch_term_keyword: link.group == "Custom" ? "" : query,
-            fetched_at: now
-        )
+        link.feedItem(keyword: trimmedKeyword)
     }
 }
 

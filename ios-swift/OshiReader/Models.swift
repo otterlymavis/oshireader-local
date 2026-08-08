@@ -167,6 +167,7 @@ struct SourceItem: Codable, Hashable, Identifiable {
     let content_text: String?
     let media_type: String?
     let thumbnail_url: String?
+    var source: String? = nil
 }
 
 // MARK: - Local Flat FeedItem
@@ -182,6 +183,7 @@ struct FeedItem: Codable, Hashable, Identifiable {
     let published_at: String
     let watch_term_keyword: String
     let fetched_at: String
+    var source: String? = nil
 }
 
 // MARK: - SavedPage
@@ -191,6 +193,7 @@ struct SavedPage: Codable, Hashable, Identifiable {
     let title: String?
     let platform: String
     let saved_at: String
+    var source: String? = nil
 }
 
 // MARK: - CustomUrl

@@ -13,7 +13,8 @@ extension SavedPage {
             media_type: "article",
             published_at: saved_at,
             watch_term_keyword: "",
-            fetched_at: saved_at
+            fetched_at: saved_at,
+            source: source
         )
     }
 }

@@ -199,6 +199,7 @@ final class NotificationManager: ObservableObject {
                 if let contentText = representative.content_text { userInfo["content_text"] = contentText }
                 if let author = representative.author { userInfo["author"] = author }
                 if let thumbnailURL = representative.thumbnail_url { userInfo["thumbnail_url"] = thumbnailURL }
+                if let source = representative.source { userInfo["source"] = source }
                 content.userInfo = userInfo
             }
 

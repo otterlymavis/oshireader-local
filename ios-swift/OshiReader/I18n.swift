@@ -379,6 +379,24 @@ class I18nManager: ObservableObject {
             "zh-TW": "這只會從動態中隱藏這篇貼文。關鍵字仍會繼續追蹤。",
             "zh-CN": "这只会从动态中隐藏这篇帖子。关键词仍会继续追踪。"
         ],
+        "stopFollowing": [
+            "en": "Stop Following",
+            "ja": "フォロー解除",
+            "zh-TW": "停止追蹤",
+            "zh-CN": "停止追踪"
+        ],
+        "stopFollowingTitleFmt": [
+            "en": "Stop following “%@”?",
+            "ja": "「%@」のフォローを解除しますか？",
+            "zh-TW": "停止追蹤「%@」？",
+            "zh-CN": "停止追踪“%@”？"
+        ],
+        "stopFollowingMessage": [
+            "en": "This removes the keyword and its cached posts from this device.",
+            "ja": "この端末からキーワードと保存済みの投稿を削除します。",
+            "zh-TW": "這會從此裝置移除該關鍵字與已快取的貼文。",
+            "zh-CN": "这会从此设备移除该关键字与已缓存的帖子。"
+        ],
         "addKeyword": [
             "en": "Add Keyword",
             "ja": "キーワード追加",

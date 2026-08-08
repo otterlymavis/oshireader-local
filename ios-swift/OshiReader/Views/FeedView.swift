@@ -118,6 +118,7 @@ struct FeedView: View {
     @State private var showReorderSheet = false
     @State private var showSourceStatusSheet = false
     @State private var pendingHiddenFeedItem: FeedItem? = nil
+    @State private var pendingUnfollowTerm: WatchTerm? = nil
     
     @State private var customUrlString = ""
     @State private var customUrlTitle = ""
@@ -168,7 +169,7 @@ struct FeedView: View {
         )
     }
 
-    private static func makeFilteredItems(
+    static func makeFilteredItems(
         db: LocalDB,
         keyword: String?,
         platform: String?,
@@ -181,7 +182,11 @@ struct FeedView: View {
         }
         if mediaFilter == "media_only" {
             let mediaPlatforms: Set<String> = ["youtube", "niconico", "tver"]
-            result = result.filter { $0.media_type == "video" || mediaPlatforms.contains($0.platform) }
+            result = result.filter {
+                $0.media_type == "video" ||
+                    $0.media_type == "image" ||
+                    mediaPlatforms.contains(PlatformRegistry.normalizeID($0.platform))
+            }
         }
         return result
     }
@@ -264,8 +269,9 @@ struct FeedView: View {
                 let sourceRevision = db.dataRevision
                 Task {
                     let customItems = await NetworkManager.shared.scrapeCustomUrls(db.customUrls)
-                    if !customItems.isEmpty {
-                        _ = db.mergeItems(newItems: customItems, sourceRevision: sourceRevision)
+                    let currentItems = db.currentCustomFeedItems(customItems)
+                    if !currentItems.isEmpty {
+                        _ = db.mergeItems(newItems: currentItems, sourceRevision: sourceRevision)
                     }
                 }
                 customUrlString = ""
@@ -295,6 +301,22 @@ struct FeedView: View {
             }
         } message: {
             Text(i18n.t("hidePostMessage"))
+        }
+        .alert(
+            i18n.tFormat("stopFollowingTitleFmt", pendingUnfollowTerm?.keyword ?? ""),
+            isPresented: Binding(
+                get: { pendingUnfollowTerm != nil },
+                set: { if !$0 { pendingUnfollowTerm = nil } }
+            )
+        ) {
+            Button(i18n.t("cancel"), role: .cancel) {
+                pendingUnfollowTerm = nil
+            }
+            Button(i18n.t("stopFollowing"), role: .destructive) {
+                confirmStopFollowing()
+            }
+        } message: {
+            Text(i18n.t("stopFollowingMessage"))
         }
         .onChange(of: selectedKeyword) { _, keyword in handleSelectedKeywordChange(keyword) }
         .onChange(of: selectedPlatform) { _, _ in rebuildFeedCache(resetDisplayedCount: true) }
@@ -712,6 +734,7 @@ struct FeedView: View {
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
             .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                stopFollowingButton(for: item)
                 hidePostButton(for: item)
                 Button(role: .destructive) {
                     deleteFeedItem(item, clearSelection: true)
@@ -724,6 +747,7 @@ struct FeedView: View {
             }
             .contextMenu {
                 saveToggleButton(for: item)
+                stopFollowingButton(for: item)
                 hidePostButton(for: item)
             }
         } else {
@@ -737,6 +761,7 @@ struct FeedView: View {
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
             .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                stopFollowingButton(for: item)
                 hidePostButton(for: item)
                 Button(role: .destructive) {
                     deleteFeedItem(item, clearSelection: false)
@@ -749,6 +774,7 @@ struct FeedView: View {
             }
             .contextMenu {
                 saveToggleButton(for: item)
+                stopFollowingButton(for: item)
                 hidePostButton(for: item)
             }
         }
@@ -776,6 +802,18 @@ struct FeedView: View {
         .tint(.red)
     }
 
+    @ViewBuilder
+    private func stopFollowingButton(for item: FeedItem) -> some View {
+        if let term = db.term(matchingKeyword: item.watch_term_keyword) {
+            Button(role: .destructive) {
+                pendingUnfollowTerm = term
+            } label: {
+                Label(i18n.t("stopFollowing"), systemImage: "person.crop.circle.badge.xmark")
+            }
+            .tint(.red)
+        }
+    }
+
     private func deleteFeedItem(_ item: FeedItem, clearSelection: Bool) {
         db.deleteFeedItem(id: item.id, watchTermKeyword: item.watch_term_keyword)
         if clearSelection, selectedItem?.id == item.id {
@@ -787,6 +825,18 @@ struct FeedView: View {
         guard let item = pendingHiddenFeedItem else { return }
         pendingHiddenFeedItem = nil
         deleteFeedItem(item, clearSelection: true)
+    }
+
+    private func confirmStopFollowing() {
+        guard let term = pendingUnfollowTerm else { return }
+        pendingUnfollowTerm = nil
+        if selectedKeyword == term.keyword {
+            selectedKeyword = nil
+        }
+        if selectedItem?.watch_term_keyword == term.keyword {
+            selectedItem = nil
+        }
+        db.deleteTerm(id: term.id)
     }
 
     private func hasItems(for platformId: String) -> Bool {

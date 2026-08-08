@@ -53,7 +53,8 @@ enum KeychainHelper {
     }
 
     /// Store (or clear, when value is empty/nil) a secret.
-    static func save(_ key: Key, _ value: String?) {
+    @discardableResult
+    static func save(_ key: Key, _ value: String?) -> Bool {
         let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let base: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -61,24 +62,33 @@ enum KeychainHelper {
             kSecAttrAccount as String: key.rawValue,
         ]
 
-        SecItemDelete(base as CFDictionary)
         guard !trimmed.isEmpty, let data = trimmed.data(using: .utf8) else {
+            let status = SecItemDelete(base as CFDictionary)
             if isRunningTests {
                 fallbackLock.lock()
                 testFallbackStore.removeValue(forKey: fallbackKey(key))
                 fallbackLock.unlock()
             }
-            return
+            return status == errSecSuccess || status == errSecItemNotFound || isRunningTests
         }
 
-        var add = base
-        add[kSecValueData as String] = data
-        add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
-        SecItemAdd(add as CFDictionary, nil)
-        if isRunningTests {
+        let updateStatus = SecItemUpdate(base as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+        let succeeded: Bool
+        if updateStatus == errSecSuccess {
+            succeeded = true
+        } else if updateStatus == errSecItemNotFound {
+            var add = base
+            add[kSecValueData as String] = data
+            add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+            succeeded = SecItemAdd(add as CFDictionary, nil) == errSecSuccess
+        } else {
+            succeeded = false
+        }
+        if succeeded || isRunningTests {
             fallbackLock.lock()
             testFallbackStore[fallbackKey(key)] = data
             fallbackLock.unlock()
         }
+        return succeeded || isRunningTests
     }
 }

@@ -218,7 +218,8 @@ class ThemeManager: ObservableObject {
     }
     
     func metadata(for platform: String) -> PlatformMetadata {
-        switch platform.lowercased() {
+        let normalizedPlatform = PlatformRegistry.normalizeID(platform)
+        switch normalizedPlatform {
         case "youtube":
             return PlatformMetadata(name: "YouTube", icon: "📹", accent: Color.red, bg: Color(red: 1.0, green: 0.9, blue: 0.9), fg: Color.red)
         case "tver":
@@ -276,7 +277,7 @@ class ThemeManager: ObservableObject {
         case "barks":
             return PlatformMetadata(name: "BARKS", icon: "🎸", accent: Color(red: 0.13, green: 0.13, blue: 0.13), bg: Color(red: 0.93, green: 0.93, blue: 0.93), fg: Color(red: 0.13, green: 0.13, blue: 0.13))
         default:
-            if let definition = PlatformRegistry.definition(for: platform.lowercased()) {
+            if let definition = PlatformRegistry.definition(for: normalizedPlatform) {
                 return PlatformMetadata(name: definition.name, icon: definition.icon, accent: colors.primary, bg: colors.primaryBg, fg: colors.primary)
             }
             return PlatformMetadata(name: platform.capitalized, icon: "🌐", accent: colors.primary, bg: colors.primaryBg, fg: colors.primary)

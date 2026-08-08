@@ -64,10 +64,11 @@ final class NotificationNavigationManager: ObservableObject {
                 )
         }
         guard let existing else { return notificationItem }
+        let notificationPlatform = Self.normalizedNotificationPlatform(notificationItem.platform)
 
         return FeedItem(
             id: notificationItem.id,
-            platform: hasPlatform && notificationItem.platform != "web" ? notificationItem.platform : existing.platform,
+            platform: hasPlatform ? (notificationPlatform ?? existing.platform) : existing.platform,
             url: notificationItem.url,
             title: notificationItem.title ?? existing.title,
             content_text: notificationItem.content_text ?? existing.content_text,
@@ -78,7 +79,8 @@ final class NotificationNavigationManager: ObservableObject {
             watch_term_keyword: hasWatchTermKeyword && !notificationItem.watch_term_keyword.isEmpty
                 ? notificationItem.watch_term_keyword
                 : existing.watch_term_keyword,
-            fetched_at: existing.fetched_at
+            fetched_at: existing.fetched_at,
+            source: notificationItem.source ?? existing.source
         )
     }
 
@@ -86,10 +88,13 @@ final class NotificationNavigationManager: ObservableObject {
         guard let id = stringValue(userInfo["feed_item_id"]),
               let url = stringValue(userInfo["url"]) else { return nil }
         let now = _notificationNavigationISO8601.string(from: Date())
-        let platform = stringValue(userInfo["platform"]) ?? Self.inferredPlatform(itemID: id, itemURL: url)
+        let platform = Self.normalizedNotificationPlatform(
+            stringValue(userInfo["platform"]) ?? Self.inferredPlatform(itemID: id, itemURL: url)
+        )
         let mediaType = stringValue(userInfo["media_type"])
         let publishedAt = stringValue(userInfo["published_at"])
         let watchTermKeyword = stringValue(userInfo["watch_term_keyword"])
+        let source = stringValue(userInfo["source"])
         let item = FeedItem(
             id: id,
             platform: platform ?? "web",
@@ -101,7 +106,8 @@ final class NotificationNavigationManager: ObservableObject {
             media_type: mediaType ?? "article",
             published_at: publishedAt ?? now,
             watch_term_keyword: watchTermKeyword ?? "",
-            fetched_at: stringValue(userInfo["fetched_at"]) ?? now
+            fetched_at: stringValue(userInfo["fetched_at"]) ?? now,
+            source: source
         )
         return NotificationPayload(
             item: item,
@@ -112,14 +118,24 @@ final class NotificationNavigationManager: ObservableObject {
         )
     }
 
+    private static func normalizedNotificationPlatform(_ platform: String?) -> String? {
+        guard let platform else { return nil }
+        let normalized = PlatformRegistry.normalizeID(platform)
+        return PlatformRegistry.definition(for: normalized)?.id
+    }
+
     private static func inferredPlatform(itemID: String, itemURL: String) -> String? {
         let lowercasedID = itemID.lowercased()
         if lowercasedID.hasPrefix("youtube:") { return "youtube" }
+        if lowercasedID.hasPrefix("twitter:") || lowercasedID.hasPrefix("x:") { return "twitter" }
         if lowercasedID.hasPrefix("5ch:") || lowercasedID.hasPrefix("2ch.sc:") { return "5ch" }
 
         guard let host = URL(string: itemURL)?.host?.lowercased() else { return nil }
         if host == "youtube.com" || host == "www.youtube.com" || host == "youtu.be" || host.hasSuffix(".youtube.com") {
             return "youtube"
+        }
+        if host == "x.com" || host == "www.x.com" || host == "twitter.com" || host == "www.twitter.com" || host.hasSuffix(".x.com") || host.hasSuffix(".twitter.com") {
+            return "twitter"
         }
         if host == "5ch.io" || host == "5ch.net" || host == "itest.5ch.io" || host == "itest.5ch.net" || host == "2ch.sc" || host.hasSuffix(".5ch.io") || host.hasSuffix(".5ch.net") || host.hasSuffix(".2ch.sc") {
             return "5ch"

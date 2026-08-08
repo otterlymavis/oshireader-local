@@ -248,7 +248,8 @@ class NetworkManager {
             media_type: "article",
             published_at: entry.added_at,
             watch_term_keyword: "",
-            fetched_at: nowString
+            fetched_at: nowString,
+            source: "custom_url"
         ), true)
     }
 

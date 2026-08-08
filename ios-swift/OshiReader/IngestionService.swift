@@ -170,9 +170,10 @@ final class IngestionService {
     }
 
     static func effectivePlatforms(for term: WatchTerm, available: Set<String>) -> Set<String> {
-        guard term.source_mode == .selected else { return available }
+        let normalizedAvailable = Set(PlatformRegistry.normalizeIDs(Array(available)))
+        guard term.source_mode == .selected else { return normalizedAvailable }
         let selected = Set(PlatformRegistry.normalizeIDs(term.selected_platforms))
-        return selected.isEmpty ? available : available.intersection(selected)
+        return selected.isEmpty ? normalizedAvailable : normalizedAvailable.intersection(selected)
     }
 
     /// Fetch every subscribed source for one watch term. Network errors in any
@@ -306,7 +307,8 @@ final class IngestionService {
             media_type: item.media_type,
             published_at: item.published_at,
             watch_term_keyword: keyword,
-            fetched_at: item.fetched_at
+            fetched_at: item.fetched_at,
+            source: item.source
         )
     }
 
@@ -376,7 +378,8 @@ final class IngestionService {
                             media_type: "article",
                             published_at: publishedAt,
                             watch_term_keyword: keyword,
-                            fetched_at: self.nowISO()
+                            fetched_at: self.nowISO(),
+                            source: "curated_rss"
                         )
                     }
                 }
@@ -423,7 +426,8 @@ final class IngestionService {
                             media_type: "article",
                             published_at: publishedAt,
                             watch_term_keyword: keyword,
-                            fetched_at: self.nowISO()
+                            fetched_at: self.nowISO(),
+                            source: "dedicated_rss"
                         )
                     }
                 }
@@ -471,7 +475,8 @@ final class IngestionService {
                             media_type: "article",
                             published_at: publishedAt,
                             watch_term_keyword: keyword,
-                            fetched_at: self.nowISO()
+                            fetched_at: self.nowISO(),
+                            source: "ameblo_rss"
                         )
                     }
                     return (index, items, nil)
@@ -536,6 +541,7 @@ final class IngestionService {
             if !seen.insert(key).inserted { continue }
             let title = cleanTitle(entry.title, patterns: titlePatterns)
             if title.isEmpty { continue }
+            guard matchesKeyword(title: title, desc: "", kw: keyword) else { continue }
             items.append(FeedItem(
                 id: "\(platform):\(stableId(entry.link))",
                 platform: platform,
@@ -547,7 +553,8 @@ final class IngestionService {
                 media_type: mediaType,
                 published_at: publishedAt,
                 watch_term_keyword: keyword,
-                fetched_at: nowISO()
+                fetched_at: nowISO(),
+                source: "google_news"
             ))
         }
         return items
@@ -604,7 +611,8 @@ final class IngestionService {
                             media_type: "video",
                             published_at: published,
                             watch_term_keyword: keyword,
-                            fetched_at: nowISO()
+                            fetched_at: nowISO(),
+                            source: "niconico_snapshot"
                         ))
                     }
                     if !items.isEmpty { return items }
@@ -649,7 +657,8 @@ final class IngestionService {
                 media_type: "article",
                 published_at: publishedAt,
                 watch_term_keyword: keyword,
-                fetched_at: nowISO()
+                fetched_at: nowISO(),
+                source: "note_rss"
             )
         }
     }
@@ -746,7 +755,8 @@ final class IngestionService {
                 media_type: "video",
                 published_at: tverDate(content) ?? nowISO(),
                 watch_term_keyword: keyword,
-                fetched_at: nowISO()
+                fetched_at: nowISO(),
+                source: "tver_api"
             ))
         }
         return items
@@ -907,7 +917,8 @@ final class IngestionService {
                     media_type: "video",
                     published_at: isoString(published),
                     watch_term_keyword: keyword,
-                    fetched_at: nowISO()
+                    fetched_at: nowISO(),
+                    source: "youtube_scrape"
                 ))
             }
         }
@@ -1017,7 +1028,8 @@ final class IngestionService {
                 media_type: "video",
                 published_at: isoString(published),
                 watch_term_keyword: keyword,
-                fetched_at: nowISO()
+                fetched_at: nowISO(),
+                source: "youtube_scrape"
             ))
         }
 
@@ -1039,7 +1051,8 @@ final class IngestionService {
                 media_type: "video",
                 published_at: isoString(published),
                 watch_term_keyword: keyword,
-                fetched_at: nowISO()
+                fetched_at: nowISO(),
+                source: "youtube_scrape"
             ))
         }
         return Array(items.prefix(25))
@@ -1067,7 +1080,8 @@ final class IngestionService {
                 media_type: "video",
                 published_at: isoString(published),
                 watch_term_keyword: keyword,
-                fetched_at: nowISO()
+                fetched_at: nowISO(),
+                source: "youtube_scrape"
             )
         }
     }
@@ -1140,7 +1154,8 @@ final class IngestionService {
                 media_type: "video",
                 published_at: nowISO(),
                 watch_term_keyword: keyword,
-                fetched_at: nowISO()
+                fetched_at: nowISO(),
+                source: "youtube_scrape"
             )
         }
     }
@@ -1222,7 +1237,8 @@ final class IngestionService {
                 media_type: thumb != nil ? "video" : "text",
                 published_at: created,
                 watch_term_keyword: keyword,
-                fetched_at: nowISO()
+                fetched_at: nowISO(),
+                source: "twitter_api"
             ))
         }
         return items
@@ -1394,7 +1410,7 @@ final class IngestionService {
     }
 
     private func matchesKeyword(title: String, desc: String, kw: String) -> Bool {
-        let haystack = "\(title) \(desc)".lowercased()
+        let haystack = title.lowercased()
         let needle = kw.lowercased()
         if needle.isEmpty { return true }
         if haystack.contains(needle) { return true }

@@ -58,7 +58,7 @@ struct ReaderView: View {
     }
 
     static func usesSystemSafari(for feedItem: FeedItem) -> Bool {
-        feedItem.platform == "5ch"
+        PlatformRegistry.normalizeID(feedItem.platform) == "5ch"
     }
 
     var originalPageUrl: URL? {
@@ -141,7 +141,7 @@ struct ReaderView: View {
                             },
                             onSelectedImages: { urls in saveSelectedImages(urls) },
                             onContentBlocked: {
-                                if feedItem.platform == "twitter" {
+                                if PlatformRegistry.normalizeID(feedItem.platform) == "twitter" {
                                     if !isSigningIntoX { showSignInBanner = true }
                                 } else {
                                     showOpenInBrowserBanner = true
@@ -667,7 +667,7 @@ struct WebViewHelper: UIViewRepresentable {
         webView.isOpaque = false
         webView.backgroundColor = .clear
         webView.scrollView.backgroundColor = .clear
-        if platform == "twitter" {
+        if PlatformRegistry.normalizeID(platform) == "twitter" {
             webView.customUserAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1"
         }
         return webView
@@ -808,7 +808,7 @@ struct WebViewHelper: UIViewRepresentable {
                 opacity: 0.72 !important;
             }
             """
-        } else if platform == "twitter" {
+        } else if PlatformRegistry.normalizeID(platform) == "twitter" {
             readerCSS = ""
         } else {
             readerCSS = """
@@ -984,7 +984,7 @@ struct WebViewHelper: UIViewRepresentable {
             }
 
             if !loadCachedPage(in: webView) {
-                if parent.platform == "twitter" {
+                if PlatformRegistry.normalizeID(parent.platform) == "twitter" {
                     DispatchQueue.main.async { self.parent.onContentBlocked() }
                 }
                 pendingFailure?.cancel()
@@ -1034,7 +1034,7 @@ struct WebViewHelper: UIViewRepresentable {
                 UIApplication.shared.open(url)
                 return
             }
-            if parent.platform != "5ch", shouldBlockReaderRequest(url.absoluteString) {
+            if PlatformRegistry.normalizeID(parent.platform) != "5ch", shouldBlockReaderRequest(url.absoluteString) {
                 decisionHandler(.cancel)
                 return
             }
@@ -1137,10 +1137,11 @@ private enum _ReaderRegex {
 
 private func normalizedReaderUrl(_ rawUrl: String, platform: String) -> String? {
     let stripped = stripTrackingParams(rawUrl)
-    if platform == "5ch" {
+    let platformID = PlatformRegistry.normalizeID(platform)
+    if platformID == "5ch" {
         return normalize5chReaderUrl(stripped)
     }
-    if platform == "oricon", let article = stripped.match(_ReaderRegex.oriconArticle) {
+    if platformID == "oricon", let article = stripped.match(_ReaderRegex.oriconArticle) {
         return "https://www.oricon.co.jp/news/\(article)/full/"
     }
     return stripped
@@ -1394,11 +1395,5 @@ private extension String {
             captures.append(String(self[range]))
         }
         return captures.joined(separator: "|")
-    }
-
-    func match(_ pattern: String) -> String? {
-        guard let regex = try? NSRegularExpression(pattern: pattern),
-              let match = match(regex) else { return nil }
-        return match
     }
 }

@@ -11,6 +11,24 @@ enum LocalRefreshRequest: Equatable {
         case .foreground, .platform: return 3
         }
     }
+
+    func platforms(subscribedPlatforms: [String]) -> Set<String> {
+        switch self {
+        case .platform(let platform):
+            return Set(PlatformRegistry.normalizeIDs([platform]).filter { $0 != "custom" })
+        case .foreground, .background:
+            return Set(PlatformRegistry.normalizeIDs(subscribedPlatforms).filter { $0 != "custom" })
+        }
+    }
+
+    func refreshesCustomURLs() -> Bool {
+        switch self {
+        case .platform(let platform):
+            return PlatformRegistry.normalizeID(platform) == "custom"
+        case .foreground, .background:
+            return true
+        }
+    }
 }
 
 enum LocalRefreshCompletion: Equatable {
@@ -118,18 +136,13 @@ final class LocalRefreshCoordinator: ObservableObject {
         let db = LocalDB.shared
         let activeTerms = db.terms.filter(\.is_active)
         let orderedTerms = RecentTermUsageStore.shared.priorityOrdered(activeTerms)
-        let platforms: Set<String>
-        switch request {
-        case .platform(let platform): platforms = [platform]
-        default: platforms = Set(db.subscribedPlatforms.filter { $0 != "custom" })
-        }
+        let platforms = request.platforms(subscribedPlatforms: db.subscribedPlatforms)
+        let refreshesCustomURLs = request.refreshesCustomURLs()
         let sourceRevision = db.dataRevision
 
         guard !orderedTerms.isEmpty, !platforms.isEmpty else {
             let customCompleted: Bool
-            if case .platform = request {
-                customCompleted = true
-            } else if !db.customUrls.isEmpty, isCurrent(generation: generation, profileID: profileID) {
+            if refreshesCustomURLs, !db.customUrls.isEmpty, isCurrent(generation: generation, profileID: profileID) {
                 customCompleted = await refreshCustomURLs(
                     db: db,
                     sourceRevision: sourceRevision,
@@ -153,9 +166,7 @@ final class LocalRefreshCoordinator: ObservableObject {
         )
         var addedCount = reports.addedCount
         var customCompleted = true
-        if case .platform = request {
-            customCompleted = true
-        } else if !Task.isCancelled, isCurrent(generation: generation, profileID: profileID) {
+        if refreshesCustomURLs, !Task.isCancelled, isCurrent(generation: generation, profileID: profileID) {
             let custom = await refreshCustomURLs(
                 db: db,
                 sourceRevision: sourceRevision,
@@ -238,8 +249,9 @@ final class LocalRefreshCoordinator: ObservableObject {
         let customReport = await NetworkManager.shared.scrapeCustomUrlsReport(db.customUrls)
         guard !Task.isCancelled, isCurrent(generation: generation, profileID: profileID) else { return (false, 0) }
         var addedCount = 0
-        if !customReport.items.isEmpty {
-            addedCount = db.mergeItems(newItems: customReport.items, sourceRevision: sourceRevision)
+        let currentItems = db.currentCustomFeedItems(customReport.items)
+        if !currentItems.isEmpty {
+            addedCount = db.mergeItems(newItems: currentItems, sourceRevision: sourceRevision)
         }
         return (customReport.completed, addedCount)
     }

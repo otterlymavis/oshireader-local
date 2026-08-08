@@ -8,6 +8,25 @@ private struct LocalRestoreManifest: Codable {
     let sourcesOrder: [String]?
 }
 
+enum FeedItemPolicy {
+    static func isLegacyYouTubeGoogleNewsFallback(_ item: FeedItem) -> Bool {
+        guard PlatformRegistry.normalizeID(item.platform) == "youtube" else { return false }
+        if item.source?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "google_news" { return true }
+        if item.id.contains(":gnews:") { return true }
+        guard let host = URL(string: item.url)?.host?.lowercased() else { return false }
+        return host == "news.google.com" || host.hasSuffix(".news.google.com")
+    }
+
+    static func isLegacyUnmarkedYouTubeEstimate(_ item: FeedItem) -> Bool {
+        guard PlatformRegistry.normalizeID(item.platform) == "youtube" else { return false }
+        return item.source?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false
+    }
+
+    static func shouldPruneLegacyYouTubeItem(_ item: FeedItem) -> Bool {
+        isLegacyYouTubeGoogleNewsFallback(item) || isLegacyUnmarkedYouTubeEstimate(item)
+    }
+}
+
 class LocalDB: ObservableObject {
     static let shared = LocalDB()
     static let maximumBackupBytes = 20 * 1024 * 1024
@@ -114,6 +133,7 @@ class LocalDB: ObservableObject {
             saveToFile(name: "terms", value: self.terms)
         }
         self.feedItems = loadFromFile(name: "feed_items", defaultValue: [])
+        let prunedLegacyYouTubeItems = pruneLegacyYouTubeItems()
         self.savedPages = loadFromFile(name: "saved_pages", defaultValue: [])
         self.customUrls = loadFromFile(name: "custom_urls", defaultValue: [])
         self.amebloBlogs = loadFromFile(name: "ameblo_blogs", defaultValue: [])
@@ -131,7 +151,15 @@ class LocalDB: ObservableObject {
             saveToFile(name: "subscribed_platforms", value: self.subscribedPlatforms)
         }
         self.wallpaper = UserDefaults.standard.string(forKey: profileKey("wallpaper_url"))
-        self.sourcesOrder = UserDefaults.standard.stringArray(forKey: profileKey("sources_order"))
+        let loadedSourcesOrder = UserDefaults.standard.stringArray(forKey: profileKey("sources_order"))
+        self.sourcesOrder = Self.normalizedSourcesOrder(loadedSourcesOrder)
+        if loadedSourcesOrder != self.sourcesOrder {
+            if let sourcesOrder = self.sourcesOrder {
+                UserDefaults.standard.set(sourcesOrder, forKey: profileKey("sources_order"))
+            } else {
+                UserDefaults.standard.removeObject(forKey: profileKey("sources_order"))
+            }
+        }
         self.oshiAvatars = loadFromFile(name: "oshi_avatars", defaultValue: [:])
         self.compositions = loadFromFile(name: "oshi_compositions", defaultValue: [:])
         let hiddenArray: [String] = loadFromFile(name: "hidden_items", defaultValue: [])
@@ -139,6 +167,10 @@ class LocalDB: ObservableObject {
         contentCacheGenerationValue = UserDefaults.standard.integer(forKey: profileKey("content_cache_generation"))
         contentCacheGeneration = contentCacheGenerationValue
         dataRevision = UserDefaults.standard.integer(forKey: profileKey("local_data_revision"))
+        if prunedLegacyYouTubeItems {
+            dataRevision &+= 1
+            UserDefaults.standard.set(dataRevision, forKey: profileKey("local_data_revision"))
+        }
     }
 
     private func profileKey(_ key: String) -> String {
@@ -180,6 +212,16 @@ class LocalDB: ObservableObject {
                 AppLogger.persistence.error("Failed to save \(name): \(error.localizedDescription)")
             }
         }
+    }
+
+    @discardableResult
+    private func pruneLegacyYouTubeItems() -> Bool {
+        let originalCount = feedItems.count
+        feedItems.removeAll { FeedItemPolicy.shouldPruneLegacyYouTubeItem($0) }
+        guard feedItems.count != originalCount else { return false }
+        saveToFile(name: "feed_items", value: feedItems)
+        AppLogger.persistence.info("Pruned \(originalCount - self.feedItems.count) legacy YouTube feed items")
+        return true
     }
 
     /// Blocks until all ordinary asynchronous local writes submitted so far
@@ -307,7 +349,7 @@ class LocalDB: ObservableObject {
 
         if let wallpaper = manifest.wallpaper { UserDefaults.standard.set(wallpaper, forKey: profileKey("wallpaper_url")) }
         else { UserDefaults.standard.removeObject(forKey: profileKey("wallpaper_url")) }
-        if let sourcesOrder = manifest.sourcesOrder { UserDefaults.standard.set(sourcesOrder, forKey: profileKey("sources_order")) }
+        if let sourcesOrder = Self.normalizedSourcesOrder(manifest.sourcesOrder) { UserDefaults.standard.set(sourcesOrder, forKey: profileKey("sources_order")) }
         else { UserDefaults.standard.removeObject(forKey: profileKey("sources_order")) }
 
         try? FileManager.default.removeItem(at: stagingDirectory)
@@ -394,6 +436,10 @@ class LocalDB: ObservableObject {
         }
     }
 
+    func term(matchingKeyword keyword: String) -> WatchTerm? {
+        terms.first { $0.keyword == keyword }
+    }
+
     func deleteTerm(id: String) {
         runOnMain {
             if let term = self.terms.firstIndex(where: { $0.id == id }) {
@@ -408,6 +454,13 @@ class LocalDB: ObservableObject {
                 
                 // Also clean up items containing that watch term keyword
                 self.feedItems.removeAll(where: { $0.watch_term_keyword == keyword })
+                let hiddenSuffix = "::\(keyword)"
+                let remainingHiddenSuffixes = Set(self.terms.map { "::\($0.keyword)" })
+                self.hiddenItems = self.hiddenItems.filter { hiddenKey in
+                    if remainingHiddenSuffixes.contains(where: { hiddenKey.hasSuffix($0) }) { return true }
+                    return !hiddenKey.hasSuffix(hiddenSuffix)
+                }
+                self.saveToFile(name: "hidden_items", value: Array(self.hiddenItems))
                 self.saveFeedItemsSoon()
             }
         }
@@ -428,14 +481,16 @@ class LocalDB: ObservableObject {
         let filteredNew = newItemsBatches.flatMap { $0 }.filter { item in
             let key = Self.feedItemKey(item)
             let isHidden = self.hiddenItems.contains(key)
-            let isSearchFallback = item.id.contains("search:") || item.title?.lowercased().contains("search:") == true
-            return !isHidden && !isSearchFallback
+            let isSearchFallback = Self.isSearchFallbackItem(item)
+            return !isHidden && !isSearchFallback && !FeedItemPolicy.shouldPruneLegacyYouTubeItem(item)
         }
         
         var currentMap = [String: FeedItem]()
         for item in self.feedItems {
+            if FeedItemPolicy.shouldPruneLegacyYouTubeItem(item) { continue }
             currentMap[Self.feedItemKey(item)] = item
         }
+        let wasFirstLoad = currentMap.isEmpty
         
         for item in filteredNew {
             let key = Self.feedItemKey(item)
@@ -447,8 +502,10 @@ class LocalDB: ObservableObject {
                 // Merge/update fields if needed (like title length, content, published date)
                 let existing = currentMap[key]!
                 let shouldReplaceTitle = (item.title?.isEmpty == false) &&
-                    (existing.title == nil || existing.title!.contains("...") || item.title!.count > existing.title!.count + 8)
-                
+                    (existing.title == nil ||
+                     existing.title?.contains("...") == true ||
+                     (item.title?.count ?? 0) > (existing.title?.count ?? 0) + 8)
+
                 let merged = FeedItem(
                     id: existing.id,
                     platform: existing.platform,
@@ -460,7 +517,8 @@ class LocalDB: ObservableObject {
                     media_type: existing.media_type,
                     published_at: Self.mergedPublishedAt(existing: existing, incoming: item),
                     watch_term_keyword: existing.watch_term_keyword,
-                    fetched_at: item.fetched_at
+                    fetched_at: item.fetched_at,
+                    source: item.source ?? existing.source
                 )
                 currentMap[key] = merged
             }
@@ -477,7 +535,7 @@ class LocalDB: ObservableObject {
 
         // Only notify for items that survived the cap — avoids pinging for articles
         // that were immediately evicted as too old.
-        if !addedItems.isEmpty {
+        if !addedItems.isEmpty && !wasFirstLoad {
             let survivedKeys = Set(finalItems.map(Self.feedItemKey))
             let notifyItems = addedItems.filter { survivedKeys.contains(Self.feedItemKey($0)) }
             if !notifyItems.isEmpty {
@@ -495,6 +553,11 @@ class LocalDB: ObservableObject {
 
     private static func feedItemKey(_ item: FeedItem) -> String {
         "\(item.id)::\(item.watch_term_keyword)"
+    }
+
+    private static func isSearchFallbackItem(_ item: FeedItem) -> Bool {
+        item.id.lowercased().hasPrefix("search:") ||
+            item.title?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().hasPrefix("search:") == true
     }
 
     private static func mergedPublishedAt(existing: FeedItem, incoming: FeedItem) -> String {
@@ -519,6 +582,11 @@ class LocalDB: ObservableObject {
         let rhsKey = feedItemKey(rhs)
         if lhsKey != rhsKey { return lhsKey < rhsKey }
         return lhs.url < rhs.url
+    }
+
+    private struct FeedQueryCandidate {
+        let item: FeedItem
+        let platformKey: String
     }
 
     private static func cappedFeedItems(
@@ -578,6 +646,16 @@ class LocalDB: ObservableObject {
             self.saveFeedItemsSoon()
         }
     }
+
+    func currentCustomFeedItems(_ items: [FeedItem]) -> [FeedItem] {
+        let currentIds = Set(customUrls.map(\.id))
+        let currentUrls = Set(customUrls.map(\.url))
+        return items.filter { item in
+            PlatformRegistry.normalizeID(item.platform) != "custom" ||
+                currentIds.contains(item.id) ||
+                currentUrls.contains(item.url)
+        }
+    }
     
     // MARK: - Query Feed (Filtering)
     func queryFeed(keyword: String?, days: Int) -> [FeedItem] {
@@ -588,33 +666,34 @@ class LocalDB: ObservableObject {
         let strictKeywordPlatforms = PlatformRegistry.strictKeywordPlatformIDs
             .union(["news", "tver"])
         
-        return feedItems.filter { item in
+        return feedItems.compactMap { item -> FeedQueryCandidate? in
             let key = "\(item.id)::\(item.watch_term_keyword)"
-            if hiddenItems.contains(key) { return false }
+            if hiddenItems.contains(key) { return nil }
             
             // Search pages fallbacks
-            if item.id.contains("search:") || item.title?.lowercased().contains("search:") == true { return false }
+            if Self.isSearchFallbackItem(item) { return nil }
+            if FeedItemPolicy.shouldPruneLegacyYouTubeItem(item) { return nil }
+            let platformKey = normalizedPlatformKey(item.platform)
             
             // Bare address item (Yahoo News fallback checking)
-            if item.platform == "yahoonews" && (item.title?.contains("https://") == true || item.content_text?.contains("https://") == true) {
-                return false
+            if platformKey == "yahoonews" && (item.title?.contains("https://") == true || item.content_text?.contains("https://") == true) {
+                return nil
             }
             
             // Cutoff check (skip limit check for 5ch, girlschannel, togetter)
-            let platformKey = normalizedPlatformKey(item.platform)
             let skipCutoff = Self.discussionActivityPlatforms.contains(platformKey)
             if let cutoff = cutoffDate, !skipCutoff {
                 guard let itemDate = parseISO8601Date(item.published_at), itemDate >= cutoff else {
-                    return false
+                    return nil
                 }
             }
             
             // Keyword filter
             if let kw = keyword, !kw.isEmpty {
-                if item.platform == "custom" {
+                if platformKey == "custom" {
                     // Let custom pages pass if custom matches
                 } else if item.watch_term_keyword != kw {
-                    return false
+                    return nil
                 }
             }
             
@@ -625,29 +704,157 @@ class LocalDB: ObservableObject {
                     .aliases ?? []
                 let matchingKeywords = [item.watch_term_keyword] + aliases
                 if !matchingKeywords.contains(where: { matchesKeyword(item: item, kw: $0) }) {
-                    return false
+                    return nil
                 }
             }
             
             // Subscribed platforms
             if !subscribedPlatforms.contains(platformKey) {
-                return false
+                return nil
             }
             
-            return true
+            return FeedQueryCandidate(item: item, platformKey: platformKey)
         }
-        .sorted(by: Self.feedItemSortPrecedes)
-        .reduce(into: ([FeedItem](), Set<String>())) { acc, item in
-            // When no keyword filter, deduplicate by URL — the same article can be
-            // stored once per matching watch term; only the first (most recent) copy
-            // is shown. When filtering by a specific keyword, all matches are shown.
-            guard keyword == nil else { acc.0.append(item); return }
-            if acc.1.insert(item.url).inserted { acc.0.append(item) }
-        }.0
+        .sorted { Self.feedItemSortPrecedes($0.item, $1.item) }
+        .reduce(into: (items: [FeedItem](), urls: Set<String>(), platformTitles: Set<String>(), articleTitles: Set<String>())) { acc, candidate in
+            let item = candidate.item
+            let urlKey = Self.normalizedURLKey(item.url)
+            guard urlKey.isEmpty || acc.urls.insert(urlKey).inserted else { return }
+
+            let titleKey = Self.normalizedTitleKey(item.title)
+            let platformTitleKey = titleKey.isEmpty ? "" : "\(candidate.platformKey)|\(titleKey)"
+            guard platformTitleKey.isEmpty || acc.platformTitles.insert(platformTitleKey).inserted else { return }
+
+            let articleTitleKey = Self.normalizedArticleTitleKey(item.title)
+            if Self.shouldDeduplicateArticleTitle(item), articleTitleKey.count >= 10 {
+                guard acc.articleTitles.insert(articleTitleKey).inserted else { return }
+            }
+
+            acc.items.append(item)
+        }.items
+    }
+
+    static func normalizedURLKey(_ rawURL: String) -> String {
+        let trimmed = rawURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        guard var components = URLComponents(string: trimmed),
+              let scheme = components.scheme?.lowercased(),
+              scheme == "http" || scheme == "https" else {
+            return trimmed.lowercased()
+        }
+
+        let host = (components.host ?? "").lowercased()
+        guard !host.isEmpty,
+              host.contains(".") || host == "localhost" || host.allSatisfy(\.isNumber) else {
+            return ""
+        }
+        if host == "youtu.be" {
+            let videoID = components.path.split(separator: "/").first.map(String.init) ?? ""
+            if !videoID.isEmpty { return "https://youtube.com/watch?v=\(videoID)" }
+        }
+        if host == "youtube.com" || host == "www.youtube.com" || host == "m.youtube.com" {
+            let queryItems = components.queryItems ?? []
+            if components.path == "/watch",
+               let videoID = queryItems.first(where: { $0.name == "v" })?.value,
+               !videoID.isEmpty {
+                return "https://youtube.com/watch?v=\(videoID)"
+            }
+        }
+
+        components.scheme = "https"
+        components.host = normalizedHost(host)
+        components.fragment = nil
+        if (scheme == "https" && components.port == 443) || (scheme == "http" && components.port == 80) {
+            components.port = nil
+        }
+
+        var path = components.percentEncodedPath
+        while path.count > 1 && path.hasSuffix("/") {
+            path.removeLast()
+        }
+        components.percentEncodedPath = path
+
+        let queryItems = (components.queryItems ?? [])
+            .filter { !isIgnoredURLQueryItem($0.name) }
+            .sorted {
+                if $0.name != $1.name { return $0.name < $1.name }
+                return ($0.value ?? "") < ($1.value ?? "")
+            }
+        components.queryItems = queryItems.isEmpty ? nil : queryItems
+
+        return components.url?.absoluteString ?? trimmed
+    }
+
+    static func normalizedTitleKey(_ title: String?) -> String {
+        guard let title = title?.lowercased(), !title.isEmpty else { return "" }
+        return String(title.unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) })
+    }
+
+    static func normalizedArticleTitleKey(_ title: String?) -> String {
+        guard var text = cleanDisplayText(title)?.lowercased(), !text.isEmpty else { return "" }
+
+        for separator in [" - ", " | ", "｜"] {
+            guard let range = text.range(of: separator, options: .backwards) else { continue }
+            let prefix = String(text[..<range.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let suffix = String(text[range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if prefix.count >= 8, suffix.count <= 40, publisherSuffixLooksLikely(suffix) {
+                text = prefix
+                break
+            }
+        }
+
+        text = strippingTrailingPublisherParenthetical(text)
+        return normalizedTitleKey(text)
+    }
+
+    private static func normalizedHost(_ host: String) -> String {
+        var value = host
+        if value.hasPrefix("www.") { value.removeFirst(4) }
+        if value.hasPrefix("m.") { value.removeFirst(2) }
+        return value
+    }
+
+    private static func isIgnoredURLQueryItem(_ rawName: String) -> Bool {
+        let name = rawName.lowercased()
+        return name.hasPrefix("utm_") || [
+            "fbclid", "gclid", "yclid", "igshid", "mc_cid", "mc_eid",
+            "ref", "ref_src", "spm", "oc", "hl", "gl", "ceid"
+        ].contains(name)
+    }
+
+    private static func shouldDeduplicateArticleTitle(_ item: FeedItem) -> Bool {
+        if item.media_type == "article" || item.media_type == "text" { return true }
+        return PlatformRegistry.strictKeywordPlatformIDs.contains(PlatformRegistry.normalizeID(item.platform))
+    }
+
+    private static func publisherSuffixLooksLikely(_ suffix: String) -> Bool {
+        if suffix.isEmpty { return false }
+        let knownWords = [
+            "news", "ニュース", "新聞", "online", "web", "press", "times",
+            "ナタリー", "モデルプレス", "oricon", "mdpr", "modelpress", "yahoo", "google"
+        ]
+        if knownWords.contains(where: { suffix.contains($0) }) { return true }
+        return suffix.count <= 14 && !suffix.contains(" ")
+    }
+
+    private static func strippingTrailingPublisherParenthetical(_ text: String) -> String {
+        let pairs: [(Character, Character)] = [(")", "("), ("）", "（")]
+        var current = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        for (closing, opening) in pairs where current.last == closing {
+            guard let openIndex = current.lastIndex(of: opening) else { continue }
+            let prefix = String(current[..<openIndex]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let suffix = String(current[current.index(after: openIndex)..<current.index(before: current.endIndex)])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if prefix.count >= 8, suffix.count <= 40, publisherSuffixLooksLikely(suffix) {
+                current = prefix
+            }
+        }
+        return current
     }
     
     private func matchesKeyword(item: FeedItem, kw: String) -> Bool {
-        let haystack = "\(item.title ?? "") \(item.content_text ?? "")".lowercased()
+        let primaryText = item.title?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let haystack = ((primaryText?.isEmpty == false ? primaryText : item.content_text) ?? "").lowercased()
         let needle = kw.lowercased()
         if needle.isEmpty { return true }
         if haystack.contains(needle) { return true }
@@ -675,7 +882,8 @@ class LocalDB: ObservableObject {
                     url: item.url,
                     title: item.title,
                     platform: item.platform,
-                    saved_at: Self.iso8601.string(from: Date())
+                    saved_at: Self.iso8601.string(from: Date()),
+                    source: item.source
                 )
                 self.savedPages.insert(page, at: 0)
                 isSaved = true
@@ -722,8 +930,35 @@ class LocalDB: ObservableObject {
     // MARK: - Custom URLs
     func addCustomUrl(url: String, title: String) {
         let trimmed = url.trimmingCharacters(in: .whitespacesAndNewlines)
-        let normalized = trimmed.lowercased().hasPrefix("http://") || trimmed.lowercased().hasPrefix("https://") ? trimmed : "https://\(trimmed)"
-        let id = "custom:\(normalized.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)?.prefix(60) ?? "")"
+        let hasScheme = trimmed.range(of: #"^[a-zA-Z][a-zA-Z0-9+\-.]*:"#,
+                                      options: .regularExpression) != nil
+        let candidate = hasScheme ? trimmed : "https://\(trimmed)"
+        guard var components = URLComponents(string: candidate),
+              let scheme = components.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              let host = components.host?.lowercased(),
+              !host.isEmpty,
+              host.contains(".") || host == "localhost" || host.allSatisfy(\.isNumber) else { return }
+        components.scheme = scheme
+        components.host = Self.normalizedHost(host)
+        components.fragment = nil
+        if (scheme == "https" && components.port == 443) || (scheme == "http" && components.port == 80) {
+            components.port = nil
+        }
+        var path = components.percentEncodedPath
+        while path.count > 1 && path.hasSuffix("/") {
+            path.removeLast()
+        }
+        components.percentEncodedPath = path
+        let queryItems = (components.queryItems ?? [])
+            .filter { !Self.isIgnoredURLQueryItem($0.name) }
+            .sorted {
+                if $0.name != $1.name { return $0.name < $1.name }
+                return ($0.value ?? "") < ($1.value ?? "")
+            }
+        components.queryItems = queryItems.isEmpty ? nil : queryItems
+        guard let normalized = components.url?.absoluteString else { return }
+        let id = "custom:\(normalized.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? normalized)"
         runOnMain {
             if self.customUrls.contains(where: { $0.id == id }) { return }
             let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -736,10 +971,33 @@ class LocalDB: ObservableObject {
     
     func removeCustomUrl(id: String) {
         runOnMain {
-            guard self.customUrls.contains(where: { $0.id == id }) else { return }
+            let removedUrls = self.customUrls
+                .filter { $0.id == id }
+                .map(\.url)
+            guard !removedUrls.isEmpty else { return }
+            let removedHiddenKeyPrefix = "\(id)::"
+            let remainingCustomHiddenPrefixes = Set(self.customUrls
+                .filter { $0.id != id }
+                .map { "\($0.id)::" })
+            var removedHiddenKeys = Set([removedHiddenKeyPrefix])
+            for item in self.feedItems where PlatformRegistry.normalizeID(item.platform) == "custom" && (item.id == id || removedUrls.contains(item.url)) {
+                removedHiddenKeys.insert(Self.feedItemKey(item))
+            }
             self.advanceDataRevision()
             self.customUrls.removeAll(where: { $0.id == id })
+            self.feedItems.removeAll { item in
+                PlatformRegistry.normalizeID(item.platform) == "custom" &&
+                    (item.id == id || removedUrls.contains(item.url))
+            }
+            self.hiddenItems = self.hiddenItems
+                .filter { hiddenKey in
+                    if remainingCustomHiddenPrefixes.contains(where: { hiddenKey.hasPrefix($0) }) { return true }
+                    return !hiddenKey.hasPrefix(removedHiddenKeyPrefix)
+                }
+                .subtracting(removedHiddenKeys)
             self.saveToFile(name: "custom_urls", value: self.customUrls)
+            self.saveToFile(name: "hidden_items", value: Array(self.hiddenItems))
+            self.saveFeedItemsSoon()
         }
     }
 
@@ -833,8 +1091,9 @@ class LocalDB: ObservableObject {
     
     func setSourcesOrder(order: [String]) {
         runOnMain {
-            self.sourcesOrder = order
-            UserDefaults.standard.set(order, forKey: self.profileKey("sources_order"))
+            let normalizedOrder = Self.normalizedSourcesOrder(order) ?? []
+            self.sourcesOrder = normalizedOrder
+            UserDefaults.standard.set(normalizedOrder, forKey: self.profileKey("sources_order"))
         }
     }
     
@@ -915,12 +1174,18 @@ class LocalDB: ObservableObject {
         if !normalizedAmebloBlogs.isEmpty && !normalizedSubscribedPlatforms.contains("ameblo") {
             normalizedSubscribedPlatforms.append("ameblo")
         }
-        let normalizedSourcesOrder = backup.sources_order.map(Self.normalizePlatformIDs)
+        let normalizedSourcesOrder = Self.normalizedSourcesOrder(backup.sources_order)
+        let prunedFeedItemKeys = Set(backup.feed_items
+            .filter { FeedItemPolicy.shouldPruneLegacyYouTubeItem($0) }
+            .map(Self.feedItemKey))
         let normalizedFeedItems = Self.cappedFeedItems(
-            backup.feed_items.sorted(by: Self.feedItemSortPrecedes),
+            backup.feed_items
+                .filter { !FeedItemPolicy.shouldPruneLegacyYouTubeItem($0) }
+                .sorted(by: Self.feedItemSortPrecedes),
             preserving: [],
             subscribedPlatforms: normalizedSubscribedPlatforms
         )
+        let normalizedHiddenItems = backup.hidden_items.filter { !prunedFeedItemKeys.contains($0) }
 
         let encodedFiles: [(String, Data)] = try [
             ("terms", encoder.encode(normalizedTerms)),
@@ -931,7 +1196,7 @@ class LocalDB: ObservableObject {
             ("subscribed_platforms", encoder.encode(normalizedSubscribedPlatforms)),
             ("oshi_avatars", encoder.encode(backup.oshi_avatars)),
             ("oshi_compositions", encoder.encode(backup.compositions)),
-            ("hidden_items", encoder.encode(backup.hidden_items))
+            ("hidden_items", encoder.encode(normalizedHiddenItems))
         ]
         try saveEncodedFilesSynchronously(
             encodedFiles,
@@ -954,7 +1219,7 @@ class LocalDB: ObservableObject {
         sourcesOrder = normalizedSourcesOrder
         oshiAvatars = backup.oshi_avatars
         compositions = backup.compositions
-        hiddenItems = Set(backup.hidden_items)
+        hiddenItems = Set(normalizedHiddenItems)
 
     }
 
@@ -1044,6 +1309,10 @@ class LocalDB: ObservableObject {
         PlatformRegistry.normalizeIDs(ids)
     }
 
+    static func normalizedSourcesOrder(_ ids: [String]?) -> [String]? {
+        ids.map(normalizePlatformIDs)
+    }
+
     private func invalidateContentCaches() {
         contentCacheGenerationLock.lock()
         contentCacheGenerationValue += 1
@@ -1104,14 +1373,57 @@ class LocalDB: ObservableObject {
             scale: 1.0,
             zIndex: 1
         )
+        let platformFixtureID: String? = {
+            let args = ProcessInfo.processInfo.arguments
+            guard let index = args.firstIndex(of: "--uitesting-single-platform-feed"),
+                  args.indices.contains(index + 1) else {
+                return nil
+            }
+            return PlatformRegistry.normalizeID(args[index + 1])
+        }()
+        let usesAllPlatformSortFixture = ProcessInfo.processInfo.arguments.contains("--uitesting-all-platform-sort-feed")
+        let mediaPlatformIDs: Set<String> = ["youtube", "niconico", "tver", "twitter"]
+        let allPlatformFeedItems = PlatformRegistry.all.enumerated().map { index, platform in
+            let publishedAt = usesAllPlatformSortFixture
+                ? Self.iso8601.string(from: Date().addingTimeInterval(TimeInterval(-index * 60)))
+                : now
+            return FeedItem(
+                id: platform.id == "youtube" ? "youtube:ui-platform-youtube" : "ui-platform-\(platform.id)",
+                platform: platform.id,
+                url: platform.id == "youtube"
+                    ? "https://www.youtube.com/watch?v=oshireaderui1"
+                    : "https://example.com/oshireader-ui-test/\(platform.id)",
+                title: "UITest Oshi \(platform.name) item",
+                content_text: "A seeded \(platform.name) item for UITest Oshi used by OshiReader UI tests.",
+                author: "UI Test Desk",
+                thumbnail_url: nil,
+                media_type: mediaPlatformIDs.contains(platform.id) ? "video" : "article",
+                published_at: publishedAt,
+                watch_term_keyword: term.keyword,
+                fetched_at: now,
+                source: platform.id == "youtube" ? "youtube_scrape" : nil
+            )
+        }
 
         runOnMain {
             self.terms = [term]
-            self.feedItems = [feedItem]
+            if let platformFixtureID {
+                self.feedItems = allPlatformFeedItems.filter { PlatformRegistry.normalizeID($0.platform) == platformFixtureID }
+            } else if usesAllPlatformSortFixture {
+                self.feedItems = Array(allPlatformFeedItems.reversed())
+            } else {
+                self.feedItems = [feedItem]
+            }
             self.savedPages = [savedPage]
             self.customUrls = [customUrl]
             self.amebloBlogs = []
-            self.subscribedPlatforms = ["news", "youtube", "tver", "custom"]
+            if let platformFixtureID {
+                self.subscribedPlatforms = [platformFixtureID]
+            } else if usesAllPlatformSortFixture {
+                self.subscribedPlatforms = PlatformRegistry.all.map(\.id)
+            } else {
+                self.subscribedPlatforms = ["news", "youtube", "tver", "custom"]
+            }
             self.wallpaper = nil
             self.sourcesOrder = nil
             self.oshiAvatars = [:]
