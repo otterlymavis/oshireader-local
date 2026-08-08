@@ -1626,6 +1626,20 @@ final class OshiReaderTests: XCTestCase {
         XCTAssertEqual(center.status, .denied)
     }
 
+    @MainActor
+    func testConcurrentAuthorizationRequestsShareOneSystemPrompt() async throws {
+        let center = MockNotificationCenter(status: .notDetermined, grantsAuthorization: true)
+        let manager = NotificationManager(center: center)
+
+        async let first = manager.requestAuthorization()
+        async let second = manager.requestAuthorization()
+        let results = await (first, second)
+
+        XCTAssertTrue(results.0)
+        XCTAssertTrue(results.1)
+        XCTAssertEqual(center.authorizationRequestCount, 1)
+    }
+
     func testAPNSDeviceTokenStringUsesLowercaseHex() throws {
         let data = Data([0x00, 0x0f, 0xa1, 0xff])
         XCTAssertEqual(NotificationManager.deviceTokenString(data), "000fa1ff")

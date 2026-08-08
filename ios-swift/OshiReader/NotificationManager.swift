@@ -29,6 +29,7 @@ final class NotificationManager: ObservableObject {
 
     private let center: NotificationCenterClient
     private var localNotificationGeneration = 0
+    private var authorizationRequestTask: Task<(granted: Bool, status: UNAuthorizationStatus), Never>?
 
     init(center: NotificationCenterClient = UNUserNotificationCenter.current()) {
         self.center = center
@@ -98,14 +99,23 @@ final class NotificationManager: ObservableObject {
 
     @discardableResult
     func requestAuthorization() async -> Bool {
-        do {
-            let granted = try await center.requestAuthorization(options: [.alert, .badge, .sound])
-            await refreshAuthorizationStatus()
-            return granted
-        } catch {
-            await refreshAuthorizationStatus()
-            return false
+        if let authorizationRequestTask {
+            return (await authorizationRequestTask.value).granted
         }
+
+        let task = Task { @MainActor [center] in
+            do {
+                let granted = try await center.requestAuthorization(options: [.alert, .badge, .sound])
+                return (granted: granted, status: await center.authorizationStatus())
+            } catch {
+                return (granted: false, status: await center.authorizationStatus())
+            }
+        }
+        authorizationRequestTask = task
+        let result = await task.value
+        authorizationRequestTask = nil
+        authorizationStatus = result.status
+        return result.granted
     }
 
     func sendTestNotification() async throws {

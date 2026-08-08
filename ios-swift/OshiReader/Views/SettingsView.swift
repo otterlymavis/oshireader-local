@@ -114,6 +114,7 @@ struct SettingsView: View {
     @State private var amebloTitle = ""
     @State private var amebloError = ""
     @State private var currentBackgroundRefreshStatus = UIApplication.shared.backgroundRefreshStatus
+    @State private var notificationTermBeingUpdated: String?
     
     var allPlatforms: [(String, String)] {
         PlatformRegistry.all.map { ($0.id, "\($0.icon) \($0.name)") }
@@ -406,8 +407,13 @@ struct SettingsView: View {
                                 .accessibilityIdentifier("settings.keywordMode.\(term.keyword)")
 
                                 Button(action: {
+                                    guard notificationTermBeingUpdated == nil else { return }
                                     let next = !term.notify_on_new
-                                    Task { await setNotificationEnabled(next, for: term) }
+                                    notificationTermBeingUpdated = term.id
+                                    Task { @MainActor in
+                                        await setNotificationEnabled(next, for: term)
+                                        notificationTermBeingUpdated = nil
+                                    }
                                 }) {
                                     Label(term.notify_on_new ? i18n.t("notificationsOn") : i18n.t("notificationsOff"),
                                           systemImage: term.notify_on_new ? "bell.fill" : "bell.slash")
@@ -421,6 +427,7 @@ struct SettingsView: View {
                                         .clipShape(Capsule())
                                 }
                                 .buttonStyle(PlainButtonStyle())
+                                .disabled(notificationTermBeingUpdated != nil)
                                 .accessibilityIdentifier("settings.keywordBell.\(term.keyword)")
 
                                 Spacer()
