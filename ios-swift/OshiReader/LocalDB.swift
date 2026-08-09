@@ -666,7 +666,7 @@ class LocalDB: ObservableObject {
         let strictKeywordPlatforms = PlatformRegistry.strictKeywordPlatformIDs
             .union(["news", "tver"])
         
-        return feedItems.compactMap { item -> FeedQueryCandidate? in
+        let candidates = feedItems.compactMap { item -> FeedQueryCandidate? in
             let key = "\(item.id)::\(item.watch_term_keyword)"
             if hiddenItems.contains(key) { return nil }
             
@@ -716,6 +716,12 @@ class LocalDB: ObservableObject {
             return FeedQueryCandidate(item: item, platformKey: platformKey)
         }
         .sorted { Self.feedItemSortPrecedes($0.item, $1.item) }
+
+        if keyword?.isEmpty == false {
+            return candidates.map(\.item)
+        }
+
+        return candidates
         .reduce(into: (items: [FeedItem](), urls: Set<String>(), platformTitles: Set<String>(), articleTitles: Set<String>())) { acc, candidate in
             let item = candidate.item
             let urlKey = Self.normalizedURLKey(item.url)

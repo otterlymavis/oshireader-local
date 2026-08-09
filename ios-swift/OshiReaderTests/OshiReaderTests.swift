@@ -2279,7 +2279,8 @@ final class OshiReaderTests: XCTestCase {
 
         _ = db.mergeItems(newItems: [trackedURL, cleanURL])
 
-        XCTAssertEqual(db.queryFeed(keyword: "Aiko", days: 30).map(\.id), ["news:clean"])
+        XCTAssertEqual(db.queryFeed(keyword: "Aiko", days: 30).map(\.id), ["news:clean", "news:tracked"])
+        XCTAssertEqual(db.queryFeed(keyword: nil, days: 30).map(\.id), ["news:clean"])
     }
 
     @MainActor
@@ -2360,7 +2361,8 @@ final class OshiReaderTests: XCTestCase {
 
         _ = db.mergeItems(newItems: [oriconCopy, mdprCopy])
 
-        XCTAssertEqual(db.queryFeed(keyword: "Aiko", days: 30).map(\.id), ["mdpr:copy"])
+        XCTAssertEqual(db.queryFeed(keyword: "Aiko", days: 30).map(\.id), ["mdpr:copy", "oricon:copy"])
+        XCTAssertEqual(db.queryFeed(keyword: nil, days: 30).map(\.id), ["mdpr:copy"])
     }
 
     @MainActor
