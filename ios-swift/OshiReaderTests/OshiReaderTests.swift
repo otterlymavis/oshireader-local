@@ -3454,6 +3454,72 @@ final class OshiReaderTests: XCTestCase {
     }
 
     @MainActor
+    func testProfileLoadDropsHiddenItemsForPrunedLegacyYouTubeRows() throws {
+        let originalProfileID = db.activeProfile.id
+        let profile = try db.createProfile(name: "Legacy youtube load \(UUID().uuidString)")
+        defer {
+            try? db.switchProfile(to: originalProfileID)
+            try? db.deleteProfile(id: profile.id)
+        }
+
+        let now = ISO8601DateFormatter().string(from: Date())
+        let legacyUnmarked = FeedItem(
+            id: "load-youtube:unmarked",
+            platform: "youtube",
+            url: "https://news.google.com/articles/load-unmarked",
+            title: "Legacy unmarked",
+            content_text: nil,
+            author: nil,
+            thumbnail_url: nil,
+            media_type: "video",
+            published_at: now,
+            watch_term_keyword: "Aiko",
+            fetched_at: now
+        )
+        let legacyGoogleNews = FeedItem(
+            id: "load-youtube:google",
+            platform: "youtube",
+            url: "https://news.google.com/articles/load-google",
+            title: "Legacy Google News",
+            content_text: nil,
+            author: nil,
+            thumbnail_url: nil,
+            media_type: "video",
+            published_at: now,
+            watch_term_keyword: "Aiko",
+            fetched_at: now,
+            source: "google_news"
+        )
+        let currentScrape = FeedItem(
+            id: "load-youtube:current",
+            platform: "youtube",
+            url: "https://youtube.com/watch?v=current",
+            title: "Current scrape",
+            content_text: nil,
+            author: nil,
+            thumbnail_url: nil,
+            media_type: "video",
+            published_at: now,
+            watch_term_keyword: "Aiko",
+            fetched_at: now,
+            source: "youtube_scrape"
+        )
+        let hiddenItems = [
+            "\(legacyUnmarked.id)::\(legacyUnmarked.watch_term_keyword)",
+            "\(legacyGoogleNews.id)::\(legacyGoogleNews.watch_term_keyword)",
+            "\(currentScrape.id)::\(currentScrape.watch_term_keyword)"
+        ]
+        let encoder = JSONEncoder()
+        try encoder.encode([legacyUnmarked, legacyGoogleNews, currentScrape]).write(to: LocalProfileStore.shared.fileURL(for: "feed_items", profileID: profile.id), options: [.atomic])
+        try encoder.encode(hiddenItems).write(to: LocalProfileStore.shared.fileURL(for: "hidden_items", profileID: profile.id), options: [.atomic])
+
+        try db.switchProfile(to: profile.id)
+
+        XCTAssertEqual(db.feedItems.map(\.id), [currentScrape.id])
+        XCTAssertEqual(db.hiddenItems, ["\(currentScrape.id)::\(currentScrape.watch_term_keyword)"])
+    }
+
+    @MainActor
     func testBackupImportUsesParsedDateCapAndRetainsDiscussionItems() throws {
         let formatter = ISO8601DateFormatter()
         let baseDate = Date(timeIntervalSince1970: 1_800_000_000)

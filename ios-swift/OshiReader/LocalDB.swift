@@ -143,7 +143,7 @@ class LocalDB: ObservableObject {
         }
         self.feedItems = Self.normalizedImportedFeedItems(loadedFeedItems, customURLImport: loadedCustomURLImport)
         let normalizedLoadedFeedItems = self.feedItems != loadedFeedItems
-        let prunedLegacyYouTubeItems = pruneLegacyYouTubeItems()
+        let prunedLegacyYouTubeItemKeys = pruneLegacyYouTubeItems()
         self.amebloBlogs = loadFromFile(name: "ameblo_blogs", defaultValue: [])
         let subscribedPlatformsURL = fileURL(for: "subscribed_platforms")
         let hasSavedSubscribedPlatforms = FileManager.default.fileExists(atPath: subscribedPlatformsURL.path)
@@ -173,6 +173,8 @@ class LocalDB: ObservableObject {
         let hiddenArray: [String] = loadFromFile(name: "hidden_items", defaultValue: [])
         let normalizedHiddenArray = hiddenArray.compactMap {
             Self.normalizedImportedHiddenItem($0, customURLImport: loadedCustomURLImport)
+        }.filter {
+            !prunedLegacyYouTubeItemKeys.contains($0)
         }
         self.hiddenItems = Set(normalizedHiddenArray)
         let normalizedLoadedHiddenItems = normalizedHiddenArray != hiddenArray
@@ -185,7 +187,7 @@ class LocalDB: ObservableObject {
         if normalizedLoadedFeedItems {
             saveToFile(name: "feed_items", value: self.feedItems)
         }
-        if normalizedLoadedCustomUrls || normalizedLoadedFeedItems || normalizedLoadedHiddenItems || prunedLegacyYouTubeItems {
+        if normalizedLoadedCustomUrls || normalizedLoadedFeedItems || normalizedLoadedHiddenItems || !prunedLegacyYouTubeItemKeys.isEmpty {
             dataRevision &+= 1
             UserDefaults.standard.set(dataRevision, forKey: profileKey("local_data_revision"))
         }
@@ -232,14 +234,15 @@ class LocalDB: ObservableObject {
         }
     }
 
-    @discardableResult
-    private func pruneLegacyYouTubeItems() -> Bool {
-        let originalCount = feedItems.count
+    private func pruneLegacyYouTubeItems() -> Set<String> {
+        let prunedKeys = Set(feedItems
+            .filter { FeedItemPolicy.shouldPruneLegacyYouTubeItem($0) }
+            .map(Self.feedItemKey))
+        guard !prunedKeys.isEmpty else { return [] }
         feedItems.removeAll { FeedItemPolicy.shouldPruneLegacyYouTubeItem($0) }
-        guard feedItems.count != originalCount else { return false }
         saveToFile(name: "feed_items", value: feedItems)
-        AppLogger.persistence.info("Pruned \(originalCount - self.feedItems.count) legacy YouTube feed items")
-        return true
+        AppLogger.persistence.info("Pruned \(prunedKeys.count) legacy YouTube feed items")
+        return prunedKeys
     }
 
     /// Blocks until all ordinary asynchronous local writes submitted so far
