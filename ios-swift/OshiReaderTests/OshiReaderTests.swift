@@ -3333,7 +3333,29 @@ final class OshiReaderTests: XCTestCase {
                     fetched_at: now
                 )
             ],
-            savedPages: [],
+            savedPages: [
+                SavedPage(
+                    id: "legacy:bad-script",
+                    url: "javascript://example.com/feed",
+                    title: "Bad saved",
+                    platform: "custom",
+                    saved_at: now
+                ),
+                SavedPage(
+                    id: "legacy:host-port",
+                    url: "localhost:9090/feed",
+                    title: "Local saved",
+                    platform: "CUSTOM",
+                    saved_at: now
+                ),
+                SavedPage(
+                    id: "legacy:tracked-saved",
+                    url: "https://www.example.com/feed/?b=2&a=1&utm_source=saved",
+                    title: "Tracked saved",
+                    platform: "custom",
+                    saved_at: now
+                )
+            ],
             customUrls: [
                 CustomUrl(id: "legacy:bad-script", url: "javascript://example.com/feed", title: "Bad", added_at: now),
                 CustomUrl(id: "legacy:host-port", url: "localhost:9090/feed", title: " Local Feed ", added_at: now),
@@ -3363,6 +3385,8 @@ final class OshiReaderTests: XCTestCase {
         XCTAssertTrue(db.customUrls.allSatisfy { $0.id.hasPrefix("custom:") })
         XCTAssertEqual(Set(db.feedItems.map(\.id)), Set(db.customUrls.map(\.id)))
         XCTAssertEqual(Set(db.feedItems.map(\.url)), Set(db.customUrls.map(\.url)))
+        XCTAssertEqual(Set(db.savedPages.map(\.id)), Set(db.customUrls.map(\.id)))
+        XCTAssertEqual(Set(db.savedPages.map(\.url)), Set(db.customUrls.map(\.url)))
         XCTAssertEqual(db.hiddenItems, Set([
             "\(db.customUrls[0].id)::",
             "\(db.customUrls[1].id)::",
@@ -3433,9 +3457,33 @@ final class OshiReaderTests: XCTestCase {
             "legacy:tracked-dup::",
             "youtube:v1::Aiko"
         ]
+        let legacySavedPages = [
+            SavedPage(
+                id: "legacy:bad-script",
+                url: "javascript://example.com/feed",
+                title: "Bad saved",
+                platform: "custom",
+                saved_at: now
+            ),
+            SavedPage(
+                id: "legacy:host-port",
+                url: "localhost:9090/feed",
+                title: "Local saved",
+                platform: "custom",
+                saved_at: now
+            ),
+            SavedPage(
+                id: "legacy:tracked-saved",
+                url: "https://www.example.com/feed/?b=2&a=1&utm_source=saved",
+                title: "Tracked saved",
+                platform: "CUSTOM",
+                saved_at: now
+            )
+        ]
         let encoder = JSONEncoder()
         try encoder.encode(legacyCustomUrls).write(to: LocalProfileStore.shared.fileURL(for: "custom_urls", profileID: profile.id), options: [.atomic])
         try encoder.encode(legacyFeedItems).write(to: LocalProfileStore.shared.fileURL(for: "feed_items", profileID: profile.id), options: [.atomic])
+        try encoder.encode(legacySavedPages).write(to: LocalProfileStore.shared.fileURL(for: "saved_pages", profileID: profile.id), options: [.atomic])
         try encoder.encode(hiddenItems).write(to: LocalProfileStore.shared.fileURL(for: "hidden_items", profileID: profile.id), options: [.atomic])
 
         try db.switchProfile(to: profile.id)
@@ -3446,6 +3494,8 @@ final class OshiReaderTests: XCTestCase {
         ])
         XCTAssertEqual(Set(db.feedItems.map(\.id)), Set(db.customUrls.map(\.id)))
         XCTAssertEqual(Set(db.feedItems.map(\.url)), Set(db.customUrls.map(\.url)))
+        XCTAssertEqual(Set(db.savedPages.map(\.id)), Set(db.customUrls.map(\.id)))
+        XCTAssertEqual(Set(db.savedPages.map(\.url)), Set(db.customUrls.map(\.url)))
         XCTAssertEqual(db.hiddenItems, Set([
             "\(db.customUrls[0].id)::",
             "\(db.customUrls[1].id)::",

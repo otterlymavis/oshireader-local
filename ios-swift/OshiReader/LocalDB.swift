@@ -133,13 +133,18 @@ class LocalDB: ObservableObject {
             saveToFile(name: "terms", value: self.terms)
         }
         let loadedFeedItems: [FeedItem] = loadFromFile(name: "feed_items", defaultValue: [])
-        self.savedPages = loadFromFile(name: "saved_pages", defaultValue: [])
         let loadedCustomUrls: [CustomUrl] = loadFromFile(name: "custom_urls", defaultValue: [])
         let loadedCustomURLImport = Self.normalizedCustomUrlImport(loadedCustomUrls)
         self.customUrls = loadedCustomURLImport.urls
         let normalizedLoadedCustomUrls = self.customUrls != loadedCustomUrls
         if normalizedLoadedCustomUrls {
             saveToFile(name: "custom_urls", value: self.customUrls)
+        }
+        let loadedSavedPages: [SavedPage] = loadFromFile(name: "saved_pages", defaultValue: [])
+        self.savedPages = Self.normalizedImportedSavedPages(loadedSavedPages, customURLImport: loadedCustomURLImport)
+        let normalizedLoadedSavedPages = self.savedPages != loadedSavedPages
+        if normalizedLoadedSavedPages {
+            saveToFile(name: "saved_pages", value: self.savedPages)
         }
         self.feedItems = Self.normalizedImportedFeedItems(loadedFeedItems, customURLImport: loadedCustomURLImport)
         let normalizedLoadedFeedItems = self.feedItems != loadedFeedItems
@@ -187,7 +192,7 @@ class LocalDB: ObservableObject {
         if normalizedLoadedFeedItems {
             saveToFile(name: "feed_items", value: self.feedItems)
         }
-        if normalizedLoadedCustomUrls || normalizedLoadedFeedItems || normalizedLoadedHiddenItems || !prunedLegacyYouTubeItemKeys.isEmpty {
+        if normalizedLoadedCustomUrls || normalizedLoadedSavedPages || normalizedLoadedFeedItems || normalizedLoadedHiddenItems || !prunedLegacyYouTubeItemKeys.isEmpty {
             dataRevision &+= 1
             UserDefaults.standard.set(dataRevision, forKey: profileKey("local_data_revision"))
         }
@@ -1070,6 +1075,29 @@ class LocalDB: ObservableObject {
         }
     }
 
+    private static func normalizedImportedSavedPages(
+        _ pages: [SavedPage],
+        customURLImport: NormalizedCustomUrlImport
+    ) -> [SavedPage] {
+        pages.compactMap { page in
+            guard PlatformRegistry.normalizeID(page.platform) == "custom" else { return page }
+            let normalizedPageURL = normalizedCustomUrlEntry(url: page.url, title: nil, addedAt: "")?.url
+            guard let entry = customURLImport.entriesByLegacyID[page.id] ??
+                    customURLImport.entriesByLegacyURL[page.url] ??
+                    normalizedPageURL.flatMap({ customURLImport.entriesByLegacyURL[$0] }) else {
+                return nil
+            }
+            return SavedPage(
+                id: entry.id,
+                url: entry.url,
+                title: page.title,
+                platform: "custom",
+                saved_at: page.saved_at,
+                source: page.source ?? "custom_url"
+            )
+        }
+    }
+
     private static func normalizedImportedHiddenItem(
         _ key: String,
         customURLImport: NormalizedCustomUrlImport
@@ -1299,6 +1327,7 @@ class LocalDB: ObservableObject {
         }
         let normalizedSourcesOrder = Self.normalizedSourcesOrder(backup.sources_order)
         let customURLImport = Self.normalizedCustomUrlImport(backup.custom_urls)
+        let normalizedSavedPages = Self.normalizedImportedSavedPages(backup.saved_pages, customURLImport: customURLImport)
         let importedFeedItems = Self.normalizedImportedFeedItems(backup.feed_items, customURLImport: customURLImport)
         let prunedFeedItemKeys = Set(importedFeedItems
             .filter { FeedItemPolicy.shouldPruneLegacyYouTubeItem($0) }
@@ -1319,7 +1348,7 @@ class LocalDB: ObservableObject {
         let encodedFiles: [(String, Data)] = try [
             ("terms", encoder.encode(normalizedTerms)),
             ("feed_items", encoder.encode(normalizedFeedItems)),
-            ("saved_pages", encoder.encode(backup.saved_pages)),
+            ("saved_pages", encoder.encode(normalizedSavedPages)),
             ("custom_urls", encoder.encode(normalizedCustomUrls)),
             ("ameblo_blogs", encoder.encode(normalizedAmebloBlogs)),
             ("subscribed_platforms", encoder.encode(normalizedSubscribedPlatforms)),
@@ -1340,7 +1369,7 @@ class LocalDB: ObservableObject {
 
         terms = normalizedTerms
         feedItems = normalizedFeedItems
-        savedPages = backup.saved_pages
+        savedPages = normalizedSavedPages
         customUrls = normalizedCustomUrls
         amebloBlogs = normalizedAmebloBlogs
         subscribedPlatforms = normalizedSubscribedPlatforms
