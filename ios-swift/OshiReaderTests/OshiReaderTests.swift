@@ -3047,7 +3047,7 @@ final class OshiReaderTests: XCTestCase {
 
         XCTAssertEqual(db.terms.map(\.keyword), ["Encrypted Oshi"])
         XCTAssertEqual(db.feedItems.map(\.id), ["news:encrypted"])
-        XCTAssertEqual(db.customUrls.map(\.id), ["custom:encrypted"])
+        XCTAssertEqual(db.customUrls.map(\.id), ["custom:https://example.com/feed.xml"])
         XCTAssertEqual(db.amebloBlogs.map(\.amebaID), ["encrypted"])
     }
 
@@ -3284,6 +3284,38 @@ final class OshiReaderTests: XCTestCase {
 
         XCTAssertEqual(db.subscribedPlatforms, ["news", "youtube", "custom"])
         XCTAssertEqual(db.sourcesOrder, ["custom", "news", "youtube"])
+    }
+
+    @MainActor
+    func testBackupImportNormalizesCustomUrlsAndDropsInvalidEntries() throws {
+        let now = ISO8601DateFormatter().string(from: Date())
+        let backup = LocalBackup(
+            exportedAt: now,
+            terms: [],
+            feedItems: [],
+            savedPages: [],
+            customUrls: [
+                CustomUrl(id: "legacy:bad-script", url: "javascript://example.com/feed", title: "Bad", added_at: now),
+                CustomUrl(id: "legacy:host-port", url: "localhost:9090/feed", title: " Local Feed ", added_at: now),
+                CustomUrl(id: "legacy:tracked", url: "https://www.example.com/feed/?utm_source=backup&b=2&a=1#frag", title: " ", added_at: now),
+                CustomUrl(id: "legacy:tracked-dup", url: "https://example.com/feed?b=2&a=1", title: "Duplicate", added_at: now),
+            ],
+            subscribedPlatforms: ["custom"],
+            wallpaper: nil,
+            sourcesOrder: nil,
+            oshiAvatars: [:],
+            compositions: [:],
+            hiddenItems: []
+        )
+
+        try db.importBackupData(JSONEncoder().encode(backup))
+
+        XCTAssertEqual(db.customUrls.map(\.url), [
+            "https://localhost:9090/feed",
+            "https://example.com/feed?a=1&b=2",
+        ])
+        XCTAssertEqual(db.customUrls.map(\.title), ["Local Feed", nil])
+        XCTAssertTrue(db.customUrls.allSatisfy { $0.id.hasPrefix("custom:") })
     }
 
     @MainActor

@@ -934,21 +934,21 @@ class LocalDB: ObservableObject {
     }
     
     // MARK: - Custom URLs
-    func addCustomUrl(url: String, title: String) {
+    private static func normalizedCustomUrlEntry(url: String, title: String?, addedAt: String) -> CustomUrl? {
         let trimmed = url.trimmingCharacters(in: .whitespacesAndNewlines)
         let hasScheme = trimmed.range(of: #"^[a-zA-Z][a-zA-Z0-9+\-.]*:"#,
                                       options: .regularExpression) != nil
         let hasHTTPSScheme = trimmed.range(of: #"^https?://"#, options: [.regularExpression, .caseInsensitive]) != nil
         let looksLikeHostPort = trimmed.range(of: #"^[A-Za-z0-9.-]+:\d+([/?#].*)?$"#,
                                               options: .regularExpression) != nil
-        guard !hasScheme || hasHTTPSScheme || looksLikeHostPort else { return }
+        guard !hasScheme || hasHTTPSScheme || looksLikeHostPort else { return nil }
         let candidate = hasHTTPSScheme ? trimmed : "https://\(trimmed)"
         guard var components = URLComponents(string: candidate),
               let scheme = components.scheme?.lowercased(),
               scheme == "http" || scheme == "https",
               let host = components.host?.lowercased(),
               !host.isEmpty,
-              host.contains(".") || host == "localhost" || host.allSatisfy(\.isNumber) else { return }
+              host.contains(".") || host == "localhost" || host.allSatisfy(\.isNumber) else { return nil }
         components.scheme = scheme
         components.host = Self.normalizedHost(host)
         components.fragment = nil
@@ -967,12 +967,25 @@ class LocalDB: ObservableObject {
                 return ($0.value ?? "") < ($1.value ?? "")
             }
         components.queryItems = queryItems.isEmpty ? nil : queryItems
-        guard let normalized = components.url?.absoluteString else { return }
+        guard let normalized = components.url?.absoluteString else { return nil }
         let id = "custom:\(normalized.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? normalized)"
+        let trimmedTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return CustomUrl(id: id, url: normalized, title: trimmedTitle?.isEmpty == false ? trimmedTitle : nil, added_at: addedAt)
+    }
+
+    private static func normalizedCustomUrls(_ urls: [CustomUrl]) -> [CustomUrl] {
+        var seen = Set<String>()
+        return urls.compactMap { entry in
+            guard let normalized = normalizedCustomUrlEntry(url: entry.url, title: entry.title, addedAt: entry.added_at),
+                  seen.insert(normalized.id).inserted else { return nil }
+            return normalized
+        }
+    }
+
+    func addCustomUrl(url: String, title: String) {
+        guard let entry = Self.normalizedCustomUrlEntry(url: url, title: title, addedAt: Self.iso8601.string(from: Date())) else { return }
         runOnMain {
-            if self.customUrls.contains(where: { $0.id == id }) { return }
-            let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
-            let entry = CustomUrl(id: id, url: normalized, title: trimmedTitle.isEmpty ? nil : trimmedTitle, added_at: Self.iso8601.string(from: Date()))
+            if self.customUrls.contains(where: { $0.id == entry.id }) { return }
             self.advanceDataRevision()
             self.customUrls.insert(entry, at: 0)
             self.saveToFile(name: "custom_urls", value: self.customUrls)
@@ -1196,12 +1209,13 @@ class LocalDB: ObservableObject {
             subscribedPlatforms: normalizedSubscribedPlatforms
         )
         let normalizedHiddenItems = backup.hidden_items.filter { !prunedFeedItemKeys.contains($0) }
+        let normalizedCustomUrls = Self.normalizedCustomUrls(backup.custom_urls)
 
         let encodedFiles: [(String, Data)] = try [
             ("terms", encoder.encode(normalizedTerms)),
             ("feed_items", encoder.encode(normalizedFeedItems)),
             ("saved_pages", encoder.encode(backup.saved_pages)),
-            ("custom_urls", encoder.encode(backup.custom_urls)),
+            ("custom_urls", encoder.encode(normalizedCustomUrls)),
             ("ameblo_blogs", encoder.encode(normalizedAmebloBlogs)),
             ("subscribed_platforms", encoder.encode(normalizedSubscribedPlatforms)),
             ("oshi_avatars", encoder.encode(backup.oshi_avatars)),
@@ -1222,7 +1236,7 @@ class LocalDB: ObservableObject {
         terms = normalizedTerms
         feedItems = normalizedFeedItems
         savedPages = backup.saved_pages
-        customUrls = backup.custom_urls
+        customUrls = normalizedCustomUrls
         amebloBlogs = normalizedAmebloBlogs
         subscribedPlatforms = normalizedSubscribedPlatforms
         wallpaper = backup.wallpaper
