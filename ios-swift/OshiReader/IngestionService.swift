@@ -51,7 +51,9 @@ private actor SourceFailureRecorder {
     private var failures: [String: SourceRefreshFailure] = [:]
 
     func record(_ failure: SourceRefreshFailure, for sourceID: String) {
-        failures[sourceID] = failure
+        if failures[sourceID] == nil {
+            failures[sourceID] = failure
+        }
     }
 
     func failure(for sourceID: String) -> SourceRefreshFailure? {
@@ -118,6 +120,7 @@ final class IngestionService {
     @TaskLocal private static var sourceID: String?
 
     private let browserUA = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+    private let rssUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15"
 
     /// Caps concurrent news.google.com requests across all in-flight terms.
     private static let googleNewsLimiter = RequestLimiter(limit: 3)
@@ -231,13 +234,14 @@ final class IngestionService {
                 }
                 return await self.fetchAmeblo(keyword: $0, blogs: blogs, mediaOnly: mediaOnly)
             }
-            add("natalie")     { await self.fetchDedicatedRSSSource(sourceID: "natalie", keyword: $0, feedURLs: Self.dedicatedRSSFeeds["natalie"] ?? [], mediaOnly: mediaOnly) }
-            add("barks")       { await self.fetchDedicatedRSSSource(sourceID: "barks", keyword: $0, feedURLs: Self.dedicatedRSSFeeds["barks"] ?? [], mediaOnly: mediaOnly) }
-            add("aera")        { await self.fetchDedicatedRSSSource(sourceID: "aera", keyword: $0, feedURLs: Self.dedicatedRSSFeeds["aera"] ?? [], mediaOnly: mediaOnly) }
-            add("hochi")       { await self.fetchDedicatedRSSSource(sourceID: "hochi", keyword: $0, feedURLs: Self.dedicatedRSSFeeds["hochi"] ?? [], mediaOnly: mediaOnly) }
-            add("realsound")   { await self.fetchDedicatedRSSSource(sourceID: "realsound", keyword: $0, feedURLs: Self.dedicatedRSSFeeds["realsound"] ?? [], mediaOnly: mediaOnly) }
-            add("cinemacafe")  { await self.fetchDedicatedRSSSource(sourceID: "cinemacafe", keyword: $0, feedURLs: Self.dedicatedRSSFeeds["cinemacafe"] ?? [], mediaOnly: mediaOnly) }
-            add("billboardjapan") { await self.fetchDedicatedRSSSource(sourceID: "billboardjapan", keyword: $0, feedURLs: Self.dedicatedRSSFeeds["billboardjapan"] ?? [], mediaOnly: mediaOnly) }
+            add("natalie")     { await self.fetchDedicatedRSSSource(sourceID: "natalie", keyword: $0, feedURLs: Self.dedicatedRSSFeeds["natalie"] ?? [], mediaOnly: mediaOnly, fallbackSite: "natalie.mu") }
+            add("barks")       { await self.fetchDedicatedRSSSource(sourceID: "barks", keyword: $0, feedURLs: Self.dedicatedRSSFeeds["barks"] ?? [], mediaOnly: mediaOnly, fallbackSite: "barks.jp") }
+            add("aera")        { await self.fetchDedicatedRSSSource(sourceID: "aera", keyword: $0, feedURLs: Self.dedicatedRSSFeeds["aera"] ?? [], mediaOnly: mediaOnly, fallbackSite: "dot.asahi.com") }
+            add("hochi")       { await self.fetchDedicatedRSSSource(sourceID: "hochi", keyword: $0, feedURLs: Self.dedicatedRSSFeeds["hochi"] ?? [], mediaOnly: mediaOnly, fallbackSite: "hochi.news") }
+            add("realsound")   { await self.fetchDedicatedRSSSource(sourceID: "realsound", keyword: $0, feedURLs: Self.dedicatedRSSFeeds["realsound"] ?? [], mediaOnly: mediaOnly, fallbackSite: "realsound.jp") }
+            add("cinemacafe")  { await self.fetchDedicatedRSSSource(sourceID: "cinemacafe", keyword: $0, feedURLs: Self.dedicatedRSSFeeds["cinemacafe"] ?? [], mediaOnly: mediaOnly, fallbackSite: "cinemacafe.net") }
+            add("billboardjapan") { await self.fetchDedicatedRSSSource(sourceID: "billboardjapan", keyword: $0, feedURLs: Self.dedicatedRSSFeeds["billboardjapan"] ?? [], mediaOnly: mediaOnly, fallbackSite: "billboard-japan.com") }
+            add("kpopofficial") { await self.fetchDedicatedRSSSource(sourceID: "kpopofficial", keyword: $0, feedURLs: Self.dedicatedRSSFeeds["kpopofficial"] ?? [], mediaOnly: mediaOnly, fallbackSite: "kpopofficial.com", locale: .englishUS) }
             // Togetter via Google News so items carry real publish dates (the
             // search-page scrape doesn't expose reliable dates).
             add("togetter")    { await self.fetchGoogleNews(keyword: $0, query: "\($0) site:togetter.com", platform: "togetter", mediaType: "article", mediaOnly: mediaOnly) }
@@ -249,7 +253,7 @@ final class IngestionService {
             // above win, while the remaining reference sources use dated RSS
             // results from Google News until they warrant a dedicated parser.
             for source in PlatformRegistry.googleNewsSources where
-                !["5ch", "girlschannel", "mdpr", "oricon", "yahoonews", "togetter", "twitter", "ameblo", "natalie", "barks", "aera", "hochi", "realsound", "cinemacafe", "billboardjapan"].contains(source.id) {
+                !["5ch", "girlschannel", "mdpr", "oricon", "yahoonews", "togetter", "twitter", "ameblo", "natalie", "barks", "aera", "hochi", "realsound", "cinemacafe", "billboardjapan", "kpopofficial"].contains(source.id) {
                 add(source.id) {
                     await self.fetchGoogleNews(
                         keyword: $0,
@@ -291,7 +295,7 @@ final class IngestionService {
                     queryCount: count.queries
                 ))
             }
-            return IngestionReport(items: all, sourceStatuses: statuses)
+            return IngestionReport(items: self.sortedByPublishedDate(all), sourceStatuses: statuses)
         }
     }
 
@@ -344,10 +348,13 @@ final class IngestionService {
             "https://natalie.mu/music/feed/news",
             "https://natalie.mu/tv/feed/news",
         ],
-        // Use HTTPS for iOS App Transport Security while retaining the
-        // documented BARKS RSS endpoint path.
+        // Use the current WordPress RSS feed; the old about/?m=rss endpoint
+        // now redirects to an HTML page.
         "barks": [
-            "https://www.barks.jp/about/?m=rss",
+            "https://barks.jp/feed/",
+        ],
+        "kpopofficial": [
+            "https://kpopofficial.com/feed/",
         ],
     ]
 
@@ -394,20 +401,28 @@ final class IngestionService {
         sourceID: String,
         keyword: String,
         feedURLs: [String],
-        mediaOnly: Bool
+        mediaOnly: Bool,
+        fallbackSite: String? = nil,
+        locale: PlatformDefinition.NewsLocale = .japan
     ) async -> [FeedItem] {
         guard !mediaOnly, !feedURLs.isEmpty else { return [] }
 
-        return await withTaskGroup(of: [FeedItem].self) { group in
+        let dedicatedResult = await withTaskGroup(of: ([FeedItem], Bool, Bool, Bool).self) { group in
             for feedURL in feedURLs {
                 group.addTask {
-                    guard let url = URL(string: feedURL),
-                          case .success(let entries) = await self.parseRSS(url) else {
-                        return []
+                    guard let url = URL(string: feedURL) else {
+                        return ([], false, true, true)
+                    }
+                    let entries: [RssItem]
+                    switch await self.parseRSS(url) {
+                    case .success(let parsed):
+                        entries = parsed
+                    case .failure(let failure):
+                        return ([], false, true, failure != .authenticationRequired)
                     }
 
                     var seen = Set<String>()
-                    return entries.compactMap { entry -> FeedItem? in
+                    let items = entries.compactMap { entry -> FeedItem? in
                         guard !entry.link.isEmpty,
                               let publishedAt = self.validPublishedDate(entry.pubDate),
                               self.matchesKeyword(title: entry.title, desc: entry.description, kw: keyword) else {
@@ -430,17 +445,43 @@ final class IngestionService {
                             source: "dedicated_rss"
                         )
                     }
+                    return (items, true, false, false)
                 }
             }
 
             var all = [FeedItem]()
-            for await items in group {
+            var parsedAnyFeed = false
+            var failedAnyFeed = false
+            var hasFallbackEligibleFailure = false
+            for await (items, didParse, didFail, fallbackEligible) in group {
                 all.append(contentsOf: items)
+                parsedAnyFeed = parsedAnyFeed || didParse
+                failedAnyFeed = failedAnyFeed || didFail
+                hasFallbackEligibleFailure = hasFallbackEligibleFailure || fallbackEligible
             }
 
             var seen = Set<String>()
-            return all.filter { seen.insert($0.id).inserted }.prefix(25).map { $0 }
+            return (
+                sortedByPublishedDate(all.filter { seen.insert($0.id).inserted }).prefix(25).map { $0 },
+                parsedAnyFeed,
+                failedAnyFeed,
+                hasFallbackEligibleFailure
+            )
         }
+
+        let dedicatedItems = dedicatedResult.0
+        if !dedicatedItems.isEmpty { return dedicatedItems }
+        if dedicatedResult.1 && !dedicatedResult.2 { return [] }
+        if dedicatedResult.2 && !dedicatedResult.3 { return [] }
+        guard let fallbackSite, !fallbackSite.isEmpty else { return [] }
+        return await fetchGoogleNews(
+            keyword: keyword,
+            query: "\(keyword) site:\(fallbackSite)",
+            platform: sourceID,
+            mediaType: "article",
+            mediaOnly: mediaOnly,
+            locale: locale
+        )
     }
 
     private func fetchAmeblo(keyword: String, blogs: [AmebloBlog], mediaOnly: Bool) async -> [FeedItem] {
@@ -495,6 +536,7 @@ final class IngestionService {
         return results
             .flatMap(\.1)
             .filter { seen.insert($0.id).inserted }
+            .sorted { self.feedItemSortPrecedes($0, $1) }
             .prefix(25)
             .map { $0 }
     }
@@ -1309,7 +1351,7 @@ final class IngestionService {
     private func parseRSS(_ url: URL, headers: [String: String] = [:]) async -> Result<[RssItem], SourceRefreshFailure> {
         // Send a browser User-Agent — news.google.com and note.com throttle/deny
         // the default URLSession agent, which made some sources return nothing.
-        var allHeaders = ["User-Agent": browserUA, "Accept-Language": "ja,en;q=0.9"]
+        var allHeaders = ["User-Agent": rssUA, "Accept-Language": "ja,en;q=0.9"]
         allHeaders.merge(headers) { _, override in override }
         guard case .success(let data, _) = await httpGET(url, headers: allHeaders, timeout: 12) else {
             return .failure(await currentFailure() ?? .invalidResponse)
@@ -1426,6 +1468,18 @@ final class IngestionService {
               !value.isEmpty,
               parseISO8601Date(value) != nil else { return nil }
         return value
+    }
+
+    private func sortedByPublishedDate(_ items: [FeedItem]) -> [FeedItem] {
+        items.sorted(by: feedItemSortPrecedes)
+    }
+
+    private func feedItemSortPrecedes(_ lhs: FeedItem, _ rhs: FeedItem) -> Bool {
+        let lhsDate = parseISO8601Date(lhs.published_at) ?? .distantPast
+        let rhsDate = parseISO8601Date(rhs.published_at) ?? .distantPast
+        if lhsDate != rhsDate { return lhsDate > rhsDate }
+        if lhs.id != rhs.id { return lhs.id < rhs.id }
+        return lhs.url < rhs.url
     }
 
     /// Stable FNV-1a hash so the same article URL yields the same FeedItem id

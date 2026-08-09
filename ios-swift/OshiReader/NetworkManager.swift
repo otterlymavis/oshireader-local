@@ -301,6 +301,9 @@ class RSSParserDelegate: NSObject, XMLParserDelegate {
     private var currentLink = ""
     private var currentDescription = ""
     private var currentPubDate = ""
+    private var currentPublishedDate = ""
+    private var currentUpdatedDate = ""
+    private var currentDCDate = ""
     private var currentThumbnailUrl: String? = nil
     private let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -310,6 +313,7 @@ class RSSParserDelegate: NSObject, XMLParserDelegate {
     private static let dateFormats = [
         "E, d MMM yyyy HH:mm:ss Z",
         "yyyy-MM-dd'T'HH:mm:ssXXXXX",
+        "yyyy-MM-dd'T'HH:mm:ss.SSSXXXXX",
         "yyyy-MM-dd'T'HH:mm:ssZ",
         "yyyy-MM-dd'T'HH:mm:ss.SSSZ",
         "yyyy-MM-dd'T'HH:mm:ss'Z'"
@@ -323,6 +327,9 @@ class RSSParserDelegate: NSObject, XMLParserDelegate {
             currentLink = ""
             currentDescription = ""
             currentPubDate = ""
+            currentPublishedDate = ""
+            currentUpdatedDate = ""
+            currentDCDate = ""
             currentThumbnailUrl = nil
         }
         if currentItem != nil {
@@ -359,8 +366,14 @@ class RSSParserDelegate: NSObject, XMLParserDelegate {
             currentLink += cleaned
         case "description", "summary":
             currentDescription += string
-        case "pubDate", "published", "updated", "dc:date":
+        case "pubDate":
             currentPubDate += cleaned
+        case "published":
+            currentPublishedDate += cleaned
+        case "updated":
+            currentUpdatedDate += cleaned
+        case "dc:date":
+            currentDCDate += cleaned
         default:
             break
         }
@@ -374,19 +387,16 @@ class RSSParserDelegate: NSObject, XMLParserDelegate {
                 item.description = currentDescription.trimmingCharacters(in: .whitespacesAndNewlines)
                 item.thumbnailUrl = currentThumbnailUrl
 
-                // Try to parse pubDate into ISO8601
-                let dateString = currentPubDate.trimmingCharacters(in: .whitespacesAndNewlines)
-                // Try different formats (incl. Atom's colon-offset "+09:00").
-                var date: Date? = nil
-                for format in Self.dateFormats {
-                    dateFormatter.dateFormat = format
-                    if let d = dateFormatter.date(from: dateString) {
-                        date = d
-                        break
-                    }
-                }
+                let dateString = [
+                    currentUpdatedDate,
+                    currentPublishedDate,
+                    currentPubDate,
+                    currentDCDate
+                ]
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .first { !$0.isEmpty } ?? ""
 
-                if let date = date {
+                if let date = parseFeedDate(dateString) {
                     item.pubDate = _networkISO8601.string(from: date)
                 } else {
                     item.pubDate = dateString
@@ -396,5 +406,18 @@ class RSSParserDelegate: NSObject, XMLParserDelegate {
             }
             currentItem = nil
         }
+        if currentElement == elementName {
+            currentElement = ""
+        }
+    }
+
+    private func parseFeedDate(_ dateString: String) -> Date? {
+        for format in Self.dateFormats {
+            dateFormatter.dateFormat = format
+            if let date = dateFormatter.date(from: dateString) {
+                return date
+            }
+        }
+        return nil
     }
 }

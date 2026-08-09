@@ -402,9 +402,282 @@ final class OshiReaderTests: XCTestCase {
         let requestCount = await capture.count()
         let firstURL = await capture.firstURL()
         XCTAssertEqual(requestCount, 1)
-        XCTAssertTrue(firstURL?.contains("barks.jp/about") == true)
+        XCTAssertEqual(firstURL, "https://barks.jp/feed/")
         XCTAssertEqual(report.items.first?.platform, "barks")
         XCTAssertEqual(report.items.first?.url, originalURL)
+    }
+
+    func testDedicatedRSSSortsByPublishedDateBeforeApplyingSourceCap() async {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "E, dd MMM yyyy HH:mm:ss Z"
+        let baseDate = Date(timeIntervalSince1970: 1_785_000_000)
+        let itemXML = (0..<27).map { index in
+            let date = formatter.string(from: baseDate.addingTimeInterval(TimeInterval(index * 60)))
+            return """
+            <item>
+            <title>Cap Oshi item \(index)</title>
+            <link>https://barks.jp/articles/\(index)</link>
+            <pubDate>\(date)</pubDate>
+            </item>
+            """
+        }.joined()
+        let rss = Data("<rss version=\"2.0\"><channel>\(itemXML)</channel></rss>".utf8)
+        let service = IngestionService(
+            requestExecutor: { request in
+                return (rss, try XCTUnwrap(HTTPURLResponse(
+                    url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                )))
+            },
+            retrySleeper: { _ in }
+        )
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "Cap Oshi"),
+            platforms: ["barks"]
+        )
+
+        XCTAssertEqual(report.items.count, 25)
+        XCTAssertEqual(report.items.first?.url, "https://barks.jp/articles/26")
+        XCTAssertFalse(report.items.contains { $0.url == "https://barks.jp/articles/0" })
+    }
+
+    func testIngestionReportItemsAreSortedNewestFirstAcrossSources() async {
+        let olderRSS = Data("""
+        <rss version="2.0"><channel><item>
+        <title>Natalie Sort Oshi older</title>
+        <link>https://natalie.mu/music/news/older</link>
+        <pubDate>Sun, 02 Aug 2026 08:00:00 GMT</pubDate>
+        </item></channel></rss>
+        """.utf8)
+        let newerRSS = Data("""
+        <rss version="2.0"><channel><item>
+        <title>BARKS Sort Oshi newer</title>
+        <link>https://barks.jp/news/newer</link>
+        <pubDate>Sun, 02 Aug 2026 09:00:00 GMT</pubDate>
+        </item></channel></rss>
+        """.utf8)
+        let service = IngestionService(
+            requestExecutor: { request in
+                let data = request.url?.host == "barks.jp" ? newerRSS : olderRSS
+                return (data, try XCTUnwrap(HTTPURLResponse(
+                    url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                )))
+            },
+            retrySleeper: { _ in }
+        )
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "Sort Oshi"),
+            platforms: ["natalie", "barks"]
+        )
+
+        XCTAssertEqual(report.items.map(\.url), [
+            "https://barks.jp/news/newer",
+            "https://natalie.mu/music/news/older"
+        ])
+    }
+
+    func testDedicatedRSSFallsBackToGoogleNewsWhenPublisherFeedIsBlocked() async {
+        let googleNewsRSS = Data("""
+        <rss version="2.0"><channel><item>
+        <title>Blocked Oshi live item - Google</title>
+        <link>https://example.com/articles/blocked-oshi</link>
+        <pubDate>Sun, 02 Aug 2026 08:00:00 GMT</pubDate>
+        </item></channel></rss>
+        """.utf8)
+        let capture = RequestCapture()
+        let service = IngestionService(
+            requestExecutor: { request in
+                let url = request.url?.absoluteString ?? ""
+                await capture.record(url)
+                if url.contains("news.google.com") {
+                    return (googleNewsRSS, try XCTUnwrap(HTTPURLResponse(
+                        url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                    )))
+                }
+                return (Data(), try XCTUnwrap(HTTPURLResponse(
+                    url: request.url!, statusCode: 405, httpVersion: nil, headerFields: nil
+                )))
+            },
+            retrySleeper: { _ in }
+        )
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "Blocked Oshi"),
+            platforms: ["natalie"]
+        )
+
+        let urls = await capture.urls
+        XCTAssertTrue(urls.contains { $0.contains("natalie.mu/music/feed/news") })
+        XCTAssertTrue(urls.contains { $0.contains("news.google.com") && $0.contains("site:natalie.mu") })
+        XCTAssertEqual(report.sourceStatuses.first?.outcome, .received)
+        XCTAssertEqual(report.items.first?.platform, "natalie")
+        XCTAssertEqual(report.items.first?.source, "google_news")
+    }
+
+    func testDedicatedRSSFallsBackWhenOnePublisherFeedIsBlockedAndOthersAreEmpty() async {
+        let emptyRSS = Data("<rss version=\"2.0\"><channel></channel></rss>".utf8)
+        let googleNewsRSS = Data("""
+        <rss version="2.0"><channel><item>
+        <title>Music Oshi partial fallback - Google</title>
+        <link>https://example.com/articles/music-oshi</link>
+        <pubDate>Sun, 02 Aug 2026 08:00:00 GMT</pubDate>
+        </item></channel></rss>
+        """.utf8)
+        let capture = RequestCapture()
+        let service = IngestionService(
+            requestExecutor: { request in
+                let url = request.url?.absoluteString ?? ""
+                await capture.record(url)
+                if url.contains("natalie.mu/music/feed/news") {
+                    return (Data(), try XCTUnwrap(HTTPURLResponse(
+                        url: request.url!, statusCode: 405, httpVersion: nil, headerFields: nil
+                    )))
+                }
+                if url.contains("news.google.com") {
+                    return (googleNewsRSS, try XCTUnwrap(HTTPURLResponse(
+                        url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                    )))
+                }
+                return (emptyRSS, try XCTUnwrap(HTTPURLResponse(
+                    url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                )))
+            },
+            retrySleeper: { _ in }
+        )
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "Music Oshi"),
+            platforms: ["natalie"]
+        )
+
+        let urls = await capture.urls
+        XCTAssertTrue(urls.contains { $0.contains("natalie.mu/music/feed/news") })
+        XCTAssertTrue(urls.contains { $0.contains("natalie.mu/tv/feed/news") })
+        XCTAssertTrue(urls.contains { $0.contains("news.google.com") && $0.contains("site:natalie.mu") })
+        XCTAssertEqual(report.sourceStatuses.first?.outcome, .received)
+        XCTAssertEqual(report.items.first?.source, "google_news")
+    }
+
+    func testKpopOfficialDedicatedRSSProducesKpopOfficialItems() async {
+        let rss = Data("""
+        <rss version="2.0"><channel><item>
+        <title>BLACKPINK comeback schedule</title>
+        <link>https://kpopofficial.com/blackpink-comeback</link>
+        <description>BLACKPINK concert and album details</description>
+        <pubDate>Sun, 02 Aug 2026 08:00:00 GMT</pubDate>
+        </item></channel></rss>
+        """.utf8)
+        let capture = RequestCapture()
+        let service = IngestionService(
+            requestExecutor: { request in
+                await capture.record(request.url?.absoluteString ?? "")
+                return (rss, try XCTUnwrap(HTTPURLResponse(
+                    url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                )))
+            },
+            retrySleeper: { _ in }
+        )
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "BLACKPINK"),
+            platforms: ["kpopofficial"]
+        )
+
+        let urls = await capture.urls
+        XCTAssertEqual(urls, ["https://kpopofficial.com/feed/"])
+        XCTAssertEqual(report.sourceStatuses.first?.outcome, .received)
+        XCTAssertEqual(report.items.first?.platform, "kpopofficial")
+        XCTAssertEqual(report.items.first?.source, "dedicated_rss")
+    }
+
+    func testAtomUpdatedDateWinsOverPublishedDateForDedicatedRSS() async {
+        let atom = Data("""
+        <feed xmlns="http://www.w3.org/2005/Atom"><entry>
+          <title>BLACKPINK updated schedule</title>
+          <link rel="alternate" href="https://kpopofficial.com/blackpink-updated"/>
+          <summary>BLACKPINK schedule details</summary>
+          <published>2026-08-01T08:00:00Z</published>
+          <updated>2026-08-02T09:30:00Z</updated>
+        </entry></feed>
+        """.utf8)
+        let service = IngestionService(
+            requestExecutor: { request in
+                return (atom, try XCTUnwrap(HTTPURLResponse(
+                    url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                )))
+            },
+            retrySleeper: { _ in }
+        )
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "BLACKPINK"),
+            platforms: ["kpopofficial"]
+        )
+
+        XCTAssertEqual(report.items.first?.published_at, "2026-08-02T09:30:00Z")
+        XCTAssertEqual(report.sourceStatuses.first?.outcome, .received)
+    }
+
+    func testAtomFractionalUpdatedDateWithColonOffsetIsAccepted() async {
+        let atom = Data("""
+        <feed xmlns="http://www.w3.org/2005/Atom"><entry>
+          <title>BLACKPINK fractional offset schedule</title>
+          <link rel="alternate" href="https://kpopofficial.com/blackpink-fractional-offset"/>
+          <summary>BLACKPINK schedule details</summary>
+          <updated>2026-08-02T09:30:00.123+09:00</updated>
+        </entry></feed>
+        """.utf8)
+        let service = IngestionService(
+            requestExecutor: { request in
+                return (atom, try XCTUnwrap(HTTPURLResponse(
+                    url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                )))
+            },
+            retrySleeper: { _ in }
+        )
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "BLACKPINK"),
+            platforms: ["kpopofficial"]
+        )
+
+        XCTAssertEqual(report.items.first?.published_at, "2026-08-02T00:30:00Z")
+        XCTAssertEqual(report.sourceStatuses.first?.outcome, .received)
+    }
+
+    func testAtomParserDoesNotLeakTextAfterClosedDateElement() async {
+        let atom = Data("""
+        <feed xmlns="http://www.w3.org/2005/Atom">
+          <entry>
+            <title>BLACKPINK parser spacing</title>
+            <link rel="alternate" href="https://kpopofficial.com/parser-spacing"/>
+            <summary>BLACKPINK parser spacing details</summary>
+            <updated>2026-08-02T09:30:00Z</updated>
+            ignored text after date close
+            <category term="ignored"/>
+          </entry>
+        </feed>
+        """.utf8)
+        let service = IngestionService(
+            requestExecutor: { request in
+                return (atom, try XCTUnwrap(HTTPURLResponse(
+                    url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                )))
+            },
+            retrySleeper: { _ in }
+        )
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "BLACKPINK"),
+            platforms: ["kpopofficial"]
+        )
+
+        XCTAssertEqual(report.items.first?.title, "BLACKPINK parser spacing")
+        XCTAssertEqual(report.items.first?.url, "https://kpopofficial.com/parser-spacing")
+        XCTAssertEqual(report.items.first?.published_at, "2026-08-02T09:30:00Z")
     }
 
     func testJapaneseDedicatedRSSSourcesUsePublisherFeedsAndPreserveSourceIDs() async {
@@ -438,11 +711,11 @@ final class OshiReaderTests: XCTestCase {
         )
 
         let urls = await capture.urls
-        XCTAssertEqual(Set(urls), Set([
-            "https://dot.asahi.com/list/feed/rss4provider-all",
-            "https://hochi.news/rss/index.xml",
-            "https://realsound.jp/atom.xml"
-        ]))
+        XCTAssertEqual(urls.count, 6)
+        XCTAssertTrue(urls.contains("https://dot.asahi.com/list/feed/rss4provider-all"))
+        XCTAssertTrue(urls.contains("https://hochi.news/rss/index.xml"))
+        XCTAssertTrue(urls.contains("https://realsound.jp/atom.xml"))
+        XCTAssertFalse(urls.contains { $0.contains("news.google.com") })
         XCTAssertEqual(Set(report.sourceStatuses.map(\.id)), Set(["aera", "hochi", "realsound"]))
         XCTAssertTrue(report.sourceStatuses.allSatisfy { $0.outcome == .received && $0.queryCount == 2 })
         XCTAssertEqual(report.items.filter { $0.platform == "aera" }.count, 1)
@@ -514,11 +787,18 @@ final class OshiReaderTests: XCTestCase {
 
     func testJapaneseDedicatedRSSFailureStaysAttachedToPublisher() async {
         let rss = Data("<rss version=\"2.0\"><channel><item><title>Hochi Oshi update</title><link>https://hochi.news/articles/1</link><pubDate>Sun, 02 Aug 2026 08:00:00 GMT</pubDate></item></channel></rss>".utf8)
+        let capture = RequestCapture()
         let service = IngestionService(
             requestExecutor: { request in
+                await capture.record(request.url?.absoluteString ?? "")
                 if request.url?.host == "dot.asahi.com" {
                     return (Data(), try XCTUnwrap(HTTPURLResponse(
                         url: request.url!, statusCode: 429, httpVersion: nil, headerFields: nil
+                    )))
+                }
+                if request.url?.host == "news.google.com" {
+                    return (Data("<rss version=\"2.0\"><channel></channel></rss>".utf8), try XCTUnwrap(HTTPURLResponse(
+                        url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
                     )))
                 }
                 return (rss, try XCTUnwrap(HTTPURLResponse(
@@ -533,9 +813,34 @@ final class OshiReaderTests: XCTestCase {
             platforms: ["aera", "hochi"]
         )
 
+        let urls = await capture.urls
+        XCTAssertTrue(urls.contains { $0.contains("news.google.com") && $0.contains("site:dot.asahi.com") })
         XCTAssertEqual(report.sourceStatuses.first { $0.id == "aera" }?.outcome, .failed(.rateLimited))
         XCTAssertEqual(report.sourceStatuses.first { $0.id == "hochi" }?.outcome, .received)
         XCTAssertEqual(report.items.first?.platform, "hochi")
+    }
+
+    func testDedicatedRSSPublisherFailureIsNotOverwrittenByFallbackFailure() async {
+        let service = IngestionService(
+            requestExecutor: { request in
+                if request.url?.host == "dot.asahi.com" {
+                    return (Data(), try XCTUnwrap(HTTPURLResponse(
+                        url: request.url!, statusCode: 429, httpVersion: nil, headerFields: nil
+                    )))
+                }
+                return (Data("<rss><channel>".utf8), try XCTUnwrap(HTTPURLResponse(
+                    url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                )))
+            },
+            retrySleeper: { _ in }
+        )
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "Oshi"),
+            platforms: ["aera"]
+        )
+
+        XCTAssertEqual(report.sourceStatuses.first?.outcome, .failed(.rateLimited))
     }
 
     func testCinemaCafeAndBillboardDedicatedRSSSourcesPreserveIDsAndDeduplicate() async {
@@ -607,6 +912,11 @@ final class OshiReaderTests: XCTestCase {
                 if request.url?.host == "www.cinemacafe.net" {
                     return (Data(), try XCTUnwrap(HTTPURLResponse(
                         url: request.url!, statusCode: 503, httpVersion: nil, headerFields: nil
+                    )))
+                }
+                if request.url?.host == "news.google.com" {
+                    return (Data("<rss version=\"2.0\"><channel></channel></rss>".utf8), try XCTUnwrap(HTTPURLResponse(
+                        url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
                     )))
                 }
                 return (billboardRSS, try XCTUnwrap(HTTPURLResponse(
@@ -731,6 +1041,8 @@ final class OshiReaderTests: XCTestCase {
             platforms: ["barks"]
         )
         XCTAssertEqual(noResults.sourceStatuses.first?.outcome, .noResults)
+        let noResultsRequestCount = await capture.count()
+        XCTAssertEqual(noResultsRequestCount, 1)
 
         let beforeMediaOnly = await capture.count()
         let mediaOnly = await service.ingestReport(
@@ -843,6 +1155,57 @@ final class OshiReaderTests: XCTestCase {
         XCTAssertEqual(report.items.first?.url, originalURL)
         XCTAssertEqual(report.sourceStatuses.first?.outcome, .received)
         XCTAssertEqual(report.sourceStatuses.first?.queryCount, 2)
+    }
+
+    func testAmebloDedicatedRSSSortsByPublishedDateBeforeApplyingCap() async {
+        let originalBlogs = db.amebloBlogs
+        defer { db.amebloBlogs = originalBlogs }
+        db.amebloBlogs = [
+            AmebloBlog(url: "https://ameblo.jp/older-blog", addedAt: "2026-01-01T00:00:00Z")!,
+            AmebloBlog(url: "https://ameblo.jp/newer-blog", addedAt: "2026-01-01T00:00:00Z")!
+        ]
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "E, dd MMM yyyy HH:mm:ss Z"
+        let olderBase = Date(timeIntervalSince1970: 1_785_000_000)
+        let olderItems = (0..<27).map { index in
+            let date = formatter.string(from: olderBase.addingTimeInterval(TimeInterval(index * 60)))
+            return """
+            <item>
+            <title>Ameblo Cap Oshi older \(index)</title>
+            <link>https://ameblo.jp/older-blog/entry-\(index)</link>
+            <pubDate>\(date)</pubDate>
+            </item>
+            """
+        }.joined()
+        let olderRSS = Data("<rss version=\"2.0\"><channel>\(olderItems)</channel></rss>".utf8)
+        let newerRSS = Data("""
+        <rss version="2.0"><channel><item>
+        <title>Ameblo Cap Oshi newest</title>
+        <link>https://ameblo.jp/newer-blog/entry-newest</link>
+        <pubDate>Sun, 02 Aug 2026 09:00:00 GMT</pubDate>
+        </item></channel></rss>
+        """.utf8)
+        let service = IngestionService(
+            requestExecutor: { request in
+                let path = request.url?.path ?? ""
+                let data = path.contains("newer-blog") ? newerRSS : olderRSS
+                return (data, try XCTUnwrap(HTTPURLResponse(
+                    url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                )))
+            },
+            retrySleeper: { _ in }
+        )
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "Ameblo Cap Oshi"),
+            platforms: ["ameblo"]
+        )
+
+        XCTAssertEqual(report.items.count, 25)
+        XCTAssertEqual(report.items.first?.url, "https://ameblo.jp/newer-blog/entry-newest")
+        XCTAssertFalse(report.items.contains { $0.url == "https://ameblo.jp/older-blog/entry-0" })
     }
 
     func testAmebloMediaOnlySkipsConfiguredRSSRequests() async {
@@ -1061,7 +1424,10 @@ final class OshiReaderTests: XCTestCase {
             term: WatchTerm(keyword: "Limited Oshi"), platforms: ["barks"]
         )
         let limitedRequestCount = await limitedCapture.count()
-        XCTAssertEqual(limitedRequestCount, 2)
+        let limitedURLs = await limitedCapture.urls
+        XCTAssertEqual(limitedRequestCount, 4)
+        XCTAssertEqual(limitedURLs.filter { $0 == "https://barks.jp/feed/" }.count, 2)
+        XCTAssertEqual(limitedURLs.filter { $0.contains("news.google.com") }.count, 2)
         XCTAssertEqual(limited.sourceStatuses.first?.outcome, .failed(.rateLimited))
     }
 
@@ -1099,7 +1465,10 @@ final class OshiReaderTests: XCTestCase {
             term: WatchTerm(keyword: "Malformed Retry Oshi"), platforms: ["barks"]
         )
         let malformedRequestCount = await malformedCapture.count()
-        XCTAssertEqual(malformedRequestCount, 1)
+        let malformedURLs = await malformedCapture.urls
+        XCTAssertEqual(malformedRequestCount, 2)
+        XCTAssertEqual(malformedURLs.filter { $0 == "https://barks.jp/feed/" }.count, 1)
+        XCTAssertEqual(malformedURLs.filter { $0.contains("news.google.com") }.count, 1)
         XCTAssertEqual(malformed.sourceStatuses.first?.outcome, .failed(.invalidPayload))
     }
 
@@ -2902,6 +3271,54 @@ final class OshiReaderTests: XCTestCase {
             ReaderView(feedItem: oricon).originalPageUrl?.absoluteString,
             "https://www.oricon.co.jp/news/12345/full/"
         )
+    }
+
+    func testReaderViewBuildsDisplayRouteForEveryRegisteredSource() throws {
+        let now = ISO8601DateFormatter().string(from: Date())
+        let urlsByPlatform = [
+            "5ch": "https://idol.5ch.net/test/read.cgi/board/1234567890?utm_source=feed",
+            "oricon": "https://www.oricon.co.jp/news/12345/?utm_source=feed",
+            "twitter": "https://x.com/oshi/status/1234567890123456789",
+            "youtube": "https://www.youtube.com/watch?v=oshireadui01",
+            "custom": "https://example.com/custom-feed-entry?utm_source=feed"
+        ]
+
+        for platform in PlatformRegistry.all {
+            let item = FeedItem(
+                id: "reader-route-\(platform.id)",
+                platform: platform.id,
+                url: urlsByPlatform[platform.id] ?? "https://example.com/oshireader-ui-test/\(platform.id)?utm_source=feed",
+                title: "UITest Oshi \(platform.name) item",
+                content_text: "A seeded \(platform.name) item.",
+                author: nil,
+                thumbnail_url: nil,
+                media_type: platform.id == "5ch" ? "text" : "article",
+                published_at: now,
+                watch_term_keyword: "UITest Oshi",
+                fetched_at: now
+            )
+            let reader = ReaderView(feedItem: item)
+            let originalURL = try XCTUnwrap(reader.originalPageUrl, "Missing reader URL for \(platform.id)")
+            let targetURL = try XCTUnwrap(reader.targetUrl, "Missing display URL for \(platform.id)")
+
+            XCTAssertFalse(originalURL.absoluteString.isEmpty, "Empty original URL for \(platform.id)")
+            XCTAssertFalse(targetURL.absoluteString.isEmpty, "Empty target URL for \(platform.id)")
+            XCTAssertEqual(ReaderView.usesSystemSafari(for: item), platform.id == "5ch")
+            XCTAssertEqual(ReaderView.initialReaderMode(for: item), platform.id != "5ch")
+
+            if platform.id == "5ch" {
+                XCTAssertEqual(
+                    originalURL.absoluteString,
+                    "https://itest.5ch.io/idol/test/read.cgi/board/1234567890/"
+                )
+            }
+            if platform.id == "oricon" {
+                XCTAssertEqual(
+                    originalURL.absoluteString,
+                    "https://www.oricon.co.jp/news/12345/full/"
+                )
+            }
+        }
     }
 
     @MainActor
