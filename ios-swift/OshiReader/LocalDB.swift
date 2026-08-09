@@ -1140,6 +1140,10 @@ class LocalDB: ObservableObject {
                 PlatformRegistry.normalizeID(item.platform) == "custom" &&
                     (item.id == id || removedUrls.contains(item.url))
             }
+            self.savedPages.removeAll { page in
+                PlatformRegistry.normalizeID(page.platform) == "custom" &&
+                    (page.id == id || removedUrls.contains(page.url))
+            }
             self.hiddenItems = self.hiddenItems
                 .filter { hiddenKey in
                     if remainingCustomHiddenPrefixes.contains(where: { hiddenKey.hasPrefix($0) }) { return true }
@@ -1147,6 +1151,7 @@ class LocalDB: ObservableObject {
                 }
                 .subtracting(removedHiddenKeys)
             self.saveToFile(name: "custom_urls", value: self.customUrls)
+            self.saveToFile(name: "saved_pages", value: self.savedPages)
             self.saveToFile(name: "hidden_items", value: Array(self.hiddenItems))
             self.saveFeedItemsSoon()
         }

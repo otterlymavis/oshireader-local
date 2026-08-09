@@ -3906,6 +3906,8 @@ final class OshiReaderTests: XCTestCase {
         )
 
         XCTAssertEqual(db.mergeItems(newItems: [item]), 1)
+        XCTAssertTrue(db.toggleSaved(item: item))
+        XCTAssertEqual(db.savedPages.map(\.id), [custom.id])
         XCTAssertEqual(db.queryFeed(keyword: nil, days: 0).map(\.id), [custom.id])
         db.hiddenItems.insert("\(item.id)::\(item.watch_term_keyword)")
 
@@ -3913,6 +3915,7 @@ final class OshiReaderTests: XCTestCase {
 
         XCTAssertTrue(db.customUrls.isEmpty)
         XCTAssertTrue(db.feedItems.isEmpty)
+        XCTAssertTrue(db.savedPages.isEmpty)
         XCTAssertFalse(db.hiddenItems.contains("\(item.id)::\(item.watch_term_keyword)"))
         XCTAssertTrue(db.queryFeed(keyword: nil, days: 0).isEmpty)
     }
@@ -3984,12 +3987,31 @@ final class OshiReaderTests: XCTestCase {
             source: "youtube_scrape"
         )
         db.feedItems = [staleCustom, regular]
+        db.savedPages = [
+            SavedPage(
+                id: staleCustom.id,
+                url: staleCustom.url,
+                title: staleCustom.title,
+                platform: staleCustom.platform,
+                saved_at: now,
+                source: staleCustom.source
+            ),
+            SavedPage(
+                id: regular.id,
+                url: regular.url,
+                title: regular.title,
+                platform: regular.platform,
+                saved_at: now,
+                source: regular.source
+            )
+        ]
         db.hiddenItems.insert("\(staleCustom.id)::\(staleCustom.watch_term_keyword)")
         db.hiddenItems.insert("\(regular.id)::\(regular.watch_term_keyword)")
 
         db.removeCustomUrl(id: custom.id)
 
         XCTAssertEqual(db.feedItems, [regular])
+        XCTAssertEqual(db.savedPages.map(\.id), [regular.id])
         XCTAssertFalse(db.hiddenItems.contains("\(staleCustom.id)::\(staleCustom.watch_term_keyword)"))
         XCTAssertTrue(db.hiddenItems.contains("\(regular.id)::\(regular.watch_term_keyword)"))
     }
