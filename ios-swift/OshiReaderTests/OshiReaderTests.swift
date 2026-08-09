@@ -3371,6 +3371,89 @@ final class OshiReaderTests: XCTestCase {
     }
 
     @MainActor
+    func testProfileLoadNormalizesPersistedCustomUrlsAndCachedRows() throws {
+        let originalProfileID = db.activeProfile.id
+        let profile = try db.createProfile(name: "Legacy custom load \(UUID().uuidString)")
+        defer {
+            try? db.switchProfile(to: originalProfileID)
+            try? db.deleteProfile(id: profile.id)
+        }
+
+        let now = ISO8601DateFormatter().string(from: Date())
+        let legacyCustomUrls = [
+            CustomUrl(id: "legacy:bad-script", url: "javascript://example.com/feed", title: "Bad", added_at: now),
+            CustomUrl(id: "legacy:host-port", url: "localhost:9090/feed", title: " Local Feed ", added_at: now),
+            CustomUrl(id: "legacy:tracked", url: "https://www.example.com/feed/?utm_source=load&b=2&a=1#frag", title: "Tracked", added_at: now),
+            CustomUrl(id: "legacy:tracked-dup", url: "https://example.com/feed?b=2&a=1", title: "Duplicate", added_at: now),
+        ]
+        let legacyFeedItems = [
+            FeedItem(
+                id: "legacy:host-port",
+                platform: "custom",
+                url: "localhost:9090/feed",
+                title: "Local cached",
+                content_text: nil,
+                author: nil,
+                thumbnail_url: nil,
+                media_type: "article",
+                published_at: now,
+                watch_term_keyword: "",
+                fetched_at: now
+            ),
+            FeedItem(
+                id: "legacy:tracked-raw",
+                platform: "CUSTOM",
+                url: "https://www.example.com/feed/?b=2&a=1&utm_source=cache",
+                title: "Tracked cached",
+                content_text: nil,
+                author: nil,
+                thumbnail_url: nil,
+                media_type: "article",
+                published_at: now,
+                watch_term_keyword: "",
+                fetched_at: now
+            ),
+            FeedItem(
+                id: "legacy:bad-script",
+                platform: "custom",
+                url: "javascript://example.com/feed",
+                title: "Bad cached",
+                content_text: nil,
+                author: nil,
+                thumbnail_url: nil,
+                media_type: "article",
+                published_at: now,
+                watch_term_keyword: "",
+                fetched_at: now
+            )
+        ]
+        let hiddenItems = [
+            "legacy:bad-script::",
+            "legacy:host-port::",
+            "legacy:tracked-dup::",
+            "youtube:v1::Aiko"
+        ]
+        let encoder = JSONEncoder()
+        try encoder.encode(legacyCustomUrls).write(to: LocalProfileStore.shared.fileURL(for: "custom_urls", profileID: profile.id), options: [.atomic])
+        try encoder.encode(legacyFeedItems).write(to: LocalProfileStore.shared.fileURL(for: "feed_items", profileID: profile.id), options: [.atomic])
+        try encoder.encode(hiddenItems).write(to: LocalProfileStore.shared.fileURL(for: "hidden_items", profileID: profile.id), options: [.atomic])
+
+        try db.switchProfile(to: profile.id)
+
+        XCTAssertEqual(db.customUrls.map(\.url), [
+            "https://localhost:9090/feed",
+            "https://example.com/feed?a=1&b=2",
+        ])
+        XCTAssertEqual(Set(db.feedItems.map(\.id)), Set(db.customUrls.map(\.id)))
+        XCTAssertEqual(Set(db.feedItems.map(\.url)), Set(db.customUrls.map(\.url)))
+        XCTAssertEqual(db.hiddenItems, Set([
+            "\(db.customUrls[0].id)::",
+            "\(db.customUrls[1].id)::",
+            "youtube:v1::Aiko"
+        ]))
+    }
+
+    @MainActor
     func testBackupImportUsesParsedDateCapAndRetainsDiscussionItems() throws {
         let formatter = ISO8601DateFormatter()
         let baseDate = Date(timeIntervalSince1970: 1_800_000_000)

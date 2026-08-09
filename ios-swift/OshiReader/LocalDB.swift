@@ -132,10 +132,18 @@ class LocalDB: ObservableObject {
         if self.terms != loadedTerms {
             saveToFile(name: "terms", value: self.terms)
         }
-        self.feedItems = loadFromFile(name: "feed_items", defaultValue: [])
-        let prunedLegacyYouTubeItems = pruneLegacyYouTubeItems()
+        let loadedFeedItems: [FeedItem] = loadFromFile(name: "feed_items", defaultValue: [])
         self.savedPages = loadFromFile(name: "saved_pages", defaultValue: [])
-        self.customUrls = loadFromFile(name: "custom_urls", defaultValue: [])
+        let loadedCustomUrls: [CustomUrl] = loadFromFile(name: "custom_urls", defaultValue: [])
+        let loadedCustomURLImport = Self.normalizedCustomUrlImport(loadedCustomUrls)
+        self.customUrls = loadedCustomURLImport.urls
+        let normalizedLoadedCustomUrls = self.customUrls != loadedCustomUrls
+        if normalizedLoadedCustomUrls {
+            saveToFile(name: "custom_urls", value: self.customUrls)
+        }
+        self.feedItems = Self.normalizedImportedFeedItems(loadedFeedItems, customURLImport: loadedCustomURLImport)
+        let normalizedLoadedFeedItems = self.feedItems != loadedFeedItems
+        let prunedLegacyYouTubeItems = pruneLegacyYouTubeItems()
         self.amebloBlogs = loadFromFile(name: "ameblo_blogs", defaultValue: [])
         let subscribedPlatformsURL = fileURL(for: "subscribed_platforms")
         let hasSavedSubscribedPlatforms = FileManager.default.fileExists(atPath: subscribedPlatformsURL.path)
@@ -163,11 +171,21 @@ class LocalDB: ObservableObject {
         self.oshiAvatars = loadFromFile(name: "oshi_avatars", defaultValue: [:])
         self.compositions = loadFromFile(name: "oshi_compositions", defaultValue: [:])
         let hiddenArray: [String] = loadFromFile(name: "hidden_items", defaultValue: [])
-        self.hiddenItems = Set(hiddenArray)
+        let normalizedHiddenArray = hiddenArray.compactMap {
+            Self.normalizedImportedHiddenItem($0, customURLImport: loadedCustomURLImport)
+        }
+        self.hiddenItems = Set(normalizedHiddenArray)
+        let normalizedLoadedHiddenItems = normalizedHiddenArray != hiddenArray
+        if normalizedLoadedHiddenItems {
+            saveToFile(name: "hidden_items", value: Array(self.hiddenItems))
+        }
         contentCacheGenerationValue = UserDefaults.standard.integer(forKey: profileKey("content_cache_generation"))
         contentCacheGeneration = contentCacheGenerationValue
         dataRevision = UserDefaults.standard.integer(forKey: profileKey("local_data_revision"))
-        if prunedLegacyYouTubeItems {
+        if normalizedLoadedFeedItems {
+            saveToFile(name: "feed_items", value: self.feedItems)
+        }
+        if normalizedLoadedCustomUrls || normalizedLoadedFeedItems || normalizedLoadedHiddenItems || prunedLegacyYouTubeItems {
             dataRevision &+= 1
             UserDefaults.standard.set(dataRevision, forKey: profileKey("local_data_revision"))
         }
