@@ -3354,6 +3354,13 @@ final class OshiReaderTests: XCTestCase {
                     title: "Tracked saved",
                     platform: "custom",
                     saved_at: now
+                ),
+                SavedPage(
+                    id: "legacy:tracked-dup",
+                    url: "https://example.com/feed?b=2&a=1",
+                    title: "Duplicate saved",
+                    platform: "custom",
+                    saved_at: now
                 )
             ],
             customUrls: [
@@ -3385,6 +3392,7 @@ final class OshiReaderTests: XCTestCase {
         XCTAssertTrue(db.customUrls.allSatisfy { $0.id.hasPrefix("custom:") })
         XCTAssertEqual(Set(db.feedItems.map(\.id)), Set(db.customUrls.map(\.id)))
         XCTAssertEqual(Set(db.feedItems.map(\.url)), Set(db.customUrls.map(\.url)))
+        XCTAssertEqual(db.savedPages.count, 2)
         XCTAssertEqual(Set(db.savedPages.map(\.id)), Set(db.customUrls.map(\.id)))
         XCTAssertEqual(Set(db.savedPages.map(\.url)), Set(db.customUrls.map(\.url)))
         XCTAssertEqual(db.hiddenItems, Set([
@@ -3478,6 +3486,13 @@ final class OshiReaderTests: XCTestCase {
                 title: "Tracked saved",
                 platform: "CUSTOM",
                 saved_at: now
+            ),
+            SavedPage(
+                id: "legacy:tracked-dup",
+                url: "https://example.com/feed?b=2&a=1",
+                title: "Duplicate saved",
+                platform: "custom",
+                saved_at: now
             )
         ]
         let encoder = JSONEncoder()
@@ -3494,6 +3509,7 @@ final class OshiReaderTests: XCTestCase {
         ])
         XCTAssertEqual(Set(db.feedItems.map(\.id)), Set(db.customUrls.map(\.id)))
         XCTAssertEqual(Set(db.feedItems.map(\.url)), Set(db.customUrls.map(\.url)))
+        XCTAssertEqual(db.savedPages.count, 2)
         XCTAssertEqual(Set(db.savedPages.map(\.id)), Set(db.customUrls.map(\.id)))
         XCTAssertEqual(Set(db.savedPages.map(\.url)), Set(db.customUrls.map(\.url)))
         XCTAssertEqual(db.hiddenItems, Set([

@@ -1079,7 +1079,8 @@ class LocalDB: ObservableObject {
         _ pages: [SavedPage],
         customURLImport: NormalizedCustomUrlImport
     ) -> [SavedPage] {
-        pages.compactMap { page in
+        var seenIDs = Set<String>()
+        return pages.compactMap { page in
             guard PlatformRegistry.normalizeID(page.platform) == "custom" else { return page }
             let normalizedPageURL = normalizedCustomUrlEntry(url: page.url, title: nil, addedAt: "")?.url
             guard let entry = customURLImport.entriesByLegacyID[page.id] ??
@@ -1095,6 +1096,8 @@ class LocalDB: ObservableObject {
                 saved_at: page.saved_at,
                 source: page.source ?? "custom_url"
             )
+        }.filter { page in
+            seenIDs.insert(page.id).inserted
         }
     }
 
