@@ -103,6 +103,7 @@ final class IngestionService {
         #"\\\\x22videoId\\\\x22:\\\\x22([A-Za-z0-9_-]{11})\\\\x22"#,
         #"/(?:watch\?v\\\\x3d|shorts/)([A-Za-z0-9_-]{11})"#
     ].compactMap { try? NSRegularExpression(pattern: $0) }
+    private static let youTubeUploadDateSearchParam = "CAI%3D"
 
     init(
         requestExecutor: @escaping RequestExecutor = { request in
@@ -896,7 +897,8 @@ final class IngestionService {
                     "gl": "JP"
                 ]
             ],
-            "query": keyword
+            "query": keyword,
+            "params": Self.youTubeUploadDateSearchParam
         ]
         guard let body = try? JSONSerialization.data(withJSONObject: payload),
               case .success(let data, _) = await httpPOST(url, body: body, headers: [
@@ -917,21 +919,25 @@ final class IngestionService {
     }
 
     private func fetchYouTubeScrape(keyword: String) async -> [FeedItem] {
-        guard let encoded = keyword.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
-              let url = URL(string: "https://www.youtube.com/results?search_query=\(encoded)") else {
+        guard var components = URLComponents(string: "https://www.youtube.com/results") else {
             return []
         }
+        components.queryItems = [
+            URLQueryItem(name: "search_query", value: keyword),
+            URLQueryItem(name: "sp", value: Self.youTubeUploadDateSearchParam)
+        ]
+        guard let url = components.url else { return [] }
         guard case .success(let data, _) = await httpGET(url, headers: ["User-Agent": browserUA, "Accept-Language": "ja,ja-JP;q=0.9,en;q=0.8"], timeout: 15) else {
             return []
         }
         guard let html = String(data: data, encoding: .utf8) else {
             return []
         }
+        let cutoff = Date().addingTimeInterval(-90 * 86400)
         guard let json = extractYouTubeInitialData(from: html) else {
-            return collectYouTubeItemsFromEscapedHTML(html, keyword: keyword)
+            return collectYouTubeItemsFromEscapedHTML(html, keyword: keyword, cutoff: cutoff)
         }
         let sections = (((((json["contents"] as? [String: Any])?["twoColumnSearchResultsRenderer"] as? [String: Any])?["primaryContents"] as? [String: Any])?["sectionListRenderer"] as? [String: Any])?["contents"] as? [[String: Any]]) ?? []
-        let cutoff = Date().addingTimeInterval(-90 * 86400)
         var items = [FeedItem]()
         for section in sections {
             let contents = (section["itemSectionRenderer"] as? [String: Any])?["contents"] as? [[String: Any]] ?? []
@@ -943,7 +949,7 @@ final class IngestionService {
                 let desc = ((((vr["detailedMetadataSnippets"] as? [[String: Any]])?.first?["snippetText"] as? [String: Any])?["runs"] as? [[String: Any]])?.first?["text"]) as? String
                 let thumb = ((vr["thumbnail"] as? [String: Any])?["thumbnails"] as? [[String: Any]])?.first?["url"] as? String
                 let relText = (vr["publishedTimeText"] as? [String: Any])?["simpleText"] as? String ?? ""
-                let published = youtubeRelativeDate(relText) ?? Date()
+                guard let published = youtubeRelativeDate(relText) else { continue }
                 if published < cutoff { continue }
                 items.append(FeedItem(
                     id: "youtube:\(vid)",
@@ -965,7 +971,7 @@ final class IngestionService {
             items = collectMobileYouTubeItems(from: json, keyword: keyword, cutoff: cutoff)
         }
         if items.isEmpty {
-            items = collectYouTubeItemsFromEscapedHTML(html, keyword: keyword)
+            items = collectYouTubeItemsFromEscapedHTML(html, keyword: keyword, cutoff: cutoff)
         }
         return items
     }
@@ -1052,7 +1058,7 @@ final class IngestionService {
         for renderer in videoRenderers {
             guard let videoId = renderer["videoId"] as? String, seenIds.insert(videoId).inserted else { continue }
             let relText = firstText(in: renderer["publishedTimeText"]) ?? ""
-            let published = youtubeRelativeDate(relText) ?? Date()
+            guard let published = youtubeRelativeDate(relText) else { continue }
             if published < cutoff { continue }
             let path = nestedString(renderer, ["navigationEndpoint", "commandMetadata", "webCommandMetadata", "url"])
             let itemURL = path.flatMap { URL(string: $0, relativeTo: URL(string: "https://www.youtube.com"))?.absoluteString } ?? "https://www.youtube.com/watch?v=\(videoId)"
@@ -1077,7 +1083,7 @@ final class IngestionService {
                 ?? (renderer["entityId"] as? String)?.split(separator: "-").last.map(String.init)
             guard let videoId, seenIds.insert(videoId).inserted else { continue }
             let secondary = nestedString(renderer, ["belowThumbnailMetadata", "secondaryText", "content"]) ?? ""
-            let published = youtubeRelativeDate(secondary) ?? Date()
+            guard let published = youtubeRelativeDate(secondary) else { continue }
             if published < cutoff { continue }
             items.append(FeedItem(
                 id: "youtube:\(videoId)",
@@ -1101,10 +1107,10 @@ final class IngestionService {
         var renderers = [[String: Any]]()
         collectDictionaries(named: "videoRenderer", in: json, into: &renderers)
 
-        return renderers.prefix(25).compactMap { renderer -> FeedItem? in
+        let items = renderers.compactMap { renderer -> FeedItem? in
             guard let videoId = renderer["videoId"] as? String else { return nil }
             let relText = firstText(in: renderer["publishedTimeText"]) ?? ""
-            let published = youtubeRelativeDate(relText) ?? Date()
+            guard let published = youtubeRelativeDate(relText) else { return nil }
             if published < cutoff { return nil }
             let description = (((renderer["detailedMetadataSnippets"] as? [[String: Any]])?.first?["snippetText"] as? [String: Any]))
 
@@ -1123,6 +1129,7 @@ final class IngestionService {
                 source: "youtube_scrape"
             )
         }
+        return Array(items.prefix(25))
     }
 
     private func collectDictionaries(named name: String, in value: Any, into results: inout [[String: Any]]) {
@@ -1165,38 +1172,60 @@ final class IngestionService {
         return (dict["thumbnails"] as? [[String: Any]])?.first?["url"] as? String
     }
 
-    private func collectYouTubeItemsFromEscapedHTML(_ html: String, keyword: String) -> [FeedItem] {
-        var ids = [String]()
+    private func collectYouTubeItemsFromEscapedHTML(_ html: String, keyword: String, cutoff: Date) -> [FeedItem] {
+        var items = [FeedItem]()
         var seen = Set<String>()
         for regex in Self.escapedYouTubeVideoIDRegexes {
             let matches = regex.matches(in: html, range: NSRange(html.startIndex..., in: html))
             for match in matches {
                 guard let range = Range(match.range(at: 1), in: html) else { continue }
-                let id = String(html[range])
-                if seen.insert(id).inserted {
-                    ids.append(id)
-                }
-                if ids.count >= 25 { break }
+                let videoId = String(html[range])
+                guard !seen.contains(videoId) else { continue }
+                let relText = escapedYouTubeRelativeTime(near: match.range(at: 1), in: html)
+                guard let published = relText.flatMap(youtubeRelativeDate),
+                      published >= cutoff else { continue }
+                seen.insert(videoId)
+                items.append(FeedItem(
+                    id: "youtube:\(videoId)",
+                    platform: "youtube",
+                    url: "https://www.youtube.com/watch?v=\(videoId)",
+                    title: nil,
+                    content_text: nil,
+                    author: nil,
+                    thumbnail_url: "https://i.ytimg.com/vi/\(videoId)/hqdefault.jpg",
+                    media_type: "video",
+                    published_at: isoString(published),
+                    watch_term_keyword: keyword,
+                    fetched_at: nowISO(),
+                    source: "youtube_scrape"
+                ))
+                if items.count >= 25 { break }
             }
-            if ids.count >= 25 { break }
+            if items.count >= 25 { break }
         }
+        return items
+    }
 
-        return ids.map { videoId in
-            FeedItem(
-                id: "youtube:\(videoId)",
-                platform: "youtube",
-                url: "https://www.youtube.com/watch?v=\(videoId)",
-                title: nil,
-                content_text: nil,
-                author: nil,
-                thumbnail_url: "https://i.ytimg.com/vi/\(videoId)/hqdefault.jpg",
-                media_type: "video",
-                published_at: nowISO(),
-                watch_term_keyword: keyword,
-                fetched_at: nowISO(),
-                source: "youtube_scrape"
-            )
+    private func escapedYouTubeRelativeTime(near nsRange: NSRange, in html: String) -> String? {
+        let lower = max(0, nsRange.location - 2_000)
+        let upper = min((html as NSString).length, nsRange.location + nsRange.length + 4_000)
+        guard lower < upper,
+              let segmentRange = Range(NSRange(location: lower, length: upper - lower), in: html) else {
+            return nil
         }
+        let decoded = decodeJavaScriptEscapedString(String(html[segmentRange]))
+        return firstRegexCapture(#""publishedTimeText"\s*:\s*\{\s*"simpleText"\s*:\s*"([^"]+)""#, in: decoded)
+            ?? firstRegexCapture(#""publishedTimeText"\s*:\s*\{\s*"runs"\s*:\s*\[\s*\{\s*"text"\s*:\s*"([^"]+)""#, in: decoded)
+    }
+
+    private func firstRegexCapture(_ pattern: String, in text: String) -> String? {
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+              match.numberOfRanges > 1,
+              let range = Range(match.range(at: 1), in: text) else {
+            return nil
+        }
+        return String(text[range])
     }
 
     /// Convert YouTube relative timestamps ("2 days ago", "3ヶ月前") to a Date.

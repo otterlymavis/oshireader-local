@@ -487,6 +487,216 @@ final class OshiReaderTests: XCTestCase {
         ])
     }
 
+    func testYouTubeSearchRequestsUploadDateOrderingAndDropsOldResults() async throws {
+        let response = Data("""
+        {
+          "contents": {
+            "sectionListRenderer": {
+              "contents": [
+                {
+                  "videoRenderer": {
+                    "videoId": "oldoldold01",
+                    "title": { "runs": [{ "text": "Fresh Oshi old result" }] },
+                    "publishedTimeText": { "simpleText": "2 years ago" }
+                  }
+                },
+                {
+                  "videoRenderer": {
+                    "videoId": "freshfresh1",
+                    "title": { "runs": [{ "text": "Fresh Oshi new result" }] },
+                    "publishedTimeText": { "simpleText": "2 days ago" }
+                  }
+                }
+              ]
+            }
+          }
+        }
+        """.utf8)
+        let capture = RequestCapture()
+        let service = IngestionService(
+            requestExecutor: { request in
+                await capture.record(request.url?.absoluteString ?? "")
+                let body = try XCTUnwrap(request.httpBody)
+                let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+                XCTAssertEqual(payload["params"] as? String, "CAI%3D")
+                return (response, try XCTUnwrap(HTTPURLResponse(
+                    url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                )))
+            },
+            retrySleeper: { _ in }
+        )
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "Fresh Oshi"),
+            platforms: ["youtube"]
+        )
+
+        let firstURL = await capture.firstURL()
+        XCTAssertEqual(firstURL, "https://www.youtube.com/youtubei/v1/search?prettyPrint=false")
+        XCTAssertEqual(report.items.map(\.id), ["youtube:freshfresh1"])
+    }
+
+    func testYouTubeStructuredRenderersSkipMissingPublishedTime() async throws {
+        let response = Data("""
+        {
+          "contents": {
+            "sectionListRenderer": {
+              "contents": [
+                {
+                  "videoRenderer": {
+                    "videoId": "nodatenodt1",
+                    "title": { "runs": [{ "text": "No Date Oshi structured result" }] }
+                  }
+                },
+                {
+                  "videoWithContextRenderer": {
+                    "videoId": "nodatenodt2",
+                    "headline": { "runs": [{ "text": "No Date Oshi mobile result" }] }
+                  }
+                },
+                {
+                  "shortsLockupViewModel": {
+                    "entityId": "shorts-shelf-nodateshrt1",
+                    "overlayMetadata": { "primaryText": { "content": "No Date Oshi shorts result" } },
+                    "belowThumbnailMetadata": {
+                      "primaryText": { "content": "Shorts channel" },
+                      "secondaryText": { "content": "No publish label" }
+                    },
+                    "onTap": {
+                      "innertubeCommand": {
+                        "reelWatchEndpoint": { "videoId": "nodateshrt1" }
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+        """.utf8)
+        let service = IngestionService(
+            requestExecutor: { request in
+                return (response, try XCTUnwrap(HTTPURLResponse(
+                    url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                )))
+            },
+            retrySleeper: { _ in }
+        )
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "No Date Oshi"),
+            platforms: ["youtube"]
+        )
+
+        XCTAssertTrue(report.items.isEmpty)
+    }
+
+    func testYouTubeVideoRendererCapAppliesAfterFreshnessFiltering() async throws {
+        let staleRenderers = (0..<25).map { index in
+            """
+            {
+              "videoRenderer": {
+                "videoId": "oldold\(String(format: "%05d", index))",
+                "title": { "runs": [{ "text": "Cap Oshi stale \(index)" }] },
+                "publishedTimeText": { "simpleText": "2 years ago" }
+              }
+            }
+            """
+        }.joined(separator: ",")
+        let response = Data("""
+        {
+          "contents": {
+            "sectionListRenderer": {
+              "contents": [
+                \(staleRenderers),
+                {
+                  "videoRenderer": {
+                    "videoId": "freshcap001",
+                    "title": { "runs": [{ "text": "Cap Oshi fresh result" }] },
+                    "publishedTimeText": { "simpleText": "2 days ago" }
+                  }
+                }
+              ]
+            }
+          }
+        }
+        """.utf8)
+        let capture = RequestCapture()
+        let service = IngestionService(
+            requestExecutor: { request in
+                await capture.record(request.url?.absoluteString ?? "")
+                let data = request.url?.host == "www.youtube.com" && request.httpMethod == "POST"
+                    ? response
+                    : Data(#"<html></html>"#.utf8)
+                return (data, try XCTUnwrap(HTTPURLResponse(
+                    url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                )))
+            },
+            retrySleeper: { _ in }
+        )
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "Cap Oshi"),
+            platforms: ["youtube"]
+        )
+
+        XCTAssertEqual(report.items.map(\.id), ["youtube:freshcap001"])
+        let requestCount = await capture.count()
+        XCTAssertEqual(requestCount, 1)
+    }
+
+    func testYouTubeScrapeRequestsUploadDateOrderingAndSkipsUndatedEscapedFallbackIDs() async throws {
+        let capture = RequestCapture()
+        let service = IngestionService(
+            requestExecutor: { request in
+                let url = request.url?.absoluteString ?? ""
+                await capture.record(url)
+                let data = url.contains("/youtubei/") ? Data("{}".utf8) : Data(#""videoId":"stalevideo1""#.utf8)
+                return (data, try XCTUnwrap(HTTPURLResponse(
+                    url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                )))
+            },
+            retrySleeper: { _ in }
+        )
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "Fallback Oshi"),
+            platforms: ["youtube"]
+        )
+
+        let urls = await capture.urls
+        XCTAssertTrue(urls.contains("https://www.youtube.com/youtubei/v1/search?prettyPrint=false"))
+        XCTAssertTrue(urls.contains { $0.hasPrefix("https://www.youtube.com/results?") && $0.contains("sp=CAI%253D") })
+        XCTAssertTrue(report.items.isEmpty)
+    }
+
+    func testYouTubeEscapedFallbackAllowsLaterDatedDuplicateID() async throws {
+        let capture = RequestCapture()
+        let service = IngestionService(
+            requestExecutor: { request in
+                let url = request.url?.absoluteString ?? ""
+                await capture.record(url)
+                let data = url.contains("/youtubei/")
+                    ? Data("{}".utf8)
+                    : Data(#"""
+                    "videoId":"freshdupe01"
+                    "videoRenderer":{"videoId":"freshdupe01","publishedTimeText":{"simpleText":"2 days ago"}}
+                    """#.utf8)
+                return (data, try XCTUnwrap(HTTPURLResponse(
+                    url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                )))
+            },
+            retrySleeper: { _ in }
+        )
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "Fallback Oshi"),
+            platforms: ["youtube"]
+        )
+
+        XCTAssertEqual(report.items.map(\.id), ["youtube:freshdupe01"])
+    }
+
     func testDedicatedRSSFallsBackToGoogleNewsWhenPublisherFeedIsBlocked() async {
         let googleNewsRSS = Data("""
         <rss version="2.0"><channel><item>
