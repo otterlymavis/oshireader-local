@@ -83,9 +83,6 @@ struct SettingsView: View {
     @State private var newSelectedPlatforms = Set<String>()
     @State private var addingAliasForId: String? = nil
     @State private var newAliasText = ""
-    @State private var notificationTestMessage: String? = nil
-    @State private var notificationTestSucceeded = false
-    @State private var isSendingNotificationTest = false
     // API token lives in the Keychain now that ingestion runs on-device.
     @State private var twitterBearerToken = KeychainHelper.read(.twitterBearerToken) ?? ""
     @State private var autoTranslateReader = UserDefaults.standard.bool(
@@ -113,9 +110,8 @@ struct SettingsView: View {
     @State private var profileNameMode: ProfileNameMode = .create
     @State private var profileToRename: UUID?
     @State private var showingAliasLimitMessage = false
-    @State private var amebloURL = ""
-    @State private var amebloTitle = ""
-    @State private var amebloError = ""
+    @State private var isProfileSectionExpanded = ProcessInfo.processInfo.arguments.contains("--uitesting")
+    @State private var isDataSectionExpanded = ProcessInfo.processInfo.arguments.contains("--uitesting")
     @State private var currentBackgroundRefreshStatus = UIApplication.shared.backgroundRefreshStatus
     @State private var notificationTermBeingUpdated: String?
     
@@ -133,9 +129,6 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
-                localProfileSection
-                amebloSection
-
                 // Section: Keywords management
                 Section(header: Text(i18n.t("watchTerms"))) {
                     ForEach(db.terms) { term in
@@ -365,34 +358,8 @@ struct SettingsView: View {
                         }
                         .accessibilityIdentifier("settings.openSettingsButton")
                     default:
-#if DEBUG
-                        Button {
-                            Task { await sendTestNotification() }
-                        } label: {
-                            Label(
-                                isSendingNotificationTest ? i18n.t("notifLocalSending") : i18n.t("sendTestNotification"),
-                                systemImage: isSendingNotificationTest ? "clock" : "paperplane.fill"
-                            )
-                                .foregroundColor(theme.colors.primary)
-                        }
-                        .disabled(isSendingNotificationTest)
-                        .accessibilityIdentifier("settings.testNotificationButton")
-#else
                         EmptyView()
-#endif
                     }
-
-#if DEBUG
-                    if let notificationTestMessage {
-                        Label(
-                            notificationTestMessage,
-                            systemImage: notificationTestSucceeded ? "checkmark.circle.fill" : "exclamationmark.triangle.fill"
-                        )
-                        .font(.caption)
-                        .foregroundColor(notificationTestSucceeded ? theme.colors.primary : .orange)
-                        .accessibilityIdentifier("settings.notificationTestResult")
-                    }
-#endif
                 }
 
                 Section(header: Text(i18n.t("readerSection"))) {
@@ -465,48 +432,7 @@ struct SettingsView: View {
                     .accessibilityIdentifier("settings.privacyPolicyLink")
                 }
 
-                Section(header: Text(i18n.t("dataSection"))) {
-                    Button {
-                        do {
-                            backupDocument = LocalBackupDocument(data: try db.exportBackupData())
-                            showingBackupExporter = true
-                        } catch {
-                            backupMessage = localizedBackupMessage(error)
-                            showingBackupMessage = true
-                        }
-                    } label: {
-                        Label(i18n.t("exportBackup"), systemImage: "square.and.arrow.up")
-                    }
-                    .accessibilityIdentifier("settings.exportBackupButton")
-
-                    Button {
-                        showingBackupImporter = true
-                    } label: {
-                        Label(i18n.t("importBackup"), systemImage: "square.and.arrow.down")
-                    }
-                    .accessibilityIdentifier("settings.importBackupButton")
-
-                    Button {
-                        beginEncryptedExport()
-                    } label: {
-                        Label(i18n.t("exportEncryptedBackup"), systemImage: "lock.square.stack")
-                    }
-                    .accessibilityIdentifier("settings.exportEncryptedBackupButton")
-
-                    Button {
-                        showingEncryptedBackupImporter = true
-                    } label: {
-                        Label(i18n.t("importEncryptedBackup"), systemImage: "lock.open")
-                    }
-                    .accessibilityIdentifier("settings.importEncryptedBackupButton")
-
-                    Button(role: .destructive) {
-                        showingClearAllAlert = true
-                    } label: {
-                        Label(i18n.t("clearAllData"), systemImage: "trash")
-                    }
-                    .accessibilityIdentifier("settings.clearAllDataButton")
-                }
+                localStorageSection
                 
             }
             .font(appearance.font(size: 13))
@@ -793,180 +719,151 @@ struct SettingsView: View {
         }
     }
 
-    private var localProfileSection: some View {
-        Section(header: Text(i18n.t("profiles")), footer: Text(i18n.t("profilesFooter"))) {
-            ForEach(profiles.profiles) { profile in
-                HStack {
-                    Button {
-                        do {
-                            try db.switchProfile(to: profile.id)
-                        } catch {
-                            profileError = localizedProfileMessage(error)
-                        }
-                    } label: {
-                        HStack {
-                            Image(systemName: profile.id == profiles.activeProfileID ? "checkmark.circle.fill" : "circle")
-                            VStack(alignment: .leading) {
-                                Text(profile.name)
-                                if profile.id == profiles.activeProfileID {
-                                    Text(i18n.t("active"))
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
+    private var localStorageSection: some View {
+        Section {
+            DisclosureGroup(isExpanded: $isProfileSectionExpanded) {
+                ForEach(profiles.profiles) { profile in
+                    HStack {
+                        Button {
+                            do {
+                                try db.switchProfile(to: profile.id)
+                            } catch {
+                                profileError = localizedProfileMessage(error)
+                            }
+                        } label: {
+                            HStack {
+                                Image(systemName: profile.id == profiles.activeProfileID ? "checkmark.circle.fill" : "circle")
+                                VStack(alignment: .leading) {
+                                    Text(profile.name)
+                                    if profile.id == profiles.activeProfileID {
+                                        Text(i18n.t("active"))
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
                                 }
                             }
                         }
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("settings.profile.\(profile.id.uuidString)")
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("settings.profile.\(profile.id.uuidString)")
 
-                    Spacer()
+                        Spacer()
 
-                    Button {
-                        profileNameMode = .rename
-                        profileToRename = profile.id
-                        profileName = profile.name
-                        profileError = ""
-                        showingProfileNameSheet = true
-                    } label: {
-                        Image(systemName: "pencil")
-                    }
-                    .accessibilityIdentifier("settings.profileRename.\(profile.id.uuidString)")
-
-                    Button(role: .destructive) {
-                        do {
-                            try db.deleteProfile(id: profile.id)
-                        } catch {
-                            profileError = localizedProfileMessage(error)
+                        Button {
+                            profileNameMode = .rename
+                            profileToRename = profile.id
+                            profileName = profile.name
+                            profileError = ""
+                            showingProfileNameSheet = true
+                        } label: {
+                            Image(systemName: "pencil")
                         }
-                    } label: {
-                        Image(systemName: "trash")
+                        .accessibilityIdentifier("settings.profileRename.\(profile.id.uuidString)")
+
+                        Button(role: .destructive) {
+                            do {
+                                try db.deleteProfile(id: profile.id)
+                            } catch {
+                                profileError = localizedProfileMessage(error)
+                            }
+                        } label: {
+                            Image(systemName: "trash")
+                        }
+                        .accessibilityIdentifier("settings.profileDelete.\(profile.id.uuidString)")
                     }
-                    .accessibilityIdentifier("settings.profileDelete.\(profile.id.uuidString)")
                 }
-            }
 
-            Button {
-                profileNameMode = .create
-                profileToRename = nil
-                profileName = ""
-                profileError = ""
-                showingProfileNameSheet = true
-            } label: {
-                Label(i18n.t("addProfile"), systemImage: "plus")
-            }
-            .accessibilityIdentifier("settings.addProfileButton")
-
-            Button {
-                do {
-                    profileTransferDocument = LocalProfileTransferDocument(data: try db.exportProfileTransferData())
-                    showingProfileExporter = true
-                } catch {
-                    profileError = localizedProfileMessage(error)
+                Button {
+                    profileNameMode = .create
+                    profileToRename = nil
+                    profileName = ""
+                    profileError = ""
+                    showingProfileNameSheet = true
+                } label: {
+                    Label(i18n.t("addProfile"), systemImage: "plus")
                 }
-            } label: {
-                Label(i18n.t("exportProfile"), systemImage: "square.and.arrow.up")
-            }
-            .accessibilityIdentifier("settings.exportProfileButton")
+                .accessibilityIdentifier("settings.addProfileButton")
 
-            Button {
-                showingProfileImporter = true
-            } label: {
-                Label(i18n.t("importProfile"), systemImage: "square.and.arrow.down")
-            }
-            .accessibilityIdentifier("settings.importProfileButton")
-        }
-    }
-
-    private var amebloSection: some View {
-        Section(header: Text(i18n.t("amebloBlogs")), footer: Text(i18n.t("amebloBlogsFooter"))) {
-            TextField("https://ameblo.jp/blog-id", text: $amebloURL)
-                .keyboardType(.URL)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .accessibilityIdentifier("settings.amebloURLField")
-
-            TextField(i18n.t("blogTitleOptional"), text: $amebloTitle)
-                .accessibilityIdentifier("settings.amebloTitleField")
-
-            Button {
-                switch db.addAmebloBlog(url: amebloURL, title: amebloTitle) {
-                case .added:
-                    amebloURL = ""
-                    amebloTitle = ""
-                    amebloError = ""
-                case .invalidURL:
-                    amebloError = i18n.t("amebloInvalidURL")
-                case .duplicate:
-                    amebloError = i18n.t("amebloDuplicate")
-                case .limitReached:
-                    amebloError = i18n.t("amebloLimitReached")
-                }
-            } label: {
-                Label(i18n.t("addAmebloBlog"), systemImage: "plus.circle.fill")
-            }
-            .disabled(amebloURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            .accessibilityIdentifier("settings.addAmebloButton")
-
-            if db.subscribedPlatforms.contains("ameblo") {
-                Text(i18n.t("amebloEnabled"))
-                    .font(.caption)
-                    .foregroundColor(theme.colors.textMuted)
-                    .accessibilityIdentifier("settings.amebloSubscriptionState")
-            }
-
-            if !amebloError.isEmpty {
-                Text(amebloError)
-                    .font(.caption)
-                    .foregroundColor(.red)
-                    .accessibilityIdentifier("settings.amebloError")
-            }
-
-            ForEach(db.amebloBlogs) { blog in
-                HStack(spacing: 10) {
-                    Text("✏️")
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(blog.title ?? blog.amebaID)
-                            .font(.subheadline.weight(.semibold))
-                        Text(blog.url)
-                            .font(.caption)
-                            .foregroundColor(theme.colors.textMuted)
+                Button {
+                    do {
+                        profileTransferDocument = LocalProfileTransferDocument(data: try db.exportProfileTransferData())
+                        showingProfileExporter = true
+                    } catch {
+                        profileError = localizedProfileMessage(error)
                     }
+                } label: {
+                    Label(i18n.t("exportProfile"), systemImage: "square.and.arrow.up")
+                }
+                .accessibilityIdentifier("settings.exportProfileButton")
+
+                Button {
+                    showingProfileImporter = true
+                } label: {
+                    Label(i18n.t("importProfile"), systemImage: "square.and.arrow.down")
+                }
+                .accessibilityIdentifier("settings.importProfileButton")
+
+                Text(i18n.t("profilesFooter"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } label: {
+                HStack {
+                    Label(i18n.t("profiles"), systemImage: "person.crop.circle")
                     Spacer()
-                    Button(role: .destructive) {
-                        db.removeAmebloBlog(id: blog.id)
-                    } label: {
-                        Image(systemName: "trash")
-                    }
-                    .accessibilityLabel(i18n.tFormat("removeNamed", blog.amebaID))
-                    .accessibilityIdentifier("settings.removeAmeblo.\(blog.amebaID)")
+                    Text(activeProfileName)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
-                .accessibilityIdentifier("settings.amebloBlog.\(blog.amebaID)")
-                .accessibilityElement(children: .contain)
             }
-            .onDelete { offsets in
-                for index in offsets {
-                    db.removeAmebloBlog(id: db.amebloBlogs[index].id)
+
+            DisclosureGroup(isExpanded: $isDataSectionExpanded) {
+                Button {
+                    do {
+                        backupDocument = LocalBackupDocument(data: try db.exportBackupData())
+                        showingBackupExporter = true
+                    } catch {
+                        backupMessage = localizedBackupMessage(error)
+                        showingBackupMessage = true
+                    }
+                } label: {
+                    Label(i18n.t("exportBackup"), systemImage: "square.and.arrow.up")
                 }
+                .accessibilityIdentifier("settings.exportBackupButton")
+
+                Button {
+                    showingBackupImporter = true
+                } label: {
+                    Label(i18n.t("importBackup"), systemImage: "square.and.arrow.down")
+                }
+                .accessibilityIdentifier("settings.importBackupButton")
+
+                Button {
+                    beginEncryptedExport()
+                } label: {
+                    Label(i18n.t("exportEncryptedBackup"), systemImage: "lock.square.stack")
+                }
+                .accessibilityIdentifier("settings.exportEncryptedBackupButton")
+
+                Button {
+                    showingEncryptedBackupImporter = true
+                } label: {
+                    Label(i18n.t("importEncryptedBackup"), systemImage: "lock.open")
+                }
+                .accessibilityIdentifier("settings.importEncryptedBackupButton")
+
+                Button(role: .destructive) {
+                    showingClearAllAlert = true
+                } label: {
+                    Label(i18n.t("clearAllData"), systemImage: "trash")
+                }
+                .accessibilityIdentifier("settings.clearAllDataButton")
+            } label: {
+                Label(i18n.t("dataSection"), systemImage: "externaldrive")
             }
         }
     }
 
-    private func sendTestNotification() async {
-        guard !isSendingNotificationTest else { return }
-        isSendingNotificationTest = true
-        defer { isSendingNotificationTest = false }
-
-        notificationTestMessage = i18n.t("notifLocalSending")
-        notificationTestSucceeded = false
-
-        do {
-            try await notifications.sendTestNotification()
-            notificationTestMessage = i18n.t("notifLocalTestSent")
-            notificationTestSucceeded = true
-        } catch {
-            notificationTestMessage = i18n.t("notifLocalTestFailed")
-            notificationTestSucceeded = false
-        }
+    private var activeProfileName: String {
+        profiles.profiles.first { $0.id == profiles.activeProfileID }?.name ?? i18n.t("active")
     }
 
     private func beginEncryptedExport() {

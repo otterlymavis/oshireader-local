@@ -181,50 +181,6 @@ final class OshiReaderUITests: XCTestCase {
 
         XCTAssertTrue(waitForElement(identifier: "settings.notificationStatus", timeout: 2, swipes: 4).exists)
         XCTAssertTrue(waitForElement(identifier: "settings.localAlertBackgroundStatus", timeout: 2, swipes: 1).exists)
-        let notificationAction = waitForAnyElement(
-            identifiers: [
-                "settings.enableNotificationsButton",
-                "settings.openSettingsButton",
-                "settings.testNotificationButton"
-            ],
-            timeout: 2,
-            swipes: 1
-        )
-        XCTAssertTrue(notificationAction.exists)
-    }
-
-    func testAmebloSettingsAddValidateAndRemove() throws {
-        tapTab(index: 4, labels: ["Settings"])
-
-        let urlField = app.textFields["settings.amebloURLField"]
-        XCTAssertTrue(urlField.waitForExistence(timeout: 3))
-        let addButton = app.buttons["settings.addAmebloButton"]
-        XCTAssertTrue(addButton.waitForExistence(timeout: 3))
-
-        urlField.tap()
-        urlField.typeText("https://example.com/not-ameblo")
-        addButton.tap()
-        XCTAssertTrue(app.descendants(matching: .any)["settings.amebloError"].waitForExistence(timeout: 3))
-
-        app.terminate()
-        app.launch()
-        tapTab(index: 4, labels: ["Settings"])
-        let freshURLField = app.textFields["settings.amebloURLField"]
-        XCTAssertTrue(freshURLField.waitForExistence(timeout: 3))
-        let freshAddButton = app.buttons["settings.addAmebloButton"]
-        XCTAssertTrue(freshAddButton.waitForExistence(timeout: 3))
-        freshURLField.tap()
-        freshURLField.typeText("https://ameblo.jp/uitestblog")
-        freshAddButton.tap()
-
-        let blogRow = app.descendants(matching: .any)["settings.amebloBlog.uitestblog"]
-        XCTAssertTrue(blogRow.waitForExistence(timeout: 3))
-        XCTAssertTrue(app.descendants(matching: .any)["settings.amebloSubscriptionState"].waitForExistence(timeout: 3))
-
-        let removeButton = app.buttons["Remove uitestblog"]
-        XCTAssertTrue(removeButton.waitForExistence(timeout: 3))
-        removeButton.tap()
-        XCTAssertFalse(blogRow.waitForExistence(timeout: 1))
     }
 
     func testEncryptedBackupPromptCanBeCancelled() throws {

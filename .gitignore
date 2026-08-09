@@ -16,6 +16,7 @@ mobile/tmp_*.json
 
 # Xcode
 xcuserdata/
+ios-swift/build/
 
 # General
 *.pyc

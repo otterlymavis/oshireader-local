@@ -55,7 +55,6 @@ On-device ingestion currently reads these sources:
 | BARKS | Dedicated official RSS feed |
 | 5channel | Google News site-filtered results |
 | Girls Channel | Google News site-filtered results |
-| Togetter | Curation page scraping |
 | ModelPress | ModelPress article search |
 | YahooNews | Yahoo News article search through a text mirror for EEA-safe access |
 | News/RSS | Curated Japanese entertainment RSS feeds |

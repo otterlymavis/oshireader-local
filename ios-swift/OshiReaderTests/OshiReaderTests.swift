@@ -223,6 +223,14 @@ final class OshiReaderTests: XCTestCase {
         XCTAssertFalse(PlatformRegistry.defaultSubscribedIDs.contains("soompi"))
     }
 
+    func testPlatformRegistryExcludesRemovedTogetterSource() {
+        XCTAssertNil(PlatformRegistry.definition(for: "togetter"))
+        XCTAssertFalse(PlatformRegistry.defaultSubscribedIDs.contains("togetter"))
+        XCTAssertFalse(PlatformRegistry.strictKeywordPlatformIDs.contains("togetter"))
+        XCTAssertFalse(PlatformRegistry.googleNewsSources.contains { $0.id == "togetter" })
+        XCTAssertEqual(PlatformRegistry.normalizeIDs(["togetter", "news", "youtube"]), ["news", "youtube"])
+    }
+
     func testPlatformRegistryNormalizesLegacyRawPlatformIDs() {
         XCTAssertEqual(PlatformRegistry.normalizeID(" x "), "twitter")
         XCTAssertEqual(PlatformRegistry.normalizeID("news:mdpr"), "mdpr")
@@ -1833,6 +1841,33 @@ final class OshiReaderTests: XCTestCase {
 
         db.setSubscribedPlatforms(platforms: ["tver"])
         let noLongerValid = try XCTUnwrap(db.terms.first(where: { $0.id == term.id }))
+        XCTAssertEqual(noLongerValid.source_mode, .all)
+        XCTAssertEqual(noLongerValid.selected_platforms, [])
+    }
+
+    @MainActor
+    func testRemovedSourceIsDroppedFromSavedSourcePreferences() throws {
+        XCTAssertEqual(
+            LocalDB.subscribedPlatformsForLoadedValue(["togetter", "news", "youtube"], hasSavedFile: true),
+            ["news", "youtube"]
+        )
+        XCTAssertEqual(
+            LocalDB.normalizedSourcesOrder(["custom", "togetter", "news", "youtube"]),
+            ["custom", "news", "youtube"]
+        )
+
+        let term = db.saveTerm(
+            keyword: "Removed Source Oshi",
+            sourceMode: .selected,
+            selectedPlatforms: ["togetter", "news"]
+        )
+
+        let saved = try XCTUnwrap(db.terms.first { $0.id == term.id })
+        XCTAssertEqual(saved.source_mode, .selected)
+        XCTAssertEqual(saved.selected_platforms, ["news"])
+
+        db.updateTerm(id: term.id, sourceMode: .selected, selectedPlatforms: ["togetter"])
+        let noLongerValid = try XCTUnwrap(db.terms.first { $0.id == term.id })
         XCTAssertEqual(noLongerValid.source_mode, .all)
         XCTAssertEqual(noLongerValid.selected_platforms, [])
     }

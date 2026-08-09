@@ -51,7 +51,6 @@ enum PlatformRegistry {
         PlatformDefinition(id: "note", name: "Note", icon: "📝"),
         PlatformDefinition(id: "girlschannel", name: "GirlsChannel", icon: "👭", googleNewsSite: "girlschannel.net", usesStrictKeywordMatching: true),
         PlatformDefinition(id: "5ch", name: "5ch", icon: "💬", googleNewsSite: "5ch.net", usesStrictKeywordMatching: true),
-        PlatformDefinition(id: "togetter", name: "Togetter", icon: "🐧", googleNewsSite: "togetter.com", usesStrictKeywordMatching: true),
         PlatformDefinition(id: "news", name: "General News", icon: "📰"),
         PlatformDefinition(id: "yahoonews", name: "YahooNews", icon: "🇯🇵", googleNewsSite: "news.yahoo.co.jp", usesStrictKeywordMatching: true),
         PlatformDefinition(id: "mdpr", name: "ModelPress", icon: "💅", googleNewsSite: "mdpr.jp", usesStrictKeywordMatching: true),
@@ -91,7 +90,7 @@ enum PlatformRegistry {
     static var defaultSubscribedIDs: [String] {
         [
             "youtube", "niconico", "tver", "note",
-            "girlschannel", "5ch", "togetter", "news",
+            "girlschannel", "5ch", "news",
             "yahoonews", "mdpr", "oricon", "twitter", "custom"
         ]
     }

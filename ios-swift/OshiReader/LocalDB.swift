@@ -34,7 +34,7 @@ class LocalDB: ObservableObject {
     private static let maxFeedItems = 600
     private static let minFeedItemsPerSubscribedPlatform = 8
     private static let minFeedItemsPerDiscussionPlatform = 25
-    private static let discussionActivityPlatforms: Set<String> = ["5ch", "girlschannel", "togetter"]
+    private static let discussionActivityPlatforms: Set<String> = ["5ch", "girlschannel"]
     private static let iso8601 = ISO8601DateFormatter()
     
     // Published states for views
@@ -706,7 +706,7 @@ class LocalDB: ObservableObject {
                 return nil
             }
             
-            // Cutoff check (skip limit check for 5ch, girlschannel, togetter)
+            // Cutoff check (skip limit check for 5ch, girlschannel)
             let skipCutoff = Self.discussionActivityPlatforms.contains(platformKey)
             if let cutoff = cutoffDate, !skipCutoff {
                 guard let itemDate = parseISO8601Date(item.published_at), itemDate >= cutoff else {

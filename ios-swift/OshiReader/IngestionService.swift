@@ -242,9 +242,6 @@ final class IngestionService {
             add("cinemacafe")  { await self.fetchDedicatedRSSSource(sourceID: "cinemacafe", keyword: $0, feedURLs: Self.dedicatedRSSFeeds["cinemacafe"] ?? [], mediaOnly: mediaOnly, fallbackSite: "cinemacafe.net") }
             add("billboardjapan") { await self.fetchDedicatedRSSSource(sourceID: "billboardjapan", keyword: $0, feedURLs: Self.dedicatedRSSFeeds["billboardjapan"] ?? [], mediaOnly: mediaOnly, fallbackSite: "billboard-japan.com") }
             add("kpopofficial") { await self.fetchDedicatedRSSSource(sourceID: "kpopofficial", keyword: $0, feedURLs: Self.dedicatedRSSFeeds["kpopofficial"] ?? [], mediaOnly: mediaOnly, fallbackSite: "kpopofficial.com", locale: .englishUS) }
-            // Togetter via Google News so items carry real publish dates (the
-            // search-page scrape doesn't expose reliable dates).
-            add("togetter")    { await self.fetchGoogleNews(keyword: $0, query: "\($0) site:togetter.com", platform: "togetter", mediaType: "article", mediaOnly: mediaOnly) }
             add("tver")        { await self.fetchTVer(keyword: $0) }
             add("youtube")     { await self.fetchYouTube(keyword: $0) }
             add("twitter")     { await self.fetchTwitter(keyword: $0, mediaOnly: mediaOnly) }
@@ -253,7 +250,7 @@ final class IngestionService {
             // above win, while the remaining reference sources use dated RSS
             // results from Google News until they warrant a dedicated parser.
             for source in PlatformRegistry.googleNewsSources where
-                !["5ch", "girlschannel", "mdpr", "oricon", "yahoonews", "togetter", "twitter", "ameblo", "natalie", "barks", "aera", "hochi", "realsound", "cinemacafe", "billboardjapan", "kpopofficial"].contains(source.id) {
+                !["5ch", "girlschannel", "mdpr", "oricon", "yahoonews", "twitter", "ameblo", "natalie", "barks", "aera", "hochi", "realsound", "cinemacafe", "billboardjapan", "kpopofficial"].contains(source.id) {
                 add(source.id) {
                     await self.fetchGoogleNews(
                         keyword: $0,

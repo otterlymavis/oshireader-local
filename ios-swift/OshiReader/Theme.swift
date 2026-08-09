@@ -238,8 +238,6 @@ class ThemeManager: ObservableObject {
             return PlatformMetadata(name: "5ch", icon: "💬", accent: Color.orange, bg: Color(red: 1.0, green: 0.95, blue: 0.9), fg: Color.orange)
         case "girlschannel":
             return PlatformMetadata(name: "GirlsChannel", icon: "👭", accent: Color.pink, bg: Color(red: 1.0, green: 0.92, blue: 0.95), fg: Color.pink)
-        case "togetter":
-            return PlatformMetadata(name: "Togetter", icon: "🐧", accent: Color.green, bg: Color(red: 0.9, green: 0.98, blue: 0.92), fg: Color.green)
         case "note":
             return PlatformMetadata(name: "Note", icon: "📝", accent: Color(red: 0.1, green: 0.7, blue: 0.5), bg: Color(red: 0.9, green: 0.97, blue: 0.95), fg: Color(red: 0.1, green: 0.7, blue: 0.5))
         case "news":
