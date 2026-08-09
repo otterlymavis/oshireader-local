@@ -3292,7 +3292,47 @@ final class OshiReaderTests: XCTestCase {
         let backup = LocalBackup(
             exportedAt: now,
             terms: [],
-            feedItems: [],
+            feedItems: [
+                FeedItem(
+                    id: "legacy:bad-script",
+                    platform: "custom",
+                    url: "javascript://example.com/feed",
+                    title: "Bad",
+                    content_text: nil,
+                    author: nil,
+                    thumbnail_url: nil,
+                    media_type: "article",
+                    published_at: now,
+                    watch_term_keyword: "",
+                    fetched_at: now
+                ),
+                FeedItem(
+                    id: "legacy:host-port",
+                    platform: "custom",
+                    url: "localhost:9090/feed",
+                    title: "Local cached",
+                    content_text: nil,
+                    author: nil,
+                    thumbnail_url: nil,
+                    media_type: "article",
+                    published_at: now,
+                    watch_term_keyword: "",
+                    fetched_at: now
+                ),
+                FeedItem(
+                    id: "legacy:tracked-dup",
+                    platform: "custom",
+                    url: "https://example.com/feed?b=2&a=1",
+                    title: "Duplicate cached",
+                    content_text: nil,
+                    author: nil,
+                    thumbnail_url: nil,
+                    media_type: "article",
+                    published_at: now,
+                    watch_term_keyword: "",
+                    fetched_at: now
+                )
+            ],
             savedPages: [],
             customUrls: [
                 CustomUrl(id: "legacy:bad-script", url: "javascript://example.com/feed", title: "Bad", added_at: now),
@@ -3305,7 +3345,12 @@ final class OshiReaderTests: XCTestCase {
             sourcesOrder: nil,
             oshiAvatars: [:],
             compositions: [:],
-            hiddenItems: []
+            hiddenItems: [
+                "legacy:bad-script::",
+                "legacy:host-port::",
+                "legacy:tracked-dup::",
+                "youtube:v1::Aiko"
+            ]
         )
 
         try db.importBackupData(JSONEncoder().encode(backup))
@@ -3316,6 +3361,13 @@ final class OshiReaderTests: XCTestCase {
         ])
         XCTAssertEqual(db.customUrls.map(\.title), ["Local Feed", nil])
         XCTAssertTrue(db.customUrls.allSatisfy { $0.id.hasPrefix("custom:") })
+        XCTAssertEqual(Set(db.feedItems.map(\.id)), Set(db.customUrls.map(\.id)))
+        XCTAssertEqual(Set(db.feedItems.map(\.url)), Set(db.customUrls.map(\.url)))
+        XCTAssertEqual(db.hiddenItems, Set([
+            "\(db.customUrls[0].id)::",
+            "\(db.customUrls[1].id)::",
+            "youtube:v1::Aiko"
+        ]))
     }
 
     @MainActor

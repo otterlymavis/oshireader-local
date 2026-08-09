@@ -974,12 +974,91 @@ class LocalDB: ObservableObject {
     }
 
     private static func normalizedCustomUrls(_ urls: [CustomUrl]) -> [CustomUrl] {
-        var seen = Set<String>()
-        return urls.compactMap { entry in
-            guard let normalized = normalizedCustomUrlEntry(url: entry.url, title: entry.title, addedAt: entry.added_at),
-                  seen.insert(normalized.id).inserted else { return nil }
-            return normalized
+        normalizedCustomUrlImport(urls).urls
+    }
+
+    private struct NormalizedCustomUrlImport {
+        let urls: [CustomUrl]
+        let entriesByLegacyID: [String: CustomUrl]
+        let entriesByLegacyURL: [String: CustomUrl]
+        let droppedLegacyIDs: Set<String>
+    }
+
+    private static func normalizedCustomUrlImport(_ urls: [CustomUrl]) -> NormalizedCustomUrlImport {
+        var normalizedUrls: [CustomUrl] = []
+        var entriesByID: [String: CustomUrl] = [:]
+        var entriesByURL: [String: CustomUrl] = [:]
+        var canonicalByNormalizedID: [String: CustomUrl] = [:]
+        var droppedIDs = Set<String>()
+
+        for entry in urls {
+            guard let normalized = normalizedCustomUrlEntry(url: entry.url, title: entry.title, addedAt: entry.added_at) else {
+                droppedIDs.insert(entry.id)
+                continue
+            }
+
+            let canonical: CustomUrl
+            if let existing = canonicalByNormalizedID[normalized.id] {
+                canonical = existing
+            } else {
+                canonicalByNormalizedID[normalized.id] = normalized
+                normalizedUrls.append(normalized)
+                canonical = normalized
+            }
+
+            entriesByID[entry.id] = canonical
+            entriesByID[canonical.id] = canonical
+            entriesByURL[entry.url] = canonical
+            entriesByURL[canonical.url] = canonical
         }
+
+        return NormalizedCustomUrlImport(
+            urls: normalizedUrls,
+            entriesByLegacyID: entriesByID,
+            entriesByLegacyURL: entriesByURL,
+            droppedLegacyIDs: droppedIDs
+        )
+    }
+
+    private static func normalizedImportedFeedItems(
+        _ items: [FeedItem],
+        customURLImport: NormalizedCustomUrlImport
+    ) -> [FeedItem] {
+        items.compactMap { item in
+            guard PlatformRegistry.normalizeID(item.platform) == "custom" else { return item }
+            let normalizedItemURL = normalizedCustomUrlEntry(url: item.url, title: nil, addedAt: "")?.url
+            guard let entry = customURLImport.entriesByLegacyID[item.id] ??
+                    customURLImport.entriesByLegacyURL[item.url] ??
+                    normalizedItemURL.flatMap({ customURLImport.entriesByLegacyURL[$0] }) else {
+                return nil
+            }
+            return FeedItem(
+                id: entry.id,
+                platform: "custom",
+                url: entry.url,
+                title: item.title,
+                content_text: item.content_text,
+                author: item.author,
+                thumbnail_url: item.thumbnail_url,
+                media_type: item.media_type,
+                published_at: item.published_at,
+                watch_term_keyword: item.watch_term_keyword,
+                fetched_at: item.fetched_at,
+                source: item.source ?? "custom_url"
+            )
+        }
+    }
+
+    private static func normalizedImportedHiddenItem(
+        _ key: String,
+        customURLImport: NormalizedCustomUrlImport
+    ) -> String? {
+        let legacyID = key.split(separator: "::", maxSplits: 1, omittingEmptySubsequences: false)
+            .first
+            .map(String.init) ?? key
+        if customURLImport.droppedLegacyIDs.contains(legacyID) { return nil }
+        guard let entry = customURLImport.entriesByLegacyID[legacyID] else { return key }
+        return entry.id + key.dropFirst(legacyID.count)
     }
 
     func addCustomUrl(url: String, title: String) {
@@ -1198,18 +1277,23 @@ class LocalDB: ObservableObject {
             normalizedSubscribedPlatforms.append("ameblo")
         }
         let normalizedSourcesOrder = Self.normalizedSourcesOrder(backup.sources_order)
-        let prunedFeedItemKeys = Set(backup.feed_items
+        let customURLImport = Self.normalizedCustomUrlImport(backup.custom_urls)
+        let importedFeedItems = Self.normalizedImportedFeedItems(backup.feed_items, customURLImport: customURLImport)
+        let prunedFeedItemKeys = Set(importedFeedItems
             .filter { FeedItemPolicy.shouldPruneLegacyYouTubeItem($0) }
             .map(Self.feedItemKey))
         let normalizedFeedItems = Self.cappedFeedItems(
-            backup.feed_items
+            importedFeedItems
                 .filter { !FeedItemPolicy.shouldPruneLegacyYouTubeItem($0) }
                 .sorted(by: Self.feedItemSortPrecedes),
             preserving: [],
             subscribedPlatforms: normalizedSubscribedPlatforms
         )
-        let normalizedHiddenItems = backup.hidden_items.filter { !prunedFeedItemKeys.contains($0) }
-        let normalizedCustomUrls = Self.normalizedCustomUrls(backup.custom_urls)
+        let normalizedHiddenItems = backup.hidden_items.compactMap { hiddenKey -> String? in
+            guard !prunedFeedItemKeys.contains(hiddenKey) else { return nil }
+            return Self.normalizedImportedHiddenItem(hiddenKey, customURLImport: customURLImport)
+        }
+        let normalizedCustomUrls = customURLImport.urls
 
         let encodedFiles: [(String, Data)] = try [
             ("terms", encoder.encode(normalizedTerms)),
