@@ -3584,10 +3584,14 @@ final class OshiReaderTests: XCTestCase {
         XCTAssertEqual(db.customUrls.count, 4)
         XCTAssertEqual(db.customUrls.first?.url, "http://localhost:8080/feed")
 
+        db.addCustomUrl(url: "localhost:9090/scheme-less-feed", title: "Scheme-less Local Feed")
+        XCTAssertEqual(db.customUrls.count, 5)
+        XCTAssertEqual(db.customUrls.first?.url, "https://localhost:9090/scheme-less-feed")
+
         let longPrefix = "https://feeds.example.com/" + String(repeating: "same-prefix-", count: 8)
         db.addCustomUrl(url: "\(longPrefix)a.xml", title: "Long Feed A")
         db.addCustomUrl(url: "\(longPrefix)b.xml", title: "Long Feed B")
-        XCTAssertEqual(db.customUrls.count, 6)
+        XCTAssertEqual(db.customUrls.count, 7)
         
         for id in db.customUrls.map(\.id) {
             db.removeCustomUrl(id: id)

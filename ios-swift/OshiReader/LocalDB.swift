@@ -932,7 +932,11 @@ class LocalDB: ObservableObject {
         let trimmed = url.trimmingCharacters(in: .whitespacesAndNewlines)
         let hasScheme = trimmed.range(of: #"^[a-zA-Z][a-zA-Z0-9+\-.]*:"#,
                                       options: .regularExpression) != nil
-        let candidate = hasScheme ? trimmed : "https://\(trimmed)"
+        let hasHTTPSScheme = trimmed.range(of: #"^https?://"#, options: [.regularExpression, .caseInsensitive]) != nil
+        let looksLikeHostPort = trimmed.range(of: #"^[A-Za-z0-9.-]+:\d+([/?#].*)?$"#,
+                                              options: .regularExpression) != nil
+        guard !hasScheme || hasHTTPSScheme || looksLikeHostPort else { return }
+        let candidate = hasHTTPSScheme ? trimmed : "https://\(trimmed)"
         guard var components = URLComponents(string: candidate),
               let scheme = components.scheme?.lowercased(),
               scheme == "http" || scheme == "https",
