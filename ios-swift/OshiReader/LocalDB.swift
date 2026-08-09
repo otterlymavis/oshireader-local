@@ -593,10 +593,7 @@ class LocalDB: ObservableObject {
             return existingDate == nil ? incoming.published_at : existing.published_at
         }
 
-        if discussionActivityPlatforms.contains(PlatformRegistry.normalizeID(incoming.platform)) {
-            return incomingDate >= existingDate ? incoming.published_at : existing.published_at
-        }
-        return existingDate <= incomingDate ? existing.published_at : incoming.published_at
+        return incomingDate >= existingDate ? incoming.published_at : existing.published_at
     }
 
     private static func feedItemSortPrecedes(_ lhs: FeedItem, _ rhs: FeedItem) -> Bool {

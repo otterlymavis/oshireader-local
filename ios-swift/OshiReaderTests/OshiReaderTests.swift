@@ -2471,6 +2471,50 @@ final class OshiReaderTests: XCTestCase {
     }
 
     @MainActor
+    func testMergeRefreshesExistingArticlePublishedDateForCurrentFeed() throws {
+        let formatter = ISO8601DateFormatter()
+        let oldDate = formatter.string(from: Date().addingTimeInterval(-45 * 86400))
+        let newDate = formatter.string(from: Date())
+        let original = FeedItem(
+            id: "news:updated-article",
+            platform: "news",
+            url: "https://example.com/updated-article",
+            title: "Oshi old article",
+            content_text: nil,
+            author: nil,
+            thumbnail_url: nil,
+            media_type: "article",
+            published_at: oldDate,
+            watch_term_keyword: "Oshi",
+            fetched_at: oldDate,
+            source: "google_news"
+        )
+        let refreshed = FeedItem(
+            id: original.id,
+            platform: original.platform,
+            url: original.url,
+            title: "Oshi updated article with fresh details",
+            content_text: "Fresh source summary",
+            author: nil,
+            thumbnail_url: nil,
+            media_type: original.media_type,
+            published_at: newDate,
+            watch_term_keyword: original.watch_term_keyword,
+            fetched_at: newDate,
+            source: "google_news"
+        )
+
+        db.setSubscribedPlatforms(platforms: ["news"])
+        XCTAssertEqual(db.mergeItems(newItems: [original]), 1)
+        XCTAssertTrue(db.queryFeed(keyword: "Oshi", days: 30).isEmpty)
+
+        XCTAssertEqual(db.mergeItems(newItems: [refreshed]), 0)
+
+        XCTAssertEqual(db.feedItems.first?.published_at, newDate)
+        XCTAssertEqual(db.queryFeed(keyword: "Oshi", days: 30).map(\.id), [original.id])
+    }
+
+    @MainActor
     func testBatchedMergeMatchesSingleMergeSemantics() throws {
         let now = ISO8601DateFormatter().string(from: Date())
         let first = FeedItem(
