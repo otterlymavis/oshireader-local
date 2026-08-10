@@ -106,11 +106,12 @@ final class IngestionService {
         pattern: #"ytInitialData\s*=\s*'((?:\\'|[^'])*)';"#,
         options: [.dotMatchesLineSeparators]
     )
+    private static let videoIdCharacterClass = "[A-Za-z0-9_-]{11}"
     private static let escapedYouTubeVideoIDRegexes: [NSRegularExpression] = [
-        #""videoId":"([A-Za-z0-9_-]{11})""#,
-        #"/(?:watch\?v=|shorts/)([A-Za-z0-9_-]{11})"#,
-        #"\\\\x22videoId\\\\x22:\\\\x22([A-Za-z0-9_-]{11})\\\\x22"#,
-        #"/(?:watch\?v\\\\x3d|shorts/)([A-Za-z0-9_-]{11})"#
+        #""videoId":"(\#(videoIdCharacterClass))""#,
+        #"/(?:watch\?v=|shorts/)(\#(videoIdCharacterClass))"#,
+        #"\\\\x22videoId\\\\x22:\\\\x22(\#(videoIdCharacterClass))\\\\x22"#,
+        #"/(?:watch\?v\\\\x3d|shorts/)(\#(videoIdCharacterClass))"#
     ].compactMap { try? NSRegularExpression(pattern: $0) }
     private static let youTubeUploadDateSearchParam = "CAI%3D"
 
@@ -1214,7 +1215,7 @@ final class IngestionService {
     /// double-escaped regex patterns never becomes plain quotes and would otherwise be invisible
     /// to boundary scoping.
     private static let anyEscapedVideoIdFieldRegex = try? NSRegularExpression(
-        pattern: #"(?:"|\\x22)videoId(?:"|\\x22)\s*:\s*(?:"|\\x22)([A-Za-z0-9_-]{11})(?:"|\\x22)"#
+        pattern: #"(?:"|\\x22)videoId(?:"|\\x22)\s*:\s*(?:"|\\x22)(\#(videoIdCharacterClass))(?:"|\\x22)"#
     )
 
     private static func textAroundOwnVideoId(_ decoded: String, videoId: String) -> String {
