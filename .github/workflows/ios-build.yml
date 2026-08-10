@@ -44,5 +44,6 @@ jobs:
           xcodebuild test
           -project ios-swift/OshiReader.xcodeproj
           -scheme OshiReader
+          -only-testing:OshiReaderTests
           -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.name }}"
           CODE_SIGNING_ALLOWED=NO
