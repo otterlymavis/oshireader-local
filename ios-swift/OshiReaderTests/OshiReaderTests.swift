@@ -776,6 +776,37 @@ final class OshiReaderTests: XCTestCase {
         XCTAssertEqual(report.items.map(\.id), ["youtube:freshvid002"])
     }
 
+    func testYouTubeEscapedFallbackDoesNotBorrowNeighboringVideosDateAcrossDoubleEscapedIDs() async throws {
+        // Same regression as above, but the undated video's ID only appears in the
+        // double-escaped form (\x22...\x22) that decodeJavaScriptEscapedString unwraps to a
+        // single layer, not a plain quote. Boundary scoping must still recognize it as "this
+        // video" rather than falling back to an unbounded search that borrows the neighbor's date.
+        let capture = RequestCapture()
+        let service = IngestionService(
+            requestExecutor: { request in
+                let url = request.url?.absoluteString ?? ""
+                await capture.record(url)
+                let data = url.contains("/youtubei/")
+                    ? Data("{}".utf8)
+                    : Data(#"""
+                    \\x22videoId\\x22:\\x22undatedvid2\\x22
+                    "videoRenderer":{"videoId":"freshvid003","publishedTimeText":{"simpleText":"2 days ago"}}
+                    """#.utf8)
+                return (data, try XCTUnwrap(HTTPURLResponse(
+                    url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                )))
+            },
+            retrySleeper: { _ in }
+        )
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "Fallback Oshi"),
+            platforms: ["youtube"]
+        )
+
+        XCTAssertEqual(report.items.map(\.id), ["youtube:freshvid003"])
+    }
+
     func testDedicatedRSSFallsBackToGoogleNewsWhenPublisherFeedIsBlocked() async {
         let googleNewsRSS = Data("""
         <rss version="2.0"><channel><item>

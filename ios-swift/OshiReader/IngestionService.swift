@@ -1208,8 +1208,17 @@ final class IngestionService {
             ?? firstRegexCapture(#""publishedTimeText"\s*:\s*\{\s*"runs"\s*:\s*\[\s*\{\s*"text"\s*:\s*"([^"]+)""#, in: scoped)
     }
 
+    /// Matches a `videoId` field whose surrounding quotes are either literal (`"videoId":"ID"`)
+    /// or the single-decoded remnant of a double-escaped source (`\x22videoId\x22:\x22ID\x22`) —
+    /// decodeJavaScriptEscapedString only unwraps one layer, so a video originally found via the
+    /// double-escaped regex patterns never becomes plain quotes and would otherwise be invisible
+    /// to boundary scoping.
+    private static let anyEscapedVideoIdFieldRegex = try? NSRegularExpression(
+        pattern: #"(?:"|\\x22)videoId(?:"|\\x22)\s*:\s*(?:"|\\x22)([A-Za-z0-9_-]{11})(?:"|\\x22)"#
+    )
+
     private static func textAroundOwnVideoId(_ decoded: String, videoId: String) -> String {
-        guard let regex = escapedYouTubeVideoIDRegexes.first else { return decoded }
+        guard let regex = anyEscapedVideoIdFieldRegex else { return decoded }
         let matches = regex.matches(in: decoded, range: NSRange(decoded.startIndex..., in: decoded))
         guard let ownMatch = matches.first(where: { match in
             guard let idRange = Range(match.range(at: 1), in: decoded) else { return false }
