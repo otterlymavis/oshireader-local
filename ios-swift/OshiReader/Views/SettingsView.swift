@@ -112,6 +112,7 @@ struct SettingsView: View {
     @State private var showingAliasLimitMessage = false
     @State private var isProfileSectionExpanded = ProcessInfo.processInfo.arguments.contains("--uitesting")
     @State private var isDataSectionExpanded = ProcessInfo.processInfo.arguments.contains("--uitesting")
+    @State private var isAppearanceSectionExpanded = ProcessInfo.processInfo.arguments.contains("--uitesting")
     @State private var currentBackgroundRefreshStatus = UIApplication.shared.backgroundRefreshStatus
     @State private var notificationTermBeingUpdated: String?
     
@@ -369,58 +370,62 @@ struct SettingsView: View {
                 }
 
                 // Section: Customizations
-                Section(header: Text(i18n.t("appearanceSection"))) {
-                    Picker(i18n.t("appTheme"), selection: $theme.mode) {
-                        Text(i18n.t("themeLight")).tag(AppThemeMode.light)
-                        Text(i18n.t("themeDark")).tag(AppThemeMode.dark)
-                        Text(i18n.t("themeSepia")).tag(AppThemeMode.sepia)
-                    }
-                    .pickerStyle(.segmented)
+                Section {
+                    DisclosureGroup(isExpanded: $isAppearanceSectionExpanded) {
+                        Picker(i18n.t("appTheme"), selection: $theme.mode) {
+                            Text(i18n.t("themeLight")).tag(AppThemeMode.light)
+                            Text(i18n.t("themeDark")).tag(AppThemeMode.dark)
+                            Text(i18n.t("themeSepia")).tag(AppThemeMode.sepia)
+                        }
+                        .pickerStyle(.segmented)
 
-                    Picker(i18n.t("themeStyle"), selection: $theme.style) {
-                        ForEach(AppColorStyle.allCases) { style in
-                            Text(displayName(for: style)).tag(style)
+                        Picker(i18n.t("themeStyle"), selection: $theme.style) {
+                            ForEach(AppColorStyle.allCases) { style in
+                                Text(displayName(for: style)).tag(style)
+                            }
                         }
-                    }
-                    .pickerStyle(.segmented)
-                    .accessibilityIdentifier("settings.colorStylePicker")
-                    
-                    // Language selection
-                    Picker(i18n.t("language"), selection: Binding(
-                        get: { i18n.lang },
-                        set: {
-                            i18n.setLanguage($0)
-                            NotificationManager.shared.registerNotificationCategories()
-                        }
-                    )) {
-                        Text("日本語").tag("ja")
-                        Text("English").tag("en")
-                        Text("繁體中文").tag("zh-TW")
-                        Text("简体中文").tag("zh-CN")
-                    }
+                        .pickerStyle(.segmented)
+                        .accessibilityIdentifier("settings.colorStylePicker")
 
-                    Picker(i18n.t("font"), selection: $appearance.fontChoice) {
-                        ForEach(AppFontChoice.allCases) { choice in
-                            Text(choice.displayName).tag(choice)
+                        // Language selection
+                        Picker(i18n.t("language"), selection: Binding(
+                            get: { i18n.lang },
+                            set: {
+                                i18n.setLanguage($0)
+                                NotificationManager.shared.registerNotificationCategories()
+                            }
+                        )) {
+                            Text("日本語").tag("ja")
+                            Text("English").tag("en")
+                            Text("繁體中文").tag("zh-TW")
+                            Text("简体中文").tag("zh-CN")
                         }
-                    }
-                    .pickerStyle(.segmented)
-                    .accessibilityIdentifier("settings.fontPicker")
 
-                    Picker(i18n.t("fontSize"), selection: $appearance.fontSizeChoice) {
-                        ForEach(AppFontSizeChoice.allCases) { choice in
-                            Text(displayName(for: choice)).tag(choice)
+                        Picker(i18n.t("font"), selection: $appearance.fontChoice) {
+                            ForEach(AppFontChoice.allCases) { choice in
+                                Text(choice.displayName).tag(choice)
+                            }
                         }
-                    }
-                    .pickerStyle(.segmented)
-                    .accessibilityIdentifier("settings.fontSizePicker")
-                    
-                    // Wallpaper reset
-                    if db.wallpaper != nil {
-                        Button(action: { db.setWallpaper(url: nil) }) {
-                            Text(i18n.t("clearWallpaper"))
-                                .foregroundColor(.red)
+                        .pickerStyle(.segmented)
+                        .accessibilityIdentifier("settings.fontPicker")
+
+                        Picker(i18n.t("fontSize"), selection: $appearance.fontSizeChoice) {
+                            ForEach(AppFontSizeChoice.allCases) { choice in
+                                Text(displayName(for: choice)).tag(choice)
+                            }
                         }
+                        .pickerStyle(.segmented)
+                        .accessibilityIdentifier("settings.fontSizePicker")
+
+                        // Wallpaper reset
+                        if db.wallpaper != nil {
+                            Button(action: { db.setWallpaper(url: nil) }) {
+                                Text(i18n.t("clearWallpaper"))
+                                    .foregroundColor(.red)
+                            }
+                        }
+                    } label: {
+                        Label(i18n.t("appearanceSection"), systemImage: "paintbrush")
                     }
                 }
 
