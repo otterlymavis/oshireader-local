@@ -758,7 +758,7 @@ final class OshiReaderTests: XCTestCase {
                 let data = url.contains("/youtubei/")
                     ? Data("{}".utf8)
                     : Data(#"""
-                    "videoId":"undated001"
+                    "videoId":"undatedvid1"
                     "videoRenderer":{"videoId":"freshvid002","publishedTimeText":{"simpleText":"2 days ago"}}
                     """#.utf8)
                 return (data, try XCTUnwrap(HTTPURLResponse(

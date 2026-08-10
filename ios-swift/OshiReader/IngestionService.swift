@@ -112,7 +112,6 @@ final class IngestionService {
         #"\\\\x22videoId\\\\x22:\\\\x22([A-Za-z0-9_-]{11})\\\\x22"#,
         #"/(?:watch\?v\\\\x3d|shorts/)([A-Za-z0-9_-]{11})"#
     ].compactMap { try? NSRegularExpression(pattern: $0) }
-    private static let escapedVideoIdFieldRegex = try? NSRegularExpression(pattern: #""videoId"\s*:\s*"([A-Za-z0-9_-]{11})""#)
     private static let youTubeUploadDateSearchParam = "CAI%3D"
 
     init(
@@ -1191,33 +1190,48 @@ final class IngestionService {
         return items
     }
 
-    /// Searches forward from a video ID for its `publishedTimeText`, but stops at the next
-    /// *different* video's `"videoId"` field. Without this boundary, a video with no date of
-    /// its own nearby (e.g. YouTube Shorts, which never carry publishedTimeText) would silently
-    /// borrow an unrelated neighboring video's date instead of being dropped as undated.
+    /// Searches around a video ID for its `publishedTimeText`, bounded by the nearest
+    /// *different* video's `"videoId"` field on either side. Without this boundary, a video
+    /// with no date of its own nearby (e.g. YouTube Shorts, which never carry publishedTimeText)
+    /// would silently borrow an unrelated neighboring video's date instead of being dropped as
+    /// undated.
     private func escapedYouTubeRelativeTime(for videoId: String, near nsRange: NSRange, in html: String) -> String? {
+        let lower = max(0, nsRange.location - 2_000)
         let upper = min((html as NSString).length, nsRange.location + nsRange.length + 4_000)
-        guard nsRange.location < upper,
-              let segmentRange = Range(NSRange(location: nsRange.location, length: upper - nsRange.location), in: html) else {
+        guard lower < upper,
+              let segmentRange = Range(NSRange(location: lower, length: upper - lower), in: html) else {
             return nil
         }
         let decoded = decodeJavaScriptEscapedString(String(html[segmentRange]))
-        let scoped = Self.textBeforeNextDifferentVideoId(decoded, videoId: videoId)
+        let scoped = Self.textAroundOwnVideoId(decoded, videoId: videoId)
         return firstRegexCapture(#""publishedTimeText"\s*:\s*\{\s*"simpleText"\s*:\s*"([^"]+)""#, in: scoped)
             ?? firstRegexCapture(#""publishedTimeText"\s*:\s*\{\s*"runs"\s*:\s*\[\s*\{\s*"text"\s*:\s*"([^"]+)""#, in: scoped)
     }
 
-    private static func textBeforeNextDifferentVideoId(_ decoded: String, videoId: String) -> String {
-        guard let regex = escapedVideoIdFieldRegex else { return decoded }
+    private static func textAroundOwnVideoId(_ decoded: String, videoId: String) -> String {
+        guard let regex = escapedYouTubeVideoIDRegexes.first else { return decoded }
         let matches = regex.matches(in: decoded, range: NSRange(decoded.startIndex..., in: decoded))
+        guard let ownMatch = matches.first(where: { match in
+            guard let idRange = Range(match.range(at: 1), in: decoded) else { return false }
+            return decoded[idRange] == videoId
+        }), let ownRange = Range(ownMatch.range, in: decoded) else {
+            return decoded
+        }
+
+        var lowerBound = decoded.startIndex
+        var upperBound = decoded.endIndex
         for match in matches {
             guard let idRange = Range(match.range(at: 1), in: decoded),
+                  decoded[idRange] != videoId,
                   let matchRange = Range(match.range, in: decoded) else { continue }
-            if decoded[idRange] != videoId {
-                return String(decoded[decoded.startIndex..<matchRange.lowerBound])
+            if matchRange.upperBound <= ownRange.lowerBound {
+                lowerBound = matchRange.upperBound
+            } else if matchRange.lowerBound >= ownRange.upperBound && matchRange.lowerBound < upperBound {
+                upperBound = matchRange.lowerBound
             }
         }
-        return decoded
+        guard lowerBound < upperBound else { return "" }
+        return String(decoded[lowerBound..<upperBound])
     }
 
     private func firstRegexCapture(_ pattern: String, in text: String) -> String? {
