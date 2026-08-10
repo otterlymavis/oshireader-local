@@ -1,0 +1,48 @@
+name: iOS Build & Test
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+concurrency:
+  group: ios-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve simulator destination
+        id: sim
+        run: |
+          NAME=$(xcrun simctl list devices available -j | jq -r '
+            [.devices[][] | select(.name | test("^iPhone")) | select(.isAvailable)] | .[0].name
+          ')
+          if [ -z "$NAME" ] || [ "$NAME" = "null" ]; then
+            echo "No available iPhone simulator found" >&2
+            xcrun simctl list devices available
+            exit 1
+          fi
+          echo "Using simulator: $NAME"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        run: >
+          xcodebuild build
+          -project ios-swift/OshiReader.xcodeproj
+          -scheme OshiReader
+          -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.name }}"
+          CODE_SIGNING_ALLOWED=NO
+
+      - name: Test
+        run: >
+          xcodebuild test
+          -project ios-swift/OshiReader.xcodeproj
+          -scheme OshiReader
+          -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.name }}"
+          CODE_SIGNING_ALLOWED=NO
