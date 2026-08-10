@@ -604,7 +604,8 @@ struct FeedView: View {
     }
 
     private var isFilteredEmptyState: Bool {
-        !db.feedItems.isEmpty && cachedFilteredItems.isEmpty
+        let unfiltered = Self.makeFilteredItems(db: db, keyword: nil, platform: nil, mediaFilter: "all", days: 30)
+        return !unfiltered.isEmpty && cachedFilteredItems.isEmpty
     }
 
     private func clearFeedFilters() {
@@ -612,7 +613,6 @@ struct FeedView: View {
         selectedPlatform = nil
         mediaFilter = "all"
         daysFilter = 30
-        rebuildFeedCache(resetDisplayedCount: true)
     }
 
     private func handleSelectedKeywordChange(_ keyword: String?) {

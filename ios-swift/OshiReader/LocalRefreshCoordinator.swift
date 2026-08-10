@@ -48,12 +48,7 @@ struct LocalRefreshResult: Equatable {
         completion == .completed && customRefreshCompleted
     }
 
-    var hasSourceFailures: Bool {
-        sourceStatuses.contains {
-            if case .failed = $0.outcome { return true }
-            return false
-        }
-    }
+    var hasSourceFailures: Bool { sourceStatuses.hasFailures }
 }
 
 /// Single owner for foreground and background local ingestion. A second

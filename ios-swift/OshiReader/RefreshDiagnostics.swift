@@ -147,14 +147,19 @@ final class RefreshDiagnostics: ObservableObject {
         if isRefreshing { return "Refreshing on device…" }
         guard let completed = lastCompletedAt else { return "Not refreshed yet" }
         let relative = Self.relativeRefreshTime(for: completed, relativeTo: Date())
-        if lastSucceeded == true {
-            return lastAddedCount > 0
-                ? "Updated \(relative) · \(lastAddedCount) new"
-                : "Checked \(relative) · feed is current"
+        guard lastSucceeded == true else {
+            return lastWasPartial
+                ? "Refresh incomplete \(relative) · showing cached items"
+                : "Refresh failed \(relative) · showing cached items"
         }
-        return lastWasPartial
-            ? "Refresh incomplete \(relative) · showing cached items"
-            : "Refresh failed \(relative) · showing cached items"
+        if lastWasPartial {
+            return lastAddedCount > 0
+                ? "Updated \(relative) · \(lastAddedCount) new · some sources failed"
+                : "Checked \(relative) · some sources failed"
+        }
+        return lastAddedCount > 0
+            ? "Updated \(relative) · \(lastAddedCount) new"
+            : "Checked \(relative) · feed is current"
     }
 
     var sourceSummaryText: String {
@@ -206,12 +211,7 @@ final class RefreshDiagnostics: ObservableObject {
         return summariesByID.values.sorted { $0.id < $1.id }
     }
 
-    var hasSourceFailures: Bool {
-        sourceStatuses.contains {
-            if case .failed = $0.outcome { return true }
-            return false
-        }
-    }
+    var hasSourceFailures: Bool { sourceStatuses.hasFailures }
 
     private func rebuildHealthSummaries(now: Date) {
         let cutoff = now.addingTimeInterval(-Self.healthHistoryRetention)

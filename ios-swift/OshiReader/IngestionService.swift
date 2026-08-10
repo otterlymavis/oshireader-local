@@ -37,6 +37,15 @@ struct SourceRefreshStatus: Identifiable, Equatable {
     var queryCount: Int
 }
 
+extension Sequence where Element == SourceRefreshStatus {
+    var hasFailures: Bool {
+        contains {
+            if case .failed = $0.outcome { return true }
+            return false
+        }
+    }
+}
+
 struct IngestionReport {
     let items: [FeedItem]
     let sourceStatuses: [SourceRefreshStatus]
