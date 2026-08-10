@@ -20,23 +20,31 @@ jobs:
       - name: Resolve simulator destination
         id: sim
         run: |
-          NAME=$(xcrun simctl list devices available -j | jq -r '
-            [.devices[][] | select(.name | test("^iPhone"))] | .[0].name
+          UDID=$(xcrun simctl list devices available -j | jq -r '
+            .devices
+            | to_entries
+            | map(select(.key | test("com\\.apple\\.CoreSimulator\\.SimRuntime\\.iOS")))
+            | map(. + {ver: (.key | capture("iOS-(?<maj>[0-9]+)-(?<min>[0-9]+)") | (.maj|tonumber)*100 + (.min|tonumber))})
+            | sort_by(.ver)
+            | reverse
+            | map(.value[] | select(.name | test("^iPhone")))
+            | flatten
+            | .[0].udid
           ')
-          if [ -z "$NAME" ] || [ "$NAME" = "null" ]; then
+          if [ -z "$UDID" ] || [ "$UDID" = "null" ]; then
             echo "No available iPhone simulator found" >&2
             xcrun simctl list devices available
             exit 1
           fi
-          echo "Using simulator: $NAME"
-          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "Using simulator UDID: $UDID"
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
 
       - name: Build
         run: >
           xcodebuild build
           -project ios-swift/OshiReader.xcodeproj
           -scheme OshiReader
-          -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.name }},OS=latest"
+          -destination "platform=iOS Simulator,id=${{ steps.sim.outputs.udid }}"
           CODE_SIGNING_ALLOWED=NO
 
       - name: Test
@@ -44,5 +52,5 @@ jobs:
           xcodebuild test
           -project ios-swift/OshiReader.xcodeproj
           -scheme "OshiReader Unit Tests"
-          -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.name }},OS=latest"
+          -destination "platform=iOS Simulator,id=${{ steps.sim.outputs.udid }}"
           CODE_SIGNING_ALLOWED=NO
