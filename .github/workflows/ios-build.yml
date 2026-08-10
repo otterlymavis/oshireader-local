@@ -28,7 +28,6 @@ jobs:
             | sort_by(.ver)
             | reverse
             | map(.value[] | select(.name | test("^iPhone")))
-            | flatten
             | .[0].udid
           ')
           if [ -z "$UDID" ] || [ "$UDID" = "null" ]; then
