@@ -21,7 +21,7 @@ jobs:
         id: sim
         run: |
           NAME=$(xcrun simctl list devices available -j | jq -r '
-            [.devices[][] | select(.name | test("^iPhone")) | select(.isAvailable)] | .[0].name
+            [.devices[][] | select(.name | test("^iPhone"))] | .[0].name
           ')
           if [ -z "$NAME" ] || [ "$NAME" = "null" ]; then
             echo "No available iPhone simulator found" >&2
@@ -36,14 +36,13 @@ jobs:
           xcodebuild build
           -project ios-swift/OshiReader.xcodeproj
           -scheme OshiReader
-          -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.name }}"
+          -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.name }},OS=latest"
           CODE_SIGNING_ALLOWED=NO
 
       - name: Test
         run: >
           xcodebuild test
           -project ios-swift/OshiReader.xcodeproj
-          -scheme OshiReader
-          -only-testing:OshiReaderTests
-          -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.name }}"
+          -scheme "OshiReader Unit Tests"
+          -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.name }},OS=latest"
           CODE_SIGNING_ALLOWED=NO

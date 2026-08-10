@@ -78,6 +78,14 @@ schemes:
       config: Debug
     archive:
       config: Release
+  OshiReader Unit Tests:
+    build:
+      targets:
+        OshiReader: [test]
+    test:
+      targets:
+        - OshiReaderTests
+      config: Debug
   OshiReader Local:
     build:
       targets:
