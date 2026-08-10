@@ -112,6 +112,7 @@ final class IngestionService {
         #"\\\\x22videoId\\\\x22:\\\\x22([A-Za-z0-9_-]{11})\\\\x22"#,
         #"/(?:watch\?v\\\\x3d|shorts/)([A-Za-z0-9_-]{11})"#
     ].compactMap { try? NSRegularExpression(pattern: $0) }
+    private static let escapedVideoIdFieldRegex = try? NSRegularExpression(pattern: #""videoId"\s*:\s*"([A-Za-z0-9_-]{11})""#)
     private static let youTubeUploadDateSearchParam = "CAI%3D"
 
     init(
@@ -1060,9 +1061,7 @@ final class IngestionService {
         var items = [FeedItem]()
         var seenIds = Set<String>()
         var videoRenderers = [[String: Any]]()
-        var shortsRenderers = [[String: Any]]()
         collectDictionaries(named: "videoWithContextRenderer", in: json, into: &videoRenderers)
-        collectDictionaries(named: "shortsLockupViewModel", in: json, into: &shortsRenderers)
 
         for renderer in videoRenderers {
             guard let videoId = renderer["videoId"] as? String, seenIds.insert(videoId).inserted else { continue }
@@ -1079,29 +1078,6 @@ final class IngestionService {
                 content_text: nil,
                 author: firstText(in: renderer["shortBylineText"]),
                 thumbnail_url: firstThumbnailURL(in: renderer["thumbnail"]),
-                media_type: "video",
-                published_at: isoString(published),
-                watch_term_keyword: keyword,
-                fetched_at: nowISO(),
-                source: "youtube_scrape"
-            ))
-        }
-
-        for renderer in shortsRenderers {
-            let videoId = nestedString(renderer, ["onTap", "innertubeCommand", "reelWatchEndpoint", "videoId"])
-                ?? (renderer["entityId"] as? String)?.split(separator: "-").last.map(String.init)
-            guard let videoId, seenIds.insert(videoId).inserted else { continue }
-            let secondary = nestedString(renderer, ["belowThumbnailMetadata", "secondaryText", "content"]) ?? ""
-            guard let published = youtubeRelativeDate(secondary) else { continue }
-            if published < cutoff { continue }
-            items.append(FeedItem(
-                id: "youtube:\(videoId)",
-                platform: "youtube",
-                url: "https://www.youtube.com/shorts/\(videoId)",
-                title: nestedString(renderer, ["overlayMetadata", "primaryText", "content"]) ?? (renderer["accessibilityText"] as? String),
-                content_text: nil,
-                author: nestedString(renderer, ["belowThumbnailMetadata", "primaryText", "content"]),
-                thumbnail_url: firstThumbnailURL(in: nestedValue(renderer, ["onTap", "innertubeCommand", "reelWatchEndpoint", "thumbnail"])),
                 media_type: "video",
                 published_at: isoString(published),
                 watch_term_keyword: keyword,
@@ -1190,7 +1166,7 @@ final class IngestionService {
                 guard let range = Range(match.range(at: 1), in: html) else { continue }
                 let videoId = String(html[range])
                 guard !seen.contains(videoId) else { continue }
-                let relText = escapedYouTubeRelativeTime(near: match.range(at: 1), in: html)
+                let relText = escapedYouTubeRelativeTime(for: videoId, near: match.range(at: 1), in: html)
                 guard let published = relText.flatMap(youtubeRelativeDate),
                       published >= cutoff else { continue }
                 seen.insert(videoId)
@@ -1215,16 +1191,33 @@ final class IngestionService {
         return items
     }
 
-    private func escapedYouTubeRelativeTime(near nsRange: NSRange, in html: String) -> String? {
-        let lower = max(0, nsRange.location - 2_000)
+    /// Searches forward from a video ID for its `publishedTimeText`, but stops at the next
+    /// *different* video's `"videoId"` field. Without this boundary, a video with no date of
+    /// its own nearby (e.g. YouTube Shorts, which never carry publishedTimeText) would silently
+    /// borrow an unrelated neighboring video's date instead of being dropped as undated.
+    private func escapedYouTubeRelativeTime(for videoId: String, near nsRange: NSRange, in html: String) -> String? {
         let upper = min((html as NSString).length, nsRange.location + nsRange.length + 4_000)
-        guard lower < upper,
-              let segmentRange = Range(NSRange(location: lower, length: upper - lower), in: html) else {
+        guard nsRange.location < upper,
+              let segmentRange = Range(NSRange(location: nsRange.location, length: upper - nsRange.location), in: html) else {
             return nil
         }
         let decoded = decodeJavaScriptEscapedString(String(html[segmentRange]))
-        return firstRegexCapture(#""publishedTimeText"\s*:\s*\{\s*"simpleText"\s*:\s*"([^"]+)""#, in: decoded)
-            ?? firstRegexCapture(#""publishedTimeText"\s*:\s*\{\s*"runs"\s*:\s*\[\s*\{\s*"text"\s*:\s*"([^"]+)""#, in: decoded)
+        let scoped = Self.textBeforeNextDifferentVideoId(decoded, videoId: videoId)
+        return firstRegexCapture(#""publishedTimeText"\s*:\s*\{\s*"simpleText"\s*:\s*"([^"]+)""#, in: scoped)
+            ?? firstRegexCapture(#""publishedTimeText"\s*:\s*\{\s*"runs"\s*:\s*\[\s*\{\s*"text"\s*:\s*"([^"]+)""#, in: scoped)
+    }
+
+    private static func textBeforeNextDifferentVideoId(_ decoded: String, videoId: String) -> String {
+        guard let regex = escapedVideoIdFieldRegex else { return decoded }
+        let matches = regex.matches(in: decoded, range: NSRange(decoded.startIndex..., in: decoded))
+        for match in matches {
+            guard let idRange = Range(match.range(at: 1), in: decoded),
+                  let matchRange = Range(match.range, in: decoded) else { continue }
+            if decoded[idRange] != videoId {
+                return String(decoded[decoded.startIndex..<matchRange.lowerBound])
+            }
+        }
+        return decoded
     }
 
     private func firstRegexCapture(_ pattern: String, in text: String) -> String? {

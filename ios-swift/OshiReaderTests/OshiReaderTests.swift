@@ -746,6 +746,36 @@ final class OshiReaderTests: XCTestCase {
         XCTAssertEqual(report.items.map(\.id), ["youtube:freshdupe01"])
     }
 
+    func testYouTubeEscapedFallbackDoesNotBorrowNeighboringVideosDate() async throws {
+        // Shorts never carry their own publishedTimeText in scrape HTML. Regression
+        // coverage for a bug where an undated video preceding a dated one picked up
+        // the *next* video's date instead of being dropped as undated.
+        let capture = RequestCapture()
+        let service = IngestionService(
+            requestExecutor: { request in
+                let url = request.url?.absoluteString ?? ""
+                await capture.record(url)
+                let data = url.contains("/youtubei/")
+                    ? Data("{}".utf8)
+                    : Data(#"""
+                    "videoId":"undated001"
+                    "videoRenderer":{"videoId":"freshvid002","publishedTimeText":{"simpleText":"2 days ago"}}
+                    """#.utf8)
+                return (data, try XCTUnwrap(HTTPURLResponse(
+                    url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                )))
+            },
+            retrySleeper: { _ in }
+        )
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "Fallback Oshi"),
+            platforms: ["youtube"]
+        )
+
+        XCTAssertEqual(report.items.map(\.id), ["youtube:freshvid002"])
+    }
+
     func testDedicatedRSSFallsBackToGoogleNewsWhenPublisherFeedIsBlocked() async {
         let googleNewsRSS = Data("""
         <rss version="2.0"><channel><item>
