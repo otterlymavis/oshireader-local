@@ -169,6 +169,24 @@ class I18nManager: ObservableObject {
             "zh-TW": "在「設定」中新增關鍵字以開始獲取結果。",
             "zh-CN": "在「设置」中添加关键字以开始获取结果。"
         ],
+        "feedFilteredEmpty": [
+            "en": "No Results Match Filters",
+            "ja": "条件に一致する結果がありません",
+            "zh-TW": "沒有符合篩選條件的結果",
+            "zh-CN": "没有符合筛选条件的结果"
+        ],
+        "feedFilteredEmptyBody": [
+            "en": "Stored results exist, but the current keyword, source, media, or time filter is hiding them.",
+            "ja": "保存済みの結果はありますが、現在のキーワード、ソース、メディア、期間フィルターで非表示になっています。",
+            "zh-TW": "已有儲存結果，但目前的關鍵字、來源、媒體或時間篩選將其隱藏。",
+            "zh-CN": "已有保存结果，但当前的关键字、来源、媒体或时间筛选将其隐藏。"
+        ],
+        "clearFilters": [
+            "en": "Clear Filters",
+            "ja": "フィルターを解除",
+            "zh-TW": "清除篩選",
+            "zh-CN": "清除筛选"
+        ],
         "sourceStatusTitle": [
             "en": "Source Status",
             "ja": "ソースの状態",

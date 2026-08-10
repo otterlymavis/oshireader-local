@@ -45,7 +45,11 @@ struct LocalRefreshResult: Equatable {
     let customRefreshCompleted: Bool
 
     var succeeded: Bool {
-        completion == .completed && customRefreshCompleted && !sourceStatuses.contains {
+        completion == .completed && customRefreshCompleted
+    }
+
+    var hasSourceFailures: Bool {
+        sourceStatuses.contains {
             if case .failed = $0.outcome { return true }
             return false
         }
@@ -102,7 +106,7 @@ final class LocalRefreshCoordinator: ObservableObject {
                 RefreshDiagnostics.shared.finish(
                     succeeded: result.succeeded,
                     addedCount: result.addedCount,
-                    partial: result.completion != .completed || !result.customRefreshCompleted
+                    partial: result.completion != .completed || !result.customRefreshCompleted || result.hasSourceFailures
                 )
             }
             self.isRefreshing = false
@@ -166,17 +170,19 @@ final class LocalRefreshCoordinator: ObservableObject {
         )
         var addedCount = reports.addedCount
         var customCompleted = true
-        if refreshesCustomURLs, !Task.isCancelled, isCurrent(generation: generation, profileID: profileID) {
-            let custom = await refreshCustomURLs(
-                db: db,
-                sourceRevision: sourceRevision,
-                generation: generation,
-                profileID: profileID
-            )
-            customCompleted = custom.completed
-            addedCount += custom.addedCount
-        } else {
-            customCompleted = false
+        if refreshesCustomURLs {
+            if !Task.isCancelled, isCurrent(generation: generation, profileID: profileID) {
+                let custom = await refreshCustomURLs(
+                    db: db,
+                    sourceRevision: sourceRevision,
+                    generation: generation,
+                    profileID: profileID
+                )
+                customCompleted = custom.completed
+                addedCount += custom.addedCount
+            } else {
+                customCompleted = false
+            }
         }
 
         guard isCurrent(generation: generation, profileID: profileID) else {

@@ -948,7 +948,7 @@ final class IngestionService {
                 let channel = ((vr["ownerText"] as? [String: Any])?["runs"] as? [[String: Any]])?.first?["text"] as? String
                 let desc = ((((vr["detailedMetadataSnippets"] as? [[String: Any]])?.first?["snippetText"] as? [String: Any])?["runs"] as? [[String: Any]])?.first?["text"]) as? String
                 let thumb = ((vr["thumbnail"] as? [String: Any])?["thumbnails"] as? [[String: Any]])?.first?["url"] as? String
-                let relText = (vr["publishedTimeText"] as? [String: Any])?["simpleText"] as? String ?? ""
+                let relText = firstText(in: vr["publishedTimeText"]) ?? ""
                 guard let published = youtubeRelativeDate(relText) else { continue }
                 if published < cutoff { continue }
                 items.append(FeedItem(

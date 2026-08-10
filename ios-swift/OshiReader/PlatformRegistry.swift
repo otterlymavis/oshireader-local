@@ -91,7 +91,7 @@ enum PlatformRegistry {
         [
             "youtube", "niconico", "tver", "note",
             "girlschannel", "5ch", "news",
-            "yahoonews", "mdpr", "oricon", "twitter", "custom"
+            "yahoonews", "mdpr", "oricon", "custom"
         ]
     }
 

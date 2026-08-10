@@ -220,6 +220,7 @@ final class OshiReaderTests: XCTestCase {
         XCTAssertNil(PlatformRegistry.definition(for: "twitter")?.googleNewsSite)
         XCTAssertEqual(PlatformRegistry.definition(for: "custom")?.googleNewsSite, nil)
         XCTAssertEqual(PlatformRegistry.defaultSubscribedIDs.last, "custom")
+        XCTAssertFalse(PlatformRegistry.defaultSubscribedIDs.contains("twitter"))
         XCTAssertFalse(PlatformRegistry.defaultSubscribedIDs.contains("soompi"))
     }
 
@@ -534,6 +535,54 @@ final class OshiReaderTests: XCTestCase {
         let firstURL = await capture.firstURL()
         XCTAssertEqual(firstURL, "https://www.youtube.com/youtubei/v1/search?prettyPrint=false")
         XCTAssertEqual(report.items.map(\.id), ["youtube:freshfresh1"])
+    }
+
+    func testYouTubeScrapeAcceptsPublishedTimeRunsText() async throws {
+        let html = Data("""
+        <html><script>
+        var ytInitialData = {
+          "contents": {
+            "twoColumnSearchResultsRenderer": {
+              "primaryContents": {
+                "sectionListRenderer": {
+                  "contents": [
+                    {
+                      "itemSectionRenderer": {
+                        "contents": [
+                          {
+                            "videoRenderer": {
+                              "videoId": "runsdate001",
+                              "title": { "runs": [{ "text": "Runs Date Oshi result" }] },
+                              "publishedTimeText": { "runs": [{ "text": "2 days ago" }] }
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        };
+        </script></html>
+        """.utf8)
+        let service = IngestionService(
+            requestExecutor: { request in
+                let data = request.httpMethod == "POST" ? Data("{}".utf8) : html
+                return (data, try XCTUnwrap(HTTPURLResponse(
+                    url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                )))
+            },
+            retrySleeper: { _ in }
+        )
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "Runs Date Oshi"),
+            platforms: ["youtube"]
+        )
+
+        XCTAssertEqual(report.items.map(\.id), ["youtube:runsdate001"])
     }
 
     func testYouTubeStructuredRenderersSkipMissingPublishedTime() async throws {
@@ -2148,6 +2197,20 @@ final class OshiReaderTests: XCTestCase {
         XCTAssertFalse(result.succeeded)
     }
 
+    func testRefreshResultKeepsSourceFailurePartialNotFailed() {
+        let result = LocalRefreshResult(
+            completion: .completed,
+            addedCount: 0,
+            sourceStatuses: [
+                SourceRefreshStatus(id: "twitter", outcome: .failed(.missingCredential), itemCount: 0, queryCount: 1)
+            ],
+            customRefreshCompleted: true
+        )
+
+        XCTAssertTrue(result.succeeded)
+        XCTAssertTrue(result.hasSourceFailures)
+    }
+
     @MainActor
     func testRefreshDiagnosticsUsesInjectedDefaultsForLifecycleMetadata() {
         let suiteName = "OshiReaderTests.lifecycle.\(UUID().uuidString)"
@@ -2161,6 +2224,8 @@ final class OshiReaderTests: XCTestCase {
         XCTAssertGreaterThan(defaults.double(forKey: "refresh_diagnostics.last_started_at"), 0)
         XCTAssertGreaterThan(defaults.double(forKey: "refresh_diagnostics.last_completed_at"), 0)
         XCTAssertFalse(defaults.bool(forKey: "refresh_diagnostics.last_succeeded"))
+        XCTAssertFalse(diagnostics.statusText.contains("0 sec"))
+        XCTAssertTrue(diagnostics.statusText.contains("just now"))
     }
 
     @MainActor

@@ -516,6 +516,9 @@ struct FeedView: View {
         if mediaFilter == "media_only" {
             PillView(text: "📹 " + i18n.t("mediaOnly"), theme: theme)
         }
+        if daysFilter != 30, let range = timeRanges.first(where: { $0.days == daysFilter }) {
+            PillView(text: i18n.t(range.label), theme: theme)
+        }
     }
 
     private var feedLoadingState: some View {
@@ -528,19 +531,34 @@ struct FeedView: View {
     }
 
     private var emptyFeedState: some View {
-        Group {
+        VStack(spacing: 0) {
             Spacer()
             VStack(spacing: 12) {
                 Text("≽՞•ﻌ•՞≼")
                     .font(.system(size: 40))
-                Text(i18n.t("feedEmpty"))
+                Text(isFilteredEmptyState ? i18n.t("feedFilteredEmpty") : i18n.t("feedEmpty"))
                     .font(.headline)
                     .foregroundColor(theme.colors.primary)
-                Text(i18n.t("feedEmptyBody"))
+                Text(isFilteredEmptyState ? i18n.t("feedFilteredEmptyBody") : i18n.t("feedEmptyBody"))
                     .font(.subheadline)
                     .foregroundColor(theme.colors.textMuted)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 32)
+                if isFilteredEmptyState {
+                    Button {
+                        clearFeedFilters()
+                    } label: {
+                        Text(i18n.t("clearFilters"))
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundColor(theme.colors.primary)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 8)
+                            .background(theme.colors.primaryBg)
+                            .cornerRadius(8)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("feed.clearFiltersButton")
+                }
             }
             Spacer()
         }
@@ -581,7 +599,20 @@ struct FeedView: View {
         if selectedKeyword != nil { count += 1 }
         if selectedPlatform != nil { count += 1 }
         if mediaFilter == "media_only" { count += 1 }
+        if daysFilter != 30 { count += 1 }
         return count
+    }
+
+    private var isFilteredEmptyState: Bool {
+        !db.feedItems.isEmpty && cachedFilteredItems.isEmpty
+    }
+
+    private func clearFeedFilters() {
+        selectedKeyword = nil
+        selectedPlatform = nil
+        mediaFilter = "all"
+        daysFilter = 30
+        rebuildFeedCache(resetDisplayedCount: true)
     }
 
     private func handleSelectedKeywordChange(_ keyword: String?) {

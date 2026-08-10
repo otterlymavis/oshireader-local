@@ -14,6 +14,6 @@
     <!-- Set to "upload" to push straight to App Store Connect, or "export" to
          just produce a .ipa you upload via Transporter / Xcode Organizer. -->
     <key>destination</key>
-    <string>export</string>
+    <string>upload</string>
 </dict>
 </plist>

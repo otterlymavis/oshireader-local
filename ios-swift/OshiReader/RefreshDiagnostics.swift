@@ -146,9 +146,7 @@ final class RefreshDiagnostics: ObservableObject {
     var statusText: String {
         if isRefreshing { return "Refreshing on device…" }
         guard let completed = lastCompletedAt else { return "Not refreshed yet" }
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .short
-        let relative = formatter.localizedString(for: completed, relativeTo: Date())
+        let relative = Self.relativeRefreshTime(for: completed, relativeTo: Date())
         if lastSucceeded == true {
             return lastAddedCount > 0
                 ? "Updated \(relative) · \(lastAddedCount) new"
@@ -242,6 +240,13 @@ final class RefreshDiagnostics: ObservableObject {
             )
         }
         persistHealthRecords()
+    }
+
+    private static func relativeRefreshTime(for date: Date, relativeTo now: Date) -> String {
+        guard abs(now.timeIntervalSince(date)) >= 5 else { return "just now" }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .short
+        return formatter.localizedString(for: date, relativeTo: now)
     }
 
     private func persistHealthRecords() {
