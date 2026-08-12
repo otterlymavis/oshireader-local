@@ -26,6 +26,7 @@ enum SourceRefreshFailure: String, Codable, Equatable, CaseIterable, Error {
 
 enum SourceRefreshOutcome: Equatable {
     case received
+    case stale
     case noResults
     case failed(SourceRefreshFailure)
 }
@@ -40,8 +41,10 @@ struct SourceRefreshStatus: Identifiable, Equatable {
 extension Sequence where Element == SourceRefreshStatus {
     var hasFailures: Bool {
         contains {
-            if case .failed = $0.outcome { return true }
-            return false
+            switch $0.outcome {
+            case .stale, .failed: return true
+            case .received, .noResults: return false
+            }
         }
     }
 }
@@ -76,12 +79,16 @@ private actor SourceFailureRecorder {
 /// `ingest(term:platforms:)` fans them out for a single watch term and returns
 /// flat `FeedItem`s ready for `LocalDB.mergeItems`.
 final class IngestionService {
-    static let shared = IngestionService()
+    static let freshnessWindow: TimeInterval = 10 * 24 * 60 * 60
+    static let googleNewsLookbackDays = 10
+    static let shared = IngestionService(classifyFreshness: true)
     typealias RequestExecutor = @Sendable (URLRequest) async throws -> (Data, URLResponse)
     typealias RetrySleeper = @Sendable (UInt64) async -> Void
 
     private let requestExecutor: RequestExecutor
     private let retrySleeper: RetrySleeper
+    private let classifyFreshness: Bool
+    private let now: @Sendable () -> Date
     private static let maximumTransportAttempts = 2
     private static let retryDelayNanoseconds: UInt64 = 100_000_000
     private static let outputISO8601: ISO8601DateFormatter = {
@@ -121,10 +128,14 @@ final class IngestionService {
         },
         retrySleeper: @escaping RetrySleeper = { nanoseconds in
             try? await Task.sleep(nanoseconds: nanoseconds)
-        }
+        },
+        classifyFreshness: Bool = false,
+        now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.requestExecutor = requestExecutor
         self.retrySleeper = retrySleeper
+        self.classifyFreshness = classifyFreshness
+        self.now = now
     }
 
     @TaskLocal private static var sourceFailureRecorder: SourceFailureRecorder?
@@ -234,7 +245,7 @@ final class IngestionService {
             add("news")        { await self.fetchCuratedNews(keyword: $0, mediaOnly: mediaOnly) }
             add("5ch")         { await self.fetchGoogleNews(keyword: $0, query: "\($0) site:5ch.net", platform: "5ch", mediaType: "text", mediaOnly: mediaOnly) }
             add("girlschannel") { await self.fetchGoogleNews(keyword: $0, query: "\($0) site:girlschannel.net", platform: "girlschannel", mediaType: "text", mediaOnly: mediaOnly) }
-            add("mdpr")        { await self.fetchGoogleNews(keyword: $0, query: "\($0) site:mdpr.jp", platform: "mdpr", mediaType: "article", mediaOnly: mediaOnly, titlePatterns: [#"\s*[-|]\s*モデルプレス\s*$"#]) }
+            add("mdpr")        { await self.fetchModelPress(keyword: $0, mediaOnly: mediaOnly) }
             add("oricon")      { await self.fetchGoogleNews(keyword: $0, query: "\($0) site:oricon.co.jp", platform: "oricon", mediaType: "article", mediaOnly: mediaOnly, author: "ORICON NEWS", limit: 20, titlePatterns: [#"\s*[-|]\s*(ORICON NEWS|オリコンニュース|オリコン)\s*$"#]) }
             add("yahoonews")   { await self.fetchYahooNews(keyword: $0, mediaOnly: mediaOnly) }
             add("niconico")    { await self.fetchNiconico(keyword: $0) }
@@ -276,23 +287,34 @@ final class IngestionService {
             }
 
             var all = [FeedItem]()
-            var counts: [String: (items: Int, queries: Int)] = [:]
+            var counts: [String: (items: Int, queries: Int, newestPublishedAt: Date?)] = [:]
             var seenItemIDsBySource: [String: Set<String>] = [:]
             for await (sourceID, items) in group {
                 var seenItemIDs = seenItemIDsBySource[sourceID] ?? []
                 let uniqueItems = items.filter { seenItemIDs.insert($0.id).inserted }
                 seenItemIDsBySource[sourceID] = seenItemIDs
                 all.append(contentsOf: uniqueItems)
-                let current = counts[sourceID] ?? (items: 0, queries: 0)
-                counts[sourceID] = (current.items + uniqueItems.count, current.queries + 1)
+                let batchNewest = uniqueItems.compactMap { parseISO8601Date($0.published_at) }.max()
+                let current = counts[sourceID] ?? (items: 0, queries: 0, newestPublishedAt: nil)
+                let newestPublishedAt = [current.newestPublishedAt, batchNewest].compactMap { $0 }.max()
+                counts[sourceID] = (
+                    current.items + uniqueItems.count,
+                    current.queries + 1,
+                    newestPublishedAt
+                )
             }
             var statuses = [SourceRefreshStatus]()
             for sourceID in counts.keys.sorted() {
-                let count = counts[sourceID] ?? (items: 0, queries: 0)
+                let count = counts[sourceID] ?? (items: 0, queries: 0, newestPublishedAt: nil)
+                let failure = await recorder.failure(for: sourceID)
                 let outcome: SourceRefreshOutcome
-                if count.items > 0 {
+                if classifyFreshness,
+                   count.items > 0,
+                   (count.newestPublishedAt ?? .distantPast) < now().addingTimeInterval(-Self.freshnessWindow) {
+                    outcome = failure.map(SourceRefreshOutcome.failed) ?? .stale
+                } else if count.items > 0 {
                     outcome = .received
-                } else if let failure = await recorder.failure(for: sourceID) {
+                } else if let failure {
                     outcome = .failed(failure)
                 } else {
                     outcome = .noResults
@@ -552,6 +574,90 @@ final class IngestionService {
 
     // MARK: - Google News site-filtered RSS (5ch, girlschannel, mdpr, oricon, yahoonews, niconico fallback)
 
+    private func fetchModelPress(keyword: String, mediaOnly: Bool) async -> [FeedItem] {
+        if mediaOnly { return [] }
+        var items = [FeedItem]()
+        var seen = Set<String>()
+        for page in 1...2 {
+            guard let result = await fetchModelPressSearchPage(keyword: keyword, page: page) else {
+                break
+            }
+            for item in result.items where items.count < 25 && seen.insert(item.id).inserted {
+                items.append(item)
+            }
+            if items.count >= 25 || !result.hasNextPage { break }
+        }
+        if !items.isEmpty { return sortedByPublishedDate(items) }
+        return await fetchGoogleNews(
+            keyword: keyword,
+            query: "\(keyword) site:mdpr.jp",
+            platform: "mdpr",
+            mediaType: "article",
+            mediaOnly: false,
+            titlePatterns: [#"\s*[-|]\s*モデルプレス\s*$"#]
+        )
+    }
+
+    private func fetchModelPressSearchPage(
+        keyword: String,
+        page: Int
+    ) async -> (items: [FeedItem], hasNextPage: Bool)? {
+        var components = URLComponents(string: "https://mdpr.jp/search")!
+        components.queryItems = [
+            URLQueryItem(name: "keyword", value: keyword),
+            URLQueryItem(name: "type", value: "article"),
+            URLQueryItem(name: "page", value: String(page)),
+        ]
+        guard let url = components.url,
+              case .success(let data, _) = await httpGET(
+                url,
+                headers: ["User-Agent": browserUA, "Accept-Language": "ja,en;q=0.9"]
+              ),
+              let html = String(data: data, encoding: .utf8),
+              let itemRegex = Self.generalRegex(for: #"<li class="p-articleListItem">([\s\S]*?)</li>"#) else {
+            return nil
+        }
+
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "Asia/Tokyo")
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+
+        var items = [FeedItem]()
+        for match in itemRegex.matches(in: html, range: NSRange(html.startIndex..., in: html)) {
+            guard let blockRange = Range(match.range(at: 1), in: html) else { continue }
+            let block = String(html[blockRange])
+            guard let path = regexGroups(block, #"<a href="([^"]+)" class="p-articleListItem__link">"#)?.first,
+                  let rawTitle = regexGroups(block, #"<p class="p-articleListItem__title"><span>([\s\S]*?)</span>"#)?.first,
+                  let rawDate = regexGroups(block, #"<time datetime="([^"]+)""#)?.first,
+                  let publishedDate = formatter.date(from: rawDate),
+                  let articleURL = URL(string: path, relativeTo: URL(string: "https://mdpr.jp"))?.absoluteURL else {
+                continue
+            }
+            guard let title = cleanDisplayText(rawTitle),
+                  matchesKeyword(title: title, desc: "", kw: keyword) else { continue }
+            let thumbnail = regexGroups(block, #"<img[^>]+src="([^"]+)""#)?.first
+                .flatMap { cleanDisplayText($0) }
+            let absoluteURL = articleURL.absoluteString
+            items.append(FeedItem(
+                id: "mdpr:\(stableId(absoluteURL))",
+                platform: "mdpr",
+                url: absoluteURL,
+                title: title,
+                content_text: nil,
+                author: "ModelPress",
+                thumbnail_url: thumbnail,
+                media_type: "article",
+                published_at: isoString(publishedDate),
+                watch_term_keyword: keyword,
+                fetched_at: nowISO(),
+                source: "modelpress_search"
+            ))
+        }
+        let nextPageToken = "page=\(page + 1)"
+        return (items, html.contains(nextPageToken))
+    }
+
     private func fetchGoogleNews(
         keyword: String,
         query: String,
@@ -564,24 +670,71 @@ final class IngestionService {
         locale: PlatformDefinition.NewsLocale = .japan
     ) async -> [FeedItem] {
         if mediaOnly { return [] }
-        guard let url = googleNewsURL(query, locale: locale) else { return [] }
+        var recentItems = [FeedItem]()
+        if classifyFreshness,
+           let recentURL = googleNewsURL(query, locale: locale, recentDays: Self.googleNewsLookbackDays),
+           let recentEntries = await fetchGoogleNewsEntries(recentURL, locale: locale) {
+            recentItems = makeGoogleNewsItems(
+                entries: recentEntries,
+                keyword: keyword,
+                platform: platform,
+                mediaType: mediaType,
+                author: author,
+                limit: limit,
+                titlePatterns: titlePatterns
+            )
+        }
+        if recentItems.count >= limit { return recentItems }
+
+        guard let url = googleNewsURL(query, locale: locale),
+              let entries = await fetchGoogleNewsEntries(url, locale: locale) else { return recentItems }
+        let historicalItems = makeGoogleNewsItems(
+            entries: entries,
+            keyword: keyword,
+            platform: platform,
+            mediaType: mediaType,
+            author: author,
+            limit: limit,
+            titlePatterns: titlePatterns
+        )
+        var seen = Set<String>()
+        return (recentItems + historicalItems)
+            .filter { seen.insert($0.id).inserted }
+            .prefix(limit)
+            .map { $0 }
+    }
+
+    private func fetchGoogleNewsEntries(
+        _ url: URL,
+        locale: PlatformDefinition.NewsLocale
+    ) async -> [RssItem]? {
         // Many sources funnel through news.google.com; throttle so we don't get
         // rate-limited (which previously made sources like 5ch return nothing).
-        guard await Self.googleNewsLimiter.acquire() else { return [] }
+        guard await Self.googleNewsLimiter.acquire() else { return nil }
         guard !Task.isCancelled else {
             await Self.googleNewsLimiter.release()
-            return []
+            return nil
         }
-        let entries: [RssItem]
+        let entries: [RssItem]?
         switch await parseRSS(url, headers: ["Accept-Language": locale.acceptLanguage]) {
         case .success(let value):
             entries = value
         case .failure:
-            await Self.googleNewsLimiter.release()
-            return []
+            entries = nil
         }
         await Self.googleNewsLimiter.release()
+        return entries
+    }
 
+    private func makeGoogleNewsItems(
+        entries: [RssItem],
+        keyword: String,
+        platform: String,
+        mediaType: String,
+        author: String?,
+        limit: Int,
+        titlePatterns: [String]
+    ) -> [FeedItem] {
         var seen = Set<String>()
         var items = [FeedItem]()
         for entry in entries {
@@ -640,8 +793,10 @@ final class IngestionService {
                 if let rows = json["data"] as? [[String: Any]], !rows.isEmpty {
                     var items = [FeedItem]()
                     for raw in rows {
-                        guard let contentId = raw["contentId"] as? String else { continue }
-                        let published = (raw["startTime"] as? String).flatMap(parseISO8601Date).map(isoString) ?? nowISO()
+                        guard let contentId = raw["contentId"] as? String,
+                              let published = (raw["startTime"] as? String).flatMap(parseISO8601Date).map(isoString) else {
+                            continue
+                        }
                         // userId/channelId may be a number, a string, or JSON null — stringify
                         // only real values so we never emit "<null>".
                         let author = [raw["userId"], raw["channelId"]]
@@ -782,7 +937,8 @@ final class IngestionService {
             let epId = (content["id"] as? String) ?? (content["seriesId"] as? String) ?? (ep["id"] as? String)
             guard let epId, !epId.isEmpty else { continue }
             let title = (content["title"] as? String) ?? (content["episodeTitle"] as? String) ?? (content["seriesTitle"] as? String)
-            guard let title, !title.isEmpty else { continue }
+            guard let title, !title.isEmpty,
+                  let publishedAt = tverDate(content) else { continue }
 
             let type = ((ep["type"] as? String) ?? (content["type"] as? String) ?? "").lowercased()
             let url: String
@@ -804,7 +960,7 @@ final class IngestionService {
                 author: (content["broadcasterName"] as? String) ?? (content["productionProviderName"] as? String),
                 thumbnail_url: thumb,
                 media_type: "video",
-                published_at: tverDate(content) ?? nowISO(),
+                published_at: publishedAt,
                 watch_term_keyword: keyword,
                 fetched_at: nowISO(),
                 source: "tver_api"
@@ -834,7 +990,7 @@ final class IngestionService {
     private func parseBroadcastLabel(_ label: String) -> Date? {
         var cal = Calendar(identifier: .gregorian)
         cal.timeZone = TimeZone(identifier: "UTC")!
-        let now = Date()
+        let currentDate = now()
 
         // Year only: "2021年放送" → mid-year placeholder.
         if let g = regexGroups(label, #"^(\d{4})年"#), let year = Int(g[0]) {
@@ -846,12 +1002,12 @@ final class IngestionService {
             if let t = regexGroups(label, #"(\d+):(\d+)"#), let h = Int(t[0]), let m = Int(t[1]) {
                 hour = h; minute = m
             }
-            let year = cal.component(.year, from: now)
+            let year = cal.component(.year, from: currentDate)
             var comps = DateComponents(year: year, month: month, day: day, hour: hour, minute: minute)
             guard var dt = cal.date(from: comps) else { return nil }
             // No year in the label — if the date lands more than a week in the
             // future, it must be from last year.
-            if dt > now.addingTimeInterval(7 * 86400) {
+            if dt > currentDate.addingTimeInterval(7 * 86400) {
                 comps.year = year - 1
                 dt = cal.date(from: comps) ?? dt
             }
@@ -920,7 +1076,7 @@ final class IngestionService {
               let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
             return []
         }
-        let cutoff = Date().addingTimeInterval(-90 * 86400)
+        let cutoff = now().addingTimeInterval(-90 * 86400)
         // Both renderer kinds live in the same response tree; collecting them
         // in one walk avoids traversing the (potentially large) JSON twice.
         var grouped = [String: [[String: Any]]]()
@@ -948,7 +1104,7 @@ final class IngestionService {
         guard let html = String(data: data, encoding: .utf8) else {
             return []
         }
-        let cutoff = Date().addingTimeInterval(-90 * 86400)
+        let cutoff = now().addingTimeInterval(-90 * 86400)
         guard let json = extractYouTubeInitialData(from: html) else {
             return collectYouTubeItemsFromEscapedHTML(html, keyword: keyword, cutoff: cutoff)
         }
@@ -1272,15 +1428,15 @@ final class IngestionService {
         let token = String(text.lowercased()[m])
         guard let numMatch = token.range(of: #"\d+"#, options: .regularExpression),
               let n = Int(token[numMatch]) else { return nil }
-        let now = Date()
+        let currentDate = now()
         let day = 86400.0
-        if token.contains("second") || token.contains("秒") { return now.addingTimeInterval(-Double(n)) }
-        if token.contains("minute") || token.contains("分") { return now.addingTimeInterval(-Double(n) * 60) }
-        if token.contains("hour") || token.contains("時間") { return now.addingTimeInterval(-Double(n) * 3600) }
-        if token.contains("week") || token.contains("週") { return now.addingTimeInterval(-Double(n) * 7 * day) }
-        if token.contains("month") || token.contains("ヶ月") || token.contains("か月") { return now.addingTimeInterval(-Double(n) * 30 * day) }
-        if token.contains("year") || token.contains("年") { return now.addingTimeInterval(-Double(n) * 365 * day) }
-        if token.contains("day") || token.contains("日") { return now.addingTimeInterval(-Double(n) * day) }
+        if token.contains("second") || token.contains("秒") { return currentDate.addingTimeInterval(-Double(n)) }
+        if token.contains("minute") || token.contains("分") { return currentDate.addingTimeInterval(-Double(n) * 60) }
+        if token.contains("hour") || token.contains("時間") { return currentDate.addingTimeInterval(-Double(n) * 3600) }
+        if token.contains("week") || token.contains("週") { return currentDate.addingTimeInterval(-Double(n) * 7 * day) }
+        if token.contains("month") || token.contains("ヶ月") || token.contains("か月") { return currentDate.addingTimeInterval(-Double(n) * 30 * day) }
+        if token.contains("year") || token.contains("年") { return currentDate.addingTimeInterval(-Double(n) * 365 * day) }
+        if token.contains("day") || token.contains("日") { return currentDate.addingTimeInterval(-Double(n) * day) }
         return nil
     }
 
@@ -1318,10 +1474,12 @@ final class IngestionService {
         }
         var items = [FeedItem]()
         for tweet in json["data"] as? [[String: Any]] ?? [] {
-            guard let tweetId = tweet["id"] as? String else { continue }
+            guard let tweetId = tweet["id"] as? String,
+                  let created = (tweet["created_at"] as? String).flatMap(parseISO8601Date).map(isoString) else {
+                continue
+            }
             let user = users[(tweet["author_id"] as? String) ?? ""] ?? [:]
             let username = user["username"] as? String ?? ""
-            let created = (tweet["created_at"] as? String).flatMap(parseISO8601Date).map(isoString) ?? nowISO()
             var thumb: String?
             for key in (tweet["attachments"] as? [String: Any])?["media_keys"] as? [String] ?? [] {
                 let m = media[key] ?? [:]
@@ -1350,7 +1508,7 @@ final class IngestionService {
     // MARK: - Shared helpers
 
     private func httpGET(_ url: URL, headers: [String: String] = [:], timeout: TimeInterval = 12) async -> TransportResult {
-        var request = URLRequest(url: url)
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData)
         request.timeoutInterval = timeout
         for (k, v) in headers { request.setValue(v, forHTTPHeaderField: k) }
         return await execute(request)
@@ -1466,14 +1624,33 @@ final class IngestionService {
         }
     }
 
-    private func googleNewsURL(_ query: String, locale: PlatformDefinition.NewsLocale = .japan) -> URL? {
-        guard let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) else { return nil }
+    private func googleNewsURL(
+        _ query: String,
+        locale: PlatformDefinition.NewsLocale = .japan,
+        recentDays: Int? = nil
+    ) -> URL? {
+        let effectiveQuery = recentDays.map { "\(query) when:\($0)d" } ?? query
+        var components = URLComponents()
+        components.scheme = "https"
+        components.host = "news.google.com"
+        components.path = "/rss/search"
         switch locale {
         case .japan:
-            return URL(string: "https://news.google.com/rss/search?q=\(encoded)&hl=ja&gl=JP&ceid=JP%3Aja")
+            components.queryItems = [
+                URLQueryItem(name: "q", value: effectiveQuery),
+                URLQueryItem(name: "hl", value: "ja"),
+                URLQueryItem(name: "gl", value: "JP"),
+                URLQueryItem(name: "ceid", value: "JP:ja"),
+            ]
         case .englishUS:
-            return URL(string: "https://news.google.com/rss/search?q=\(encoded)&hl=en&gl=US&ceid=US%3Aen")
+            components.queryItems = [
+                URLQueryItem(name: "q", value: effectiveQuery),
+                URLQueryItem(name: "hl", value: "en"),
+                URLQueryItem(name: "gl", value: "US"),
+                URLQueryItem(name: "ceid", value: "US:en"),
+            ]
         }
+        return components.url
     }
 
     private func cleanTitle(_ value: String, patterns: [String]) -> String {
@@ -1564,7 +1741,7 @@ final class IngestionService {
         Self.outputISO8601.string(from: date)
     }
 
-    private func nowISO() -> String { isoString(Date()) }
+    private func nowISO() -> String { isoString(now()) }
 }
 
 /// A simple async concurrency gate: at most `limit` holders at once, the rest

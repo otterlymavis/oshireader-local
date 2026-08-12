@@ -504,7 +504,7 @@
 				CODE_SIGN_ENTITLEMENTS = OshiReader/OshiReader.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 4;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_TEAM = D8H3TBWH7P;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -531,7 +531,7 @@
 				CODE_SIGN_ENTITLEMENTS = OshiReader/OshiReader.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 4;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_TEAM = D8H3TBWH7P;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -558,7 +558,7 @@
 				CODE_SIGN_ENTITLEMENTS = OshiReader/OshiReader.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 4;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_TEAM = D8H3TBWH7P;
 				GENERATE_INFOPLIST_FILE = NO;

@@ -954,6 +954,7 @@ private struct SourceStatusRow: View {
         return i18n.t("sourceHistorySummary")
             .replacingOccurrences(of: "{current}", with: current)
             .replacingOccurrences(of: "{received}", with: "\(summary.receivedCount)")
+            .replacingOccurrences(of: "{stale}", with: "\(summary.staleCount)")
             .replacingOccurrences(of: "{empty}", with: "\(summary.emptyCount)")
             .replacingOccurrences(of: "{failed}", with: "\(summary.failedCount)")
             .replacingOccurrences(of: "{total}", with: "\(summary.totalItemCount)")
@@ -965,6 +966,10 @@ private struct SourceStatusRow: View {
         switch status.outcome {
         case .received:
             return i18n.t("sourceItemsQueries")
+                .replacingOccurrences(of: "{items}", with: "\(status.itemCount)")
+                .replacingOccurrences(of: "{queries}", with: "\(status.queryCount)")
+        case .stale:
+            return i18n.t("sourceStaleItemsQueries")
                 .replacingOccurrences(of: "{items}", with: "\(status.itemCount)")
                 .replacingOccurrences(of: "{queries}", with: "\(status.queryCount)")
         case .noResults:

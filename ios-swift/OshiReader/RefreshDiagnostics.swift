@@ -5,6 +5,7 @@ struct SourceHealthSummary: Identifiable, Equatable {
     let id: String
     let currentStatus: SourceRefreshStatus?
     let receivedCount: Int
+    let staleCount: Int
     let emptyCount: Int
     let failedCount: Int
     let totalItemCount: Int
@@ -28,10 +29,11 @@ final class RefreshDiagnostics: ObservableObject {
     @Published private(set) var sourceHealthSummaries: [SourceHealthSummary] = []
 
     static let healthHistoryKey = "refresh_diagnostics.source_health_history"
-    static let healthHistoryRetention: TimeInterval = 7 * 24 * 60 * 60
+    static let healthHistoryRetention: TimeInterval = 10 * 24 * 60 * 60
 
     private enum HealthOutcome: String, Codable {
         case received
+        case stale
         case noResults
         case failed
     }
@@ -120,12 +122,14 @@ final class RefreshDiagnostics: ObservableObject {
                 outcome = .failed(failure)
             } else if status.id == "custom", case .failed(let failure) = existing?.outcome {
                 outcome = .failed(failure)
-            } else if itemCount > 0 {
+            } else if status.outcome == .received || existing?.outcome == .received {
                 outcome = .received
             } else if case .failed(let failure) = status.outcome {
                 outcome = .failed(failure)
             } else if case .failed(let failure) = existing?.outcome {
                 outcome = .failed(failure)
+            } else if status.outcome == .stale || existing?.outcome == .stale {
+                outcome = .stale
             } else {
                 outcome = .noResults
             }
@@ -175,13 +179,14 @@ final class RefreshDiagnostics: ObservableObject {
 
     var sourceSummaryText: String {
         let received = sourceStatuses.filter { $0.outcome == .received }.count
+        let stale = sourceStatuses.filter { $0.outcome == .stale }.count
         let empty = sourceStatuses.filter { $0.outcome == .noResults }.count
         let failed = sourceStatuses.filter {
             if case .failed = $0.outcome { return true }
             return false
         }.count
         guard !sourceStatuses.isEmpty else { return "No sources checked" }
-        return "\(received) with items · \(empty) empty · \(failed) failed"
+        return "\(received) current · \(stale) stale · \(empty) empty · \(failed) failed"
     }
 
     /// The UI should still explain the current refresh when history has not
@@ -200,6 +205,7 @@ final class RefreshDiagnostics: ObservableObject {
                     id: existing.id,
                     currentStatus: status,
                     receivedCount: existing.receivedCount,
+                    staleCount: existing.staleCount,
                     emptyCount: existing.emptyCount,
                     failedCount: existing.failedCount,
                     totalItemCount: existing.totalItemCount,
@@ -211,6 +217,7 @@ final class RefreshDiagnostics: ObservableObject {
                     id: status.id,
                     currentStatus: status,
                     receivedCount: status.outcome == .received ? 1 : 0,
+                    staleCount: status.outcome == .stale ? 1 : 0,
                     emptyCount: status.outcome == .noResults ? 1 : 0,
                     failedCount: failure == nil ? 0 : 1,
                     totalItemCount: status.itemCount,
@@ -241,6 +248,7 @@ final class RefreshDiagnostics: ObservableObject {
                 id: sourceID,
                 currentStatus: current,
                 receivedCount: records.filter { $0.outcome == .received }.count,
+                staleCount: records.filter { $0.outcome == .stale }.count,
                 emptyCount: records.filter { $0.outcome == .noResults }.count,
                 failedCount: records.filter { $0.outcome == .failed }.count,
                 totalItemCount: records.reduce(0) { $0 + $1.itemCount },
@@ -279,6 +287,8 @@ final class RefreshDiagnostics: ObservableObject {
         switch status.outcome {
         case .received:
             return HealthRecord(sourceID: status.id, checkedAt: completedAt, outcome: .received, itemCount: status.itemCount, queryCount: status.queryCount, failure: nil)
+        case .stale:
+            return HealthRecord(sourceID: status.id, checkedAt: completedAt, outcome: .stale, itemCount: status.itemCount, queryCount: status.queryCount, failure: nil)
         case .noResults:
             return HealthRecord(sourceID: status.id, checkedAt: completedAt, outcome: .noResults, itemCount: status.itemCount, queryCount: status.queryCount, failure: nil)
         case .failed(let failure):
@@ -289,6 +299,7 @@ final class RefreshDiagnostics: ObservableObject {
     private static func refreshOutcome(from record: HealthRecord) -> SourceRefreshOutcome {
         switch record.outcome {
         case .received: return .received
+        case .stale: return .stale
         case .noResults: return .noResults
         case .failed: return .failed(record.failure ?? .httpFailure)
         }

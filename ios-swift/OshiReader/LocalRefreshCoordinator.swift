@@ -262,12 +262,13 @@ final class LocalRefreshCoordinator: ObservableObject {
             )
         }
         RefreshDiagnostics.shared.recordSourceStatuses(sourceStatuses)
-        RefreshDiagnostics.shared.recordCompletedSourceStatuses(RefreshDiagnostics.shared.sourceStatuses)
+        let aggregatedSourceStatuses = RefreshDiagnostics.shared.sourceStatuses
+        RefreshDiagnostics.shared.recordCompletedSourceStatuses(aggregatedSourceStatuses)
         let completion: LocalRefreshCompletion = Task.isCancelled ? .cancelled : .completed
         return LocalRefreshResult(
             completion: completion,
             addedCount: addedCount,
-            sourceStatuses: sourceStatuses,
+            sourceStatuses: aggregatedSourceStatuses,
             customRefreshCompleted: customCompleted,
             cappedWorkCount: cappedWorkCount
         )

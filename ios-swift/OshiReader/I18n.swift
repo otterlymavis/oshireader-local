@@ -200,10 +200,16 @@ class I18nManager: ObservableObject {
             "zh-CN": "暂无来源记录"
         ],
         "sourceItemsQueries": [
-            "en": "{items} items · {queries} queries",
-            "ja": "{items}件 · {queries}クエリ",
-            "zh-TW": "{items} 個項目 · {queries} 次查詢",
-            "zh-CN": "{items} 个项目 · {queries} 次查询"
+            "en": "{items} current items · {queries} queries",
+            "ja": "最新の項目 {items}件 · {queries}クエリ",
+            "zh-TW": "{items} 個近期項目 · {queries} 次查詢",
+            "zh-CN": "{items} 个近期项目 · {queries} 次查询"
+        ],
+        "sourceStaleItemsQueries": [
+            "en": "{items} older matches · no current result · {queries} queries",
+            "ja": "古い一致 {items}件 · 最新結果なし · {queries}クエリ",
+            "zh-TW": "{items} 個較舊結果 · 無近期結果 · {queries} 次查詢",
+            "zh-CN": "{items} 个较旧结果 · 无近期结果 · {queries} 次查询"
         ],
         "sourceNoMatchingItemsQueries": [
             "en": "No matching items · {queries} queries",
@@ -230,10 +236,10 @@ class I18nManager: ObservableObject {
             "zh-CN": " · 上次 {failure}"
         ],
         "sourceHistorySummary": [
-            "en": "{current} · 7d: {received} received, {empty} empty, {failed} failed · {total} total items · checked {checked}{lastFailure}",
-            "ja": "{current} · 7日間: 取得 {received}、空 {empty}、失敗 {failed} · 合計 {total}件 · 確認 {checked}{lastFailure}",
-            "zh-TW": "{current} · 7 天：取得 {received}、空白 {empty}、失敗 {failed} · 共 {total} 個項目 · 檢查 {checked}{lastFailure}",
-            "zh-CN": "{current} · 7 天：获取 {received}、空白 {empty}、失败 {failed} · 共 {total} 个项目 · 检查 {checked}{lastFailure}"
+            "en": "{current} · 10d: {received} current, {stale} stale, {empty} empty, {failed} failed · {total} returned items · checked {checked}{lastFailure}",
+            "ja": "{current} · 10日間: 最新 {received}、古い {stale}、空 {empty}、失敗 {failed} · 取得 {total}件 · 確認 {checked}{lastFailure}",
+            "zh-TW": "{current} · 10 天：近期 {received}、過舊 {stale}、空白 {empty}、失敗 {failed} · 共傳回 {total} 個項目 · 檢查 {checked}{lastFailure}",
+            "zh-CN": "{current} · 10 天：近期 {received}、过旧 {stale}、空白 {empty}、失败 {failed} · 共返回 {total} 个项目 · 检查 {checked}{lastFailure}"
         ],
         "cancel": [
             "en": "Cancel",

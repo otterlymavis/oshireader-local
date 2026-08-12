@@ -1664,6 +1664,344 @@ final class OshiReaderTests: XCTestCase {
         XCTAssertTrue(report.items.isEmpty)
     }
 
+    func testRecentLookupFallsBackToHistoricalWithoutDroppingOlderItems() async throws {
+        let emptyRSS = Data("<rss version=\"2.0\"><channel></channel></rss>".utf8)
+        let historicalRSS = Data("""
+        <rss version="2.0"><channel><item>
+        <title>Status Oshi older article - ModelPress</title>
+        <link>https://mdpr.jp/news/older-status-oshi</link>
+        <pubDate>Fri, 31 Jul 2026 07:00:00 GMT</pubDate>
+        </item></channel></rss>
+        """.utf8)
+        let capture = RequestCapture()
+        let referenceDate = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-12T09:00:00Z"))
+        let service = IngestionService(
+            requestExecutor: { request in
+                let url = request.url?.absoluteString ?? ""
+                await capture.record(url)
+                return (
+                    url.contains("when:10d") ? emptyRSS : historicalRSS,
+                    try XCTUnwrap(HTTPURLResponse(
+                        url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                    ))
+                )
+            },
+            retrySleeper: { _ in },
+            classifyFreshness: true,
+            now: { referenceDate }
+        )
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "Status Oshi"),
+            platforms: ["oricon"]
+        )
+
+        XCTAssertEqual(report.items.count, 1)
+        XCTAssertEqual(report.items.first?.published_at, "2026-07-31T07:00:00Z")
+        XCTAssertEqual(report.sourceStatuses.first?.outcome, .stale)
+        let urls = await capture.urls
+        XCTAssertEqual(urls.filter { $0.contains("news.google.com") }.count, 2)
+        XCTAssertTrue(urls.contains { $0.contains("when:10d") })
+    }
+
+    func testFailedRecentLookupDoesNotMisreportHistoricalItemsAsStale() async throws {
+        let historicalRSS = Data("""
+        <rss version="2.0"><channel><item>
+        <title>Status Oshi older article</title>
+        <link>https://example.com/older-status-oshi</link>
+        <pubDate>Fri, 31 Jul 2026 07:00:00 GMT</pubDate>
+        </item></channel></rss>
+        """.utf8)
+        let referenceDate = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-12T09:00:00Z"))
+        let service = IngestionService(
+            requestExecutor: { request in
+                let isRecent = request.url?.absoluteString.contains("when:10d") == true
+                return (
+                    isRecent ? Data() : historicalRSS,
+                    try XCTUnwrap(HTTPURLResponse(
+                        url: request.url!, statusCode: isRecent ? 500 : 200, httpVersion: nil, headerFields: nil
+                    ))
+                )
+            },
+            retrySleeper: { _ in },
+            classifyFreshness: true,
+            now: { referenceDate }
+        )
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "Status Oshi"),
+            platforms: ["oricon"]
+        )
+
+        XCTAssertEqual(report.items.count, 1)
+        XCTAssertEqual(report.sourceStatuses.first?.outcome, .failed(.httpFailure))
+    }
+
+    func testModelPressUsesOfficialDatedSearchAndRejectsUnrelatedRows() async throws {
+        let html = Data(#"""
+        <ol>
+          <li class="p-articleListItem">
+            <a href="/news/irrelevant" class="p-articleListItem__link">
+              <img src="https://img.example/irrelevant.jpg">
+              <p class="p-articleListItem__title"><span>Unrelated current story</span></p>
+              <time datetime="2026-08-11 14:10">2026.08.11</time>
+            </a>
+          </li>
+          <li class="p-articleListItem">
+            <a href="/news/relevant" class="p-articleListItem__link">
+              <img src="https://img.example/relevant.jpg">
+              <p class="p-articleListItem__title"><span>Status Oshi official update &amp; interview</span></p>
+              <time datetime="2026-08-10 08:30">2026.08.10</time>
+            </a>
+          </li>
+        </ol>
+        """#.utf8)
+        let capture = RequestCapture()
+        let referenceDate = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-12T09:00:00Z"))
+        let service = IngestionService(
+            requestExecutor: { request in
+                await capture.record(request.url?.absoluteString ?? "")
+                return (
+                    html,
+                    try XCTUnwrap(HTTPURLResponse(
+                        url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                    ))
+                )
+            },
+            retrySleeper: { _ in },
+            classifyFreshness: true,
+            now: { referenceDate }
+        )
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "Status Oshi"),
+            platforms: ["mdpr"]
+        )
+
+        XCTAssertEqual(report.items.map(\.id).count, 1)
+        XCTAssertEqual(report.items.first?.title, "Status Oshi official update & interview")
+        XCTAssertEqual(report.items.first?.source, "modelpress_search")
+        XCTAssertEqual(report.sourceStatuses.first?.outcome, .received)
+        let urls = await capture.urls
+        XCTAssertEqual(urls.filter { $0.contains("mdpr.jp/search") }.count, 1)
+        XCTAssertFalse(urls.contains { $0.contains("news.google.com") })
+    }
+
+    func testModelPressFollowsSecondPageToPreserveOlderMatches() async throws {
+        let firstPage = Data(#"""
+        <ol>
+          <li class="p-articleListItem">
+            <a href="/news/irrelevant" class="p-articleListItem__link">
+              <p class="p-articleListItem__title"><span>Unrelated story</span></p>
+              <time datetime="2026-08-11 14:10">2026.08.11</time>
+            </a>
+          </li>
+        </ol>
+        <a href="/search?keyword=Status&amp;type=article&amp;page=2" class="c-pager__button c-pager__button--next">Next</a>
+        """#.utf8)
+        let secondPage = Data(#"""
+        <ol>
+          <li class="p-articleListItem">
+            <a href="/news/older-relevant" class="p-articleListItem__link">
+              <p class="p-articleListItem__title"><span>Status Oshi older official match</span></p>
+              <time datetime="2026-07-20 08:30">2026.07.20</time>
+            </a>
+          </li>
+        </ol>
+        """#.utf8)
+        let capture = RequestCapture()
+        let referenceDate = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-12T09:00:00Z"))
+        let service = IngestionService(
+            requestExecutor: { request in
+                let url = request.url?.absoluteString ?? ""
+                await capture.record(url)
+                return (
+                    url.contains("page=2") ? secondPage : firstPage,
+                    try XCTUnwrap(HTTPURLResponse(
+                        url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                    ))
+                )
+            },
+            retrySleeper: { _ in },
+            classifyFreshness: true,
+            now: { referenceDate }
+        )
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "Status Oshi"),
+            platforms: ["mdpr"]
+        )
+
+        XCTAssertEqual(report.items.map(\.title), ["Status Oshi older official match"])
+        XCTAssertEqual(report.sourceStatuses.first?.outcome, .stale)
+        let urls = await capture.urls
+        XCTAssertEqual(urls.filter { $0.contains("mdpr.jp/search") }.count, 2)
+        XCTAssertTrue(urls.contains { $0.contains("page=2") })
+        XCTAssertFalse(urls.contains { $0.contains("news.google.com") })
+    }
+
+    func testRecentLookupMergesHistoricalItemsWhenCurrentItemsExist() async throws {
+        let recentRSS = Data("""
+        <rss version="2.0"><channel><item>
+        <title>Status Oshi current article - ModelPress</title>
+        <link>https://mdpr.jp/news/current-status-oshi</link>
+        <pubDate>Mon, 10 Aug 2026 07:00:00 GMT</pubDate>
+        </item></channel></rss>
+        """.utf8)
+        let historicalRSS = Data("""
+        <rss version="2.0"><channel>
+        <item>
+        <title>Status Oshi current article - ModelPress</title>
+        <link>https://mdpr.jp/news/current-status-oshi</link>
+        <pubDate>Mon, 10 Aug 2026 07:00:00 GMT</pubDate>
+        </item>
+        <item>
+        <title>Status Oshi older article - ModelPress</title>
+        <link>https://mdpr.jp/news/older-status-oshi</link>
+        <pubDate>Fri, 31 Jul 2026 07:00:00 GMT</pubDate>
+        </item>
+        </channel></rss>
+        """.utf8)
+        let capture = RequestCapture()
+        let referenceDate = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-12T09:00:00Z"))
+        let service = IngestionService(
+            requestExecutor: { request in
+                await capture.record(request.url?.absoluteString ?? "")
+                return (
+                    request.url?.absoluteString.contains("when:10d") == true ? recentRSS : historicalRSS,
+                    try XCTUnwrap(HTTPURLResponse(
+                        url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                    ))
+                )
+            },
+            retrySleeper: { _ in },
+            classifyFreshness: true,
+            now: { referenceDate }
+        )
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "Status Oshi"),
+            platforms: ["oricon"]
+        )
+
+        XCTAssertEqual(report.items.count, 2)
+        XCTAssertEqual(Set(report.items.map(\.url)), [
+            "https://mdpr.jp/news/current-status-oshi",
+            "https://mdpr.jp/news/older-status-oshi",
+        ])
+        XCTAssertEqual(report.sourceStatuses.first?.outcome, .received)
+        let urls = await capture.urls
+        XCTAssertEqual(urls.filter { $0.contains("news.google.com") }.count, 2)
+        XCTAssertTrue(urls.contains { $0.contains("when:10d") })
+    }
+
+    func testRecentLookupSkipsHistoricalRequestWhenRecentResultsFillLimit() async throws {
+        let items = (0..<20).map { index in
+            """
+            <item>
+            <title>Status Oshi current article \(index)</title>
+            <link>https://example.com/current-\(index)</link>
+            <pubDate>Mon, 10 Aug 2026 07:00:00 GMT</pubDate>
+            </item>
+            """
+        }.joined()
+        let recentRSS = Data("<rss version=\"1.0\"><channel>\(items)</channel></rss>".utf8)
+        let capture = RequestCapture()
+        let referenceDate = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-12T09:00:00Z"))
+        let service = IngestionService(
+            requestExecutor: { request in
+                await capture.record(request.url?.absoluteString ?? "")
+                return (
+                    recentRSS,
+                    try XCTUnwrap(HTTPURLResponse(
+                        url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                    ))
+                )
+            },
+            retrySleeper: { _ in },
+            classifyFreshness: true,
+            now: { referenceDate }
+        )
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "Status Oshi"),
+            platforms: ["oricon"]
+        )
+
+        XCTAssertEqual(report.items.count, 20)
+        let urls = await capture.urls
+        XCTAssertEqual(urls.filter { $0.contains("news.google.com") }.count, 1)
+        XCTAssertTrue(urls.first?.contains("when:10d") == true)
+    }
+
+    func testGoogleNewsQueryEscapesKeywordParameterDelimiters() async throws {
+        let emptyRSS = Data("<rss version=\"2.0\"><channel></channel></rss>".utf8)
+        let capture = RequestCapture()
+        let service = IngestionService(
+            requestExecutor: { request in
+                await capture.record(request.url?.absoluteString ?? "")
+                return (
+                    emptyRSS,
+                    try XCTUnwrap(HTTPURLResponse(
+                        url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                    ))
+                )
+            },
+            retrySleeper: { _ in },
+            classifyFreshness: true
+        )
+
+        _ = await service.ingestReport(
+            term: WatchTerm(keyword: "&TEAM"),
+            platforms: ["oricon"]
+        )
+
+        let urls = await capture.urls
+        XCTAssertEqual(urls.count, 2)
+        for rawURL in urls {
+            let components = try XCTUnwrap(URLComponents(string: rawURL))
+            XCTAssertEqual(
+                components.queryItems?.first { $0.name == "q" }?.value?.hasPrefix("&TEAM site:oricon.co.jp"),
+                true
+            )
+            XCTAssertFalse(rawURL.contains("?q=&TEAM"))
+            XCTAssertTrue(rawURL.contains("%26TEAM"))
+        }
+    }
+
+    func testTVerDoesNotInventCurrentDateForUndatedResults() async throws {
+        let createResponse = Data(#"{"result":{"platform_uid":"test-uid","platform_token":"test-token"}}"#.utf8)
+        let searchResponse = Data(#"""
+        {"result":{"episodes":{"contents":[
+          {"content":{"id":"undated","title":"TVer Oshi undated"}},
+          {"content":{"id":"dated","title":"TVer Oshi dated","broadcastDate":"2026-08-11T07:00:00Z"}}
+        ]}}}
+        """#.utf8)
+        let referenceDate = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-12T09:00:00Z"))
+        let service = IngestionService(
+            requestExecutor: { request in
+                let data = request.url?.path.contains("/browser/create") == true ? createResponse : searchResponse
+                return (
+                    data,
+                    try XCTUnwrap(HTTPURLResponse(
+                        url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                    ))
+                )
+            },
+            retrySleeper: { _ in },
+            classifyFreshness: true,
+            now: { referenceDate }
+        )
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "TVer Oshi"),
+            platforms: ["tver"]
+        )
+
+        XCTAssertEqual(report.items.map(\.id), ["tver:dated"])
+        XCTAssertEqual(report.sourceStatuses.first?.outcome, .received)
+    }
+
     func testTypedTransportFailuresMapTimeoutNetworkAndHTTPStatuses() async {
         let cases: [(SourceRefreshFailure, Int?)] = [
             (.timeout, nil),
@@ -2305,6 +2643,21 @@ final class OshiReaderTests: XCTestCase {
         XCTAssertTrue(result.hasSourceFailures)
     }
 
+    func testRefreshResultKeepsStaleSourcePartialNotFailed() {
+        let result = LocalRefreshResult(
+            completion: .completed,
+            addedCount: 0,
+            sourceStatuses: [
+                SourceRefreshStatus(id: "mdpr", outcome: .stale, itemCount: 15, queryCount: 1)
+            ],
+            customRefreshCompleted: true
+        )
+
+        XCTAssertTrue(result.succeeded)
+        XCTAssertTrue(result.hasSourceFailures)
+        XCTAssertTrue(result.wasPartial)
+    }
+
     func testRefreshResultTreatsCappedBackgroundWorkAsPartialButSuccessful() {
         let result = LocalRefreshResult(
             completion: .completed,
@@ -2430,6 +2783,75 @@ final class OshiReaderTests: XCTestCase {
     }
 
     @MainActor
+    func testRefreshDiagnosticsReportsAndPersistsStaleSources() {
+        let suiteName = "OshiReaderTests.health.stale.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let diagnostics = RefreshDiagnostics(defaults: defaults)
+
+        diagnostics.recordSourceStatuses([
+            SourceRefreshStatus(id: "mdpr", outcome: .stale, itemCount: 12, queryCount: 1)
+        ])
+        diagnostics.recordCompletedSourceStatuses(diagnostics.sourceStatuses)
+
+        XCTAssertTrue(diagnostics.hasSourceFailures)
+        XCTAssertTrue(diagnostics.sourceSummaryText.contains("1 stale"))
+
+        let reloaded = RefreshDiagnostics(defaults: defaults)
+        let summary = reloaded.sourceHealthSummaries.first { $0.id == "mdpr" }
+        XCTAssertEqual(summary?.staleCount, 1)
+        XCTAssertEqual(summary?.currentStatus?.outcome, .stale)
+        XCTAssertEqual(summary?.totalItemCount, 12)
+    }
+
+    @MainActor
+    func testRefreshDiagnosticsUsesCurrentPrecedenceOverStaleAcrossTerms() {
+        let suiteName = "OshiReaderTests.health.stale-precedence.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let diagnostics = RefreshDiagnostics(defaults: defaults)
+
+        diagnostics.recordSourceStatuses([
+            SourceRefreshStatus(id: "mdpr", outcome: .stale, itemCount: 2, queryCount: 1),
+            SourceRefreshStatus(id: "mdpr", outcome: .received, itemCount: 1, queryCount: 1),
+        ])
+
+        let status = diagnostics.sourceStatuses.first
+        XCTAssertEqual(status?.outcome, .received)
+        XCTAssertEqual(status?.itemCount, 3)
+        XCTAssertEqual(status?.queryCount, 2)
+        XCTAssertFalse(diagnostics.sourceStatuses.hasFailures)
+    }
+
+    @MainActor
+    func testRefreshDiagnosticsKeepsFailureWhenHistoricalItemsWereRetained() {
+        let suiteName = "OshiReaderTests.health.items-with-failure.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let diagnostics = RefreshDiagnostics(defaults: defaults)
+
+        diagnostics.recordSourceStatuses([
+            SourceRefreshStatus(
+                id: "oricon",
+                outcome: .failed(.httpFailure),
+                itemCount: 1,
+                queryCount: 1
+            )
+        ])
+
+        XCTAssertEqual(diagnostics.sourceStatuses.first?.outcome, .failed(.httpFailure))
+        XCTAssertEqual(diagnostics.sourceStatuses.first?.itemCount, 1)
+        XCTAssertTrue(diagnostics.hasSourceFailures)
+
+        diagnostics.recordSourceStatuses([
+            SourceRefreshStatus(id: "oricon", outcome: .received, itemCount: 2, queryCount: 1)
+        ])
+        XCTAssertEqual(diagnostics.sourceStatuses.first?.outcome, .received)
+        XCTAssertEqual(diagnostics.sourceStatuses.first?.itemCount, 3)
+        XCTAssertFalse(diagnostics.hasSourceFailures)
+    }
+
+    @MainActor
     func testRefreshDiagnosticsShowsCurrentStatusesBeforeHistoryIsPersisted() {
         let suiteName = "OshiReaderTests.health.current.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -2487,12 +2909,13 @@ final class OshiReaderTests: XCTestCase {
     }
 
     @MainActor
-    func testSourceHealthHistoryPrunesRecordsOlderThanSevenDays() {
+    func testSourceHealthHistoryUsesTenDayRetention() {
         let suiteName = "OshiReaderTests.health.prune.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
         defer { defaults.removePersistentDomain(forName: suiteName) }
         let diagnostics = RefreshDiagnostics(defaults: defaults)
         let now = Date()
+        XCTAssertEqual(RefreshDiagnostics.healthHistoryRetention, 10 * 24 * 60 * 60)
 
         diagnostics.recordCompletedSourceStatuses([
             SourceRefreshStatus(id: "old", outcome: .received, itemCount: 9, queryCount: 1),

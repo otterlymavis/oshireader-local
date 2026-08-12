@@ -87,14 +87,15 @@ final class OshiReaderUITests: XCTestCase {
         let sourceSummary = app.buttons["feed.sourceStatus"]
         XCTAssertTrue(sourceSummary.waitForExistence(timeout: 3))
         let summaryReady = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "label CONTAINS[c] 'with items'"),
+            predicate: NSPredicate(format: "label CONTAINS[c] 'current'"),
             object: sourceSummary
         )
         XCTAssertEqual(
             XCTWaiter().wait(for: [summaryReady], timeout: 5),
             .completed
         )
-        XCTAssertTrue(sourceSummary.label.contains("1 with items"))
+        XCTAssertTrue(sourceSummary.label.contains("1 current"))
+        XCTAssertTrue(sourceSummary.label.contains("0 stale"))
         XCTAssertTrue(sourceSummary.label.contains("1 empty"))
         XCTAssertTrue(sourceSummary.label.contains("0 failed"))
     }
