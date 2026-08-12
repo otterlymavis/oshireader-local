@@ -127,20 +127,62 @@ class LocalDB: ObservableObject {
     
     // MARK: - Load and Save Helpers
     private func loadAll() {
-        let loadedTerms: [WatchTerm] = loadFromFile(name: "terms", defaultValue: [])
+        // The 9 reads below are independent files with no shared mutable
+        // state (the JSONDecoder instance they share is never reconfigured
+        // per-call, so concurrent `decode` calls on it are safe). Loading
+        // them in parallel instead of one after another cuts the time this
+        // blocks the caller — app launch and every profile switch — down
+        // from the sum of each file's I/O+decode time to roughly the slowest
+        // one, instead of all of them back-to-back.
+        let loadQueue = DispatchQueue(label: "com.otterlymavis.oshireader.db.load", attributes: .concurrent)
+        let group = DispatchGroup()
+        func loadConcurrently(_ work: @escaping () -> Void) {
+            group.enter()
+            loadQueue.async {
+                work()
+                group.leave()
+            }
+        }
+
+        var loadedTerms: [WatchTerm] = []
+        var loadedFeedItems: [FeedItem] = []
+        var loadedCustomUrls: [CustomUrl] = []
+        var loadedSavedPages: [SavedPage] = []
+        var loadedAmebloBlogs: [AmebloBlog] = []
+        var loadedSubscribedPlatforms: [String] = []
+        var hasSavedSubscribedPlatforms = false
+        var loadedOshiAvatars: [String: String] = [:]
+        var loadedCompositions: [String: [AvatarLayer]] = [:]
+        var hiddenArray: [String] = []
+
+        loadConcurrently { loadedTerms = self.loadFromFile(name: "terms", defaultValue: []) }
+        loadConcurrently { loadedFeedItems = self.loadFromFile(name: "feed_items", defaultValue: []) }
+        loadConcurrently { loadedCustomUrls = self.loadFromFile(name: "custom_urls", defaultValue: []) }
+        loadConcurrently { loadedSavedPages = self.loadFromFile(name: "saved_pages", defaultValue: []) }
+        loadConcurrently { loadedAmebloBlogs = self.loadFromFile(name: "ameblo_blogs", defaultValue: []) }
+        loadConcurrently {
+            let subscribedPlatformsURL = self.fileURL(for: "subscribed_platforms")
+            hasSavedSubscribedPlatforms = FileManager.default.fileExists(atPath: subscribedPlatformsURL.path)
+            loadedSubscribedPlatforms = self.loadFromFile(
+                name: "subscribed_platforms",
+                defaultValue: PlatformRegistry.defaultSubscribedIDs
+            )
+        }
+        loadConcurrently { loadedOshiAvatars = self.loadFromFile(name: "oshi_avatars", defaultValue: [:]) }
+        loadConcurrently { loadedCompositions = self.loadFromFile(name: "oshi_compositions", defaultValue: [:]) }
+        loadConcurrently { hiddenArray = self.loadFromFile(name: "hidden_items", defaultValue: []) }
+        group.wait()
+
         self.terms = loadedTerms.map(Self.normalizedTerm)
         if self.terms != loadedTerms {
             saveToFile(name: "terms", value: self.terms)
         }
-        let loadedFeedItems: [FeedItem] = loadFromFile(name: "feed_items", defaultValue: [])
-        let loadedCustomUrls: [CustomUrl] = loadFromFile(name: "custom_urls", defaultValue: [])
         let loadedCustomURLImport = Self.normalizedCustomUrlImport(loadedCustomUrls)
         self.customUrls = loadedCustomURLImport.urls
         let normalizedLoadedCustomUrls = self.customUrls != loadedCustomUrls
         if normalizedLoadedCustomUrls {
             saveToFile(name: "custom_urls", value: self.customUrls)
         }
-        let loadedSavedPages: [SavedPage] = loadFromFile(name: "saved_pages", defaultValue: [])
         self.savedPages = Self.normalizedImportedSavedPages(loadedSavedPages, customURLImport: loadedCustomURLImport)
         let normalizedLoadedSavedPages = self.savedPages != loadedSavedPages
         if normalizedLoadedSavedPages {
@@ -149,13 +191,7 @@ class LocalDB: ObservableObject {
         self.feedItems = Self.normalizedImportedFeedItems(loadedFeedItems, customURLImport: loadedCustomURLImport)
         let normalizedLoadedFeedItems = self.feedItems != loadedFeedItems
         let prunedLegacyYouTubeItemKeys = pruneLegacyYouTubeItems()
-        self.amebloBlogs = loadFromFile(name: "ameblo_blogs", defaultValue: [])
-        let subscribedPlatformsURL = fileURL(for: "subscribed_platforms")
-        let hasSavedSubscribedPlatforms = FileManager.default.fileExists(atPath: subscribedPlatformsURL.path)
-        let loadedSubscribedPlatforms: [String] = loadFromFile(
-            name: "subscribed_platforms",
-            defaultValue: PlatformRegistry.defaultSubscribedIDs
-        )
+        self.amebloBlogs = loadedAmebloBlogs
         self.subscribedPlatforms = Self.subscribedPlatformsForLoadedValue(
             loadedSubscribedPlatforms,
             hasSavedFile: hasSavedSubscribedPlatforms
@@ -173,9 +209,8 @@ class LocalDB: ObservableObject {
                 UserDefaults.standard.removeObject(forKey: profileKey("sources_order"))
             }
         }
-        self.oshiAvatars = loadFromFile(name: "oshi_avatars", defaultValue: [:])
-        self.compositions = loadFromFile(name: "oshi_compositions", defaultValue: [:])
-        let hiddenArray: [String] = loadFromFile(name: "hidden_items", defaultValue: [])
+        self.oshiAvatars = loadedOshiAvatars
+        self.compositions = loadedCompositions
         let normalizedHiddenArray = hiddenArray.compactMap {
             Self.normalizedImportedHiddenItem($0, customURLImport: loadedCustomURLImport)
         }.filter {
@@ -619,38 +654,39 @@ class LocalDB: ObservableObject {
     ) -> [FeedItem] {
         guard sortedItems.count > maxFeedItems else { return sortedItems }
 
-        var selected: [FeedItem] = []
+        // Each pass below only decides which keys survive the cap; membership
+        // is tracked in `selectedKeys` and the result is reassembled with a
+        // single filter at the end, preserving `sortedItems`' existing order
+        // instead of re-sorting the selection after every pass.
         var selectedKeys = Set<String>()
 
-        for item in sortedItems where preservedKeys.contains(feedItemKey(item)) {
-            let key = feedItemKey(item)
-            guard selectedKeys.insert(key).inserted else { continue }
-            selected.append(item)
-            if selected.count >= maxFeedItems { return selected.sorted(by: feedItemSortPrecedes) }
+        preservedPass: for item in sortedItems where preservedKeys.contains(feedItemKey(item)) {
+            guard selectedKeys.insert(feedItemKey(item)).inserted else { continue }
+            if selectedKeys.count >= maxFeedItems { break preservedPass }
         }
 
-        let subscribed = Set(subscribedPlatforms.filter { $0 != "custom" }.map(PlatformRegistry.normalizeID))
-        for platformId in subscribed.sorted() {
-            var keptForPlatform = 0
-            let targetCount = minRetainedFeedItems(for: platformId)
-            for item in sortedItems where PlatformRegistry.normalizeID(item.platform) == platformId {
-                let key = feedItemKey(item)
-                guard selectedKeys.insert(key).inserted else { continue }
-                selected.append(item)
-                keptForPlatform += 1
-                if selected.count >= maxFeedItems { return selected.sorted(by: feedItemSortPrecedes) }
-                if keptForPlatform >= targetCount { break }
+        if selectedKeys.count < maxFeedItems {
+            let subscribed = Set(subscribedPlatforms.filter { $0 != "custom" }.map(PlatformRegistry.normalizeID))
+            platformPass: for platformId in subscribed.sorted() {
+                var keptForPlatform = 0
+                let targetCount = minRetainedFeedItems(for: platformId)
+                for item in sortedItems where PlatformRegistry.normalizeID(item.platform) == platformId {
+                    guard selectedKeys.insert(feedItemKey(item)).inserted else { continue }
+                    keptForPlatform += 1
+                    if selectedKeys.count >= maxFeedItems { break platformPass }
+                    if keptForPlatform >= targetCount { break }
+                }
             }
         }
 
-        for item in sortedItems {
-            guard selected.count < maxFeedItems else { break }
-            let key = feedItemKey(item)
-            guard selectedKeys.insert(key).inserted else { continue }
-            selected.append(item)
+        if selectedKeys.count < maxFeedItems {
+            for item in sortedItems {
+                guard selectedKeys.count < maxFeedItems else { break }
+                selectedKeys.insert(feedItemKey(item))
+            }
         }
 
-        return selected.sorted(by: feedItemSortPrecedes)
+        return sortedItems.filter { selectedKeys.contains(feedItemKey($0)) }
     }
 
     private static func minRetainedFeedItems(for platformId: String) -> Int {
@@ -688,7 +724,8 @@ class LocalDB: ObservableObject {
         
         let strictKeywordPlatforms = PlatformRegistry.strictKeywordPlatformIDs
             .union(["news", "tver"])
-        
+        let termsByKeyword = Dictionary(self.terms.map { ($0.keyword, $0) }, uniquingKeysWith: { first, _ in first })
+
         let candidates = feedItems.compactMap { item -> FeedQueryCandidate? in
             let key = "\(item.id)::\(item.watch_term_keyword)"
             if hiddenItems.contains(key) { return nil }
@@ -722,9 +759,7 @@ class LocalDB: ObservableObject {
             
             // Strict keyword matching logic
             if strictKeywordPlatforms.contains(PlatformRegistry.normalizeID(item.platform)), !item.watch_term_keyword.isEmpty {
-                let aliases = self.terms
-                    .first { $0.keyword == item.watch_term_keyword }?
-                    .aliases ?? []
+                let aliases = termsByKeyword[item.watch_term_keyword]?.aliases ?? []
                 let matchingKeywords = [item.watch_term_keyword] + aliases
                 if !matchingKeywords.contains(where: { matchesKeyword(item: item, kw: $0) }) {
                     return nil

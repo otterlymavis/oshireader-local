@@ -108,8 +108,19 @@ final class RefreshDiagnostics: ObservableObject {
             let existing = merged[status.id]
             let itemCount = (existing?.itemCount ?? 0) + status.itemCount
             let queryCount = (existing?.queryCount ?? 0) + status.queryCount
+            // Regular sources intentionally let "received" win over "failed"
+            // when merging multiple queries (e.g. keyword aliases) for the
+            // same platform — one alias succeeding is still good news even
+            // if another failed (see testSourceHealthHistoryUsesReceivedPrecedenceAndKeepsLatestFailure).
+            // "custom" is scoped out of that precedence: each custom URL is
+            // an independent source, so a failed one must stay visible even
+            // if another custom URL in the same batch returned items.
             let outcome: SourceRefreshOutcome
-            if itemCount > 0 {
+            if status.id == "custom", case .failed(let failure) = status.outcome {
+                outcome = .failed(failure)
+            } else if status.id == "custom", case .failed(let failure) = existing?.outcome {
+                outcome = .failed(failure)
+            } else if itemCount > 0 {
                 outcome = .received
             } else if case .failed(let failure) = status.outcome {
                 outcome = .failed(failure)
@@ -154,8 +165,8 @@ final class RefreshDiagnostics: ObservableObject {
         }
         if lastWasPartial {
             return lastAddedCount > 0
-                ? "Updated \(relative) · \(lastAddedCount) new · some sources failed"
-                : "Checked \(relative) · some sources failed"
+                ? "Updated \(relative) · \(lastAddedCount) new · some sources incomplete"
+                : "Checked \(relative) · some sources incomplete"
         }
         return lastAddedCount > 0
             ? "Updated \(relative) · \(lastAddedCount) new"

@@ -171,14 +171,15 @@ final class IngestionService {
 
     // MARK: - Orchestration
 
-    static func searchKeywords(for term: WatchTerm) -> [String] {
+    static func searchKeywords(for term: WatchTerm, maximumAliases: Int? = nil) -> [String] {
         var result = [String]()
         var seen = Set<String>()
+        let aliasLimit = maximumAliases.map { max(0, min($0, Self.maximumAliasesPerTerm)) }
         for value in [term.keyword] + term.aliases {
             let keyword = value.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !keyword.isEmpty, seen.insert(keyword).inserted else { continue }
             result.append(keyword)
-            if result.count >= 1 + Self.maximumAliasesPerTerm { break }
+            if result.count >= 1 + (aliasLimit ?? Self.maximumAliasesPerTerm) { break }
         }
         return result
     }
@@ -192,13 +193,13 @@ final class IngestionService {
 
     /// Fetch every subscribed source for one watch term. Network errors in any
     /// single source are swallowed (that source just contributes no items).
-    func ingest(term: WatchTerm, platforms: Set<String>) async -> [FeedItem] {
-        await ingestReport(term: term, platforms: platforms).items
+    func ingest(term: WatchTerm, platforms: Set<String>, maximumAliases: Int? = nil) async -> [FeedItem] {
+        await ingestReport(term: term, platforms: platforms, maximumAliases: maximumAliases).items
     }
 
-    func ingestReport(term: WatchTerm, platforms: Set<String>) async -> IngestionReport {
+    func ingestReport(term: WatchTerm, platforms: Set<String>, maximumAliases: Int? = nil) async -> IngestionReport {
         let primaryKeyword = term.keyword.trimmingCharacters(in: .whitespacesAndNewlines)
-        let searchKeywords = Self.searchKeywords(for: term)
+        let searchKeywords = Self.searchKeywords(for: term, maximumAliases: maximumAliases)
         guard !primaryKeyword.isEmpty, !searchKeywords.isEmpty else {
             return IngestionReport(items: [], sourceStatuses: [])
         }
@@ -439,7 +440,7 @@ final class IngestionService {
                         let canonical = Self.canonicalURLForDedup(entry.link)
                         guard seen.insert(canonical).inserted else { return nil }
                         return FeedItem(
-                            id: "\(sourceID):\(self.stableId(entry.link))",
+                            id: "\(sourceID):\(self.stableId(fromCanonical: canonical))",
                             platform: sourceID,
                             url: entry.link,
                             title: self.cleanedOptionalTitle(entry.title),
@@ -514,7 +515,7 @@ final class IngestionService {
                         let canonical = Self.canonicalURLForDedup(entry.link)
                         guard seen.insert(canonical).inserted else { return nil }
                         return FeedItem(
-                            id: "ameblo:\(self.stableId(entry.link))",
+                            id: "ameblo:\(self.stableId(fromCanonical: canonical))",
                             platform: "ameblo",
                             url: entry.link,
                             title: self.cleanedOptionalTitle(entry.title),
@@ -920,9 +921,13 @@ final class IngestionService {
             return []
         }
         let cutoff = Date().addingTimeInterval(-90 * 86400)
-        var items = collectYouTubeVideoRendererItems(from: json, keyword: keyword, cutoff: cutoff)
+        // Both renderer kinds live in the same response tree; collecting them
+        // in one walk avoids traversing the (potentially large) JSON twice.
+        var grouped = [String: [[String: Any]]]()
+        collectDictionaries(named: ["videoRenderer", "videoWithContextRenderer"], in: json, into: &grouped)
+        var items = makeVideoRendererFeedItems(grouped["videoRenderer"] ?? [], keyword: keyword, cutoff: cutoff)
         if items.count < 25 {
-            items.append(contentsOf: collectMobileYouTubeItems(from: json, keyword: keyword, cutoff: cutoff))
+            items.append(contentsOf: makeMobileFeedItems(grouped["videoWithContextRenderer"] ?? [], keyword: keyword, cutoff: cutoff))
         }
         var seen = Set<String>()
         return items.filter { seen.insert($0.id).inserted }.prefix(25).map { $0 }
@@ -1058,12 +1063,15 @@ final class IngestionService {
     }
 
     private func collectMobileYouTubeItems(from json: [String: Any], keyword: String, cutoff: Date) -> [FeedItem] {
+        var grouped = [String: [[String: Any]]]()
+        collectDictionaries(named: ["videoWithContextRenderer"], in: json, into: &grouped)
+        return makeMobileFeedItems(grouped["videoWithContextRenderer"] ?? [], keyword: keyword, cutoff: cutoff)
+    }
+
+    private func makeMobileFeedItems(_ renderers: [[String: Any]], keyword: String, cutoff: Date) -> [FeedItem] {
         var items = [FeedItem]()
         var seenIds = Set<String>()
-        var videoRenderers = [[String: Any]]()
-        collectDictionaries(named: "videoWithContextRenderer", in: json, into: &videoRenderers)
-
-        for renderer in videoRenderers {
+        for renderer in renderers {
             guard let videoId = renderer["videoId"] as? String, seenIds.insert(videoId).inserted else { continue }
             let relText = firstText(in: renderer["publishedTimeText"]) ?? ""
             guard let published = youtubeRelativeDate(relText) else { continue }
@@ -1088,10 +1096,7 @@ final class IngestionService {
         return Array(items.prefix(25))
     }
 
-    private func collectYouTubeVideoRendererItems(from json: [String: Any], keyword: String, cutoff: Date) -> [FeedItem] {
-        var renderers = [[String: Any]]()
-        collectDictionaries(named: "videoRenderer", in: json, into: &renderers)
-
+    private func makeVideoRendererFeedItems(_ renderers: [[String: Any]], keyword: String, cutoff: Date) -> [FeedItem] {
         let items = renderers.compactMap { renderer -> FeedItem? in
             guard let videoId = renderer["videoId"] as? String else { return nil }
             let relText = firstText(in: renderer["publishedTimeText"]) ?? ""
@@ -1117,17 +1122,21 @@ final class IngestionService {
         return Array(items.prefix(25))
     }
 
-    private func collectDictionaries(named name: String, in value: Any, into results: inout [[String: Any]]) {
+    /// Collects every dictionary keyed by any of `names`, grouped by which
+    /// key matched, in a single recursive walk of `value`.
+    private func collectDictionaries(named names: [String], in value: Any, into results: inout [String: [[String: Any]]]) {
         if let dict = value as? [String: Any] {
-            if let match = dict[name] as? [String: Any] {
-                results.append(match)
+            for name in names {
+                if let match = dict[name] as? [String: Any] {
+                    results[name, default: []].append(match)
+                }
             }
             for child in dict.values {
-                collectDictionaries(named: name, in: child, into: &results)
+                collectDictionaries(named: names, in: child, into: &results)
             }
         } else if let array = value as? [Any] {
             for child in array {
-                collectDictionaries(named: name, in: child, into: &results)
+                collectDictionaries(named: names, in: child, into: &results)
             }
         }
     }
@@ -1245,7 +1254,7 @@ final class IngestionService {
     }
 
     private func firstRegexCapture(_ pattern: String, in text: String) -> String? {
-        guard let regex = try? NSRegularExpression(pattern: pattern),
+        guard let regex = Self.generalRegex(for: pattern),
               let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
               match.numberOfRanges > 1,
               let range = Range(match.range(at: 1), in: text) else {
@@ -1537,7 +1546,12 @@ final class IngestionService {
     /// Stable FNV-1a hash so the same article URL yields the same FeedItem id
     /// across refreshes (lets LocalDB dedup it).
     private func stableId(_ input: String) -> String {
-        let canonical = Self.canonicalURLForDedup(input)
+        stableId(fromCanonical: Self.canonicalURLForDedup(input))
+    }
+
+    /// Same hash as `stableId(_:)`, but for callers that already computed the
+    /// canonical URL (e.g. for dedup) and can skip re-parsing it.
+    private func stableId(fromCanonical canonical: String) -> String {
         var v: UInt64 = 14695981039346656037
         for b in canonical.utf8 {
             v ^= UInt64(b)
@@ -1558,6 +1572,7 @@ final class IngestionService {
 actor RequestLimiter {
     private let limit: Int
     private var active = 0
+    private var waiters: [(id: UUID, continuation: CheckedContinuation<Bool, Never>)] = []
 
     init(limit: Int) {
         precondition(limit > 0)
@@ -1565,25 +1580,36 @@ actor RequestLimiter {
     }
 
     func acquire() async -> Bool {
-        while !Task.isCancelled {
-            if active < limit {
-                active += 1
-                return true
-            }
-
-            // Polling keeps the wait cancellation-aware without storing
-            // continuations that can race with release().
-            do {
-                try await Task.sleep(nanoseconds: 10_000_000)
-            } catch {
-                return false
-            }
+        if Task.isCancelled { return false }
+        if active < limit {
+            active += 1
+            return true
         }
-        return false
+
+        let id = UUID()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+                waiters.append((id, continuation))
+            }
+        } onCancel: {
+            Task { await self.cancelWaiter(id) }
+        }
     }
 
     func release() {
+        if let next = waiters.first {
+            waiters.removeFirst()
+            // Hand the slot directly to the next waiter; `active` stays put.
+            next.continuation.resume(returning: true)
+            return
+        }
         precondition(active > 0)
         active -= 1
+    }
+
+    private func cancelWaiter(_ id: UUID) {
+        guard let index = waiters.firstIndex(where: { $0.id == id }) else { return }
+        let continuation = waiters.remove(at: index).continuation
+        continuation.resume(returning: false)
     }
 }

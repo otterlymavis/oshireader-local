@@ -47,6 +47,9 @@ struct SearchView: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var selectedItem: FeedItem? = nil
     @FocusState private var fieldFocused: Bool
+    // `staticSearchLinks` never changes at runtime, so this only needs to be
+    // rebuilt when `db.customUrls` changes — not on every keystroke re-render.
+    @State private var cachedGroupedLinks: [(String, [SearchLink])] = Self.makeGroupedLinks(customUrls: LocalDB.shared.customUrls)
 
     private var activeTerms: [WatchTerm] {
         db.terms.filter(\.is_active)
@@ -56,25 +59,17 @@ struct SearchView: View {
         keyword.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private var groupedLinks: [(String, [SearchLink])] {
-        var map = [String: [SearchLink]]()
-        var order = [String]()
-        for link in staticSearchLinks + customSearchLinks {
-            if map[link.group] == nil {
-                order.append(link.group)
-                map[link.group] = []
-            }
-            map[link.group]?.append(link)
-        }
-        return order.map { ($0, map[$0] ?? []) }
-    }
-
     private var selectedLinks: [SearchLink] {
-        groupedLinks.first(where: { $0.0 == selectedGroup })?.1 ?? groupedLinks.first?.1 ?? []
+        let grouped = cachedGroupedLinks
+        return grouped.first(where: { $0.0 == selectedGroup })?.1 ?? grouped.first?.1 ?? []
     }
 
     private var customSearchLinks: [SearchLink] {
-        db.customUrls.map { entry in
+        Self.makeCustomSearchLinks(db.customUrls)
+    }
+
+    private static func makeCustomSearchLinks(_ urls: [CustomUrl]) -> [SearchLink] {
+        urls.map { entry in
             SearchLink(
                 id: entry.id,
                 group: "Custom",
@@ -84,6 +79,19 @@ struct SearchView: View {
                 makeUrl: { _ in entry.url }
             )
         }
+    }
+
+    private static func makeGroupedLinks(customUrls: [CustomUrl]) -> [(String, [SearchLink])] {
+        var map = [String: [SearchLink]]()
+        var order = [String]()
+        for link in staticSearchLinks + makeCustomSearchLinks(customUrls) {
+            if map[link.group] == nil {
+                order.append(link.group)
+                map[link.group] = []
+            }
+            map[link.group]?.append(link)
+        }
+        return order.map { ($0, map[$0] ?? []) }
     }
 
     var body: some View {
@@ -120,7 +128,8 @@ struct SearchView: View {
                 keyword = first
             }
         }
-        .onChange(of: db.customUrls) { _, _ in
+        .onChange(of: db.customUrls) { _, newValue in
+            cachedGroupedLinks = Self.makeGroupedLinks(customUrls: newValue)
             if selectedGroup == "Custom", customSearchLinks.isEmpty {
                 selectedGroup = "News"
             }
@@ -208,7 +217,7 @@ struct SearchView: View {
     private var categoryStrip: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                ForEach(groupedLinks, id: \.0) { group, links in
+                ForEach(cachedGroupedLinks, id: \.0) { group, links in
                     let meta = groupMeta[group] ?? groupMeta["News"]!
                     let active = group == selectedGroup
                     Button {

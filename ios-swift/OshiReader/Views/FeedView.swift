@@ -63,15 +63,27 @@ actor FeedThumbnailLoader {
     }
 }
 
-private struct FeedThumbnailView: View {
+/// Downsampling, caching image view. Prefer this over raw `AsyncImage` for
+/// any thumbnail-sized remote image — `AsyncImage` decodes at full
+/// resolution with no cross-render cache, which spikes memory on scrolling
+/// grids and re-fetches on every reappearance.
+struct FeedThumbnailView: View {
     let url: URL
     let size: CGFloat
+    let loader: FeedThumbnailLoader
+    let cornerRadius: CGFloat
+    let contentMode: ContentMode
+    let placeholderText: String?
 
     @State private var image: UIImage?
 
-    init(url: URL, size: CGFloat = 72) {
+    init(url: URL, size: CGFloat = 72, loader: FeedThumbnailLoader = .shared, cornerRadius: CGFloat = 8, contentMode: ContentMode = .fill, placeholderText: String? = nil) {
         self.url = url
         self.size = size
+        self.loader = loader
+        self.cornerRadius = cornerRadius
+        self.contentMode = contentMode
+        self.placeholderText = placeholderText
     }
 
     var body: some View {
@@ -79,17 +91,19 @@ private struct FeedThumbnailView: View {
             if let image {
                 Image(uiImage: image)
                     .resizable()
-                    .aspectRatio(contentMode: .fill)
+                    .aspectRatio(contentMode: contentMode)
+            } else if let placeholderText {
+                Text(placeholderText)
             } else {
                 Color.gray.opacity(0.1)
             }
         }
         .frame(width: size, height: size)
         .clipped()
-        .cornerRadius(8)
+        .cornerRadius(cornerRadius)
         .task(id: url) {
             image = nil
-            let loadedImage = await FeedThumbnailLoader.shared.image(for: url)
+            let loadedImage = await loader.image(for: url)
             guard !Task.isCancelled else { return }
             image = loadedImage
         }
@@ -113,6 +127,7 @@ struct FeedView: View {
     @State private var displayedCount: Int = 20
     @State private var cachedFilteredItems: [FeedItem]
     @State private var cachedVisibleItems: [FeedItem]
+    @State private var savedItemIds: Set<String>
     @State private var showFilterSheet = false
     @State private var showAddUrlSheet = false
     @State private var showReorderSheet = false
@@ -137,6 +152,7 @@ struct FeedView: View {
         )
         _cachedFilteredItems = State(initialValue: initialFilteredItems)
         _cachedVisibleItems = State(initialValue: Array(initialFilteredItems.prefix(20)))
+        _savedItemIds = State(initialValue: Set(db.savedPages.map(\.id)))
     }
     
     private let timeRanges = [
@@ -147,10 +163,6 @@ struct FeedView: View {
         (label: "months6", days: 180)
     ]
     
-    private var savedItemIds: Set<String> {
-        Set(db.savedPages.map(\.id))
-    }
-
     private var canLoadMore: Bool {
         displayedCount < min(cachedFilteredItems.count, 100)
     }
@@ -326,6 +338,7 @@ struct FeedView: View {
         .onChange(of: db.subscribedPlatforms) { _, _ in rebuildFeedCache(resetDisplayedCount: true) }
         .onChange(of: db.terms) { _, _ in rebuildFeedCache(resetDisplayedCount: true) }
         .onChange(of: db.hiddenItems) { _, _ in rebuildFeedCache(resetDisplayedCount: true) }
+        .onChange(of: db.savedPages) { _, newValue in savedItemIds = Set(newValue.map(\.id)) }
         .onAppear {
             rebuildFeedCache()
             guard !hasLoadedOnce else { return }

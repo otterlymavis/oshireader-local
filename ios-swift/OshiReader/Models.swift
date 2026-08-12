@@ -62,13 +62,7 @@ func parseISO8601Date(_ value: String) -> Date? {
 private enum _DisplayTextRegex {
     static let htmlTags = try! NSRegularExpression(pattern: "<[^>]+>")
     static let whitespace = try! NSRegularExpression(pattern: "\\s+")
-}
-
-func cleanDisplayText(_ value: String?) -> String? {
-    guard var text = value else { return nil }
-    var range = NSRange(text.startIndex..., in: text)
-    text = _DisplayTextRegex.htmlTags.stringByReplacingMatches(in: text, range: range, withTemplate: "")
-    let replacements = [
+    static let htmlEntityReplacements = [
         "&amp;": "&",
         "&quot;": "\"",
         "&#39;": "'",
@@ -77,7 +71,13 @@ func cleanDisplayText(_ value: String?) -> String? {
         "&lt;": "<",
         "&gt;": ">"
     ]
-    for (needle, replacement) in replacements {
+}
+
+func cleanDisplayText(_ value: String?) -> String? {
+    guard var text = value else { return nil }
+    var range = NSRange(text.startIndex..., in: text)
+    text = _DisplayTextRegex.htmlTags.stringByReplacingMatches(in: text, range: range, withTemplate: "")
+    for (needle, replacement) in _DisplayTextRegex.htmlEntityReplacements {
         text = text.replacingOccurrences(of: needle, with: replacement)
     }
     range = NSRange(text.startIndex..., in: text)

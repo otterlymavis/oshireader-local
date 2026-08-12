@@ -5,11 +5,38 @@ enum LocalRefreshRequest: Equatable {
     case background
     case platform(String)
 
+    static let backgroundMaximumAliases = 2
+    static let backgroundMaximumCustomURLs = 4
+
     var maxConcurrentTerms: Int {
         switch self {
         case .background: return 2
         case .foreground, .platform: return 3
         }
+    }
+
+    var maximumAliases: Int? {
+        switch self {
+        case .background: return Self.backgroundMaximumAliases
+        case .foreground, .platform: return nil
+        }
+    }
+
+    var maximumCustomURLs: Int? {
+        switch self {
+        case .background: return Self.backgroundMaximumCustomURLs
+        case .foreground, .platform: return nil
+        }
+    }
+
+    func customURLsToRefresh(_ urls: [CustomUrl]) -> [CustomUrl] {
+        guard let maximumCustomURLs else { return urls }
+        return Array(urls.prefix(maximumCustomURLs))
+    }
+
+    func hasCappedCustomURLs(_ urls: [CustomUrl]) -> Bool {
+        guard let maximumCustomURLs else { return false }
+        return urls.count > maximumCustomURLs
     }
 
     func platforms(subscribedPlatforms: [String]) -> Set<String> {
@@ -43,9 +70,28 @@ struct LocalRefreshResult: Equatable {
     let addedCount: Int
     let sourceStatuses: [SourceRefreshStatus]
     let customRefreshCompleted: Bool
+    let cappedWorkCount: Int
+
+    init(
+        completion: LocalRefreshCompletion,
+        addedCount: Int,
+        sourceStatuses: [SourceRefreshStatus],
+        customRefreshCompleted: Bool,
+        cappedWorkCount: Int = 0
+    ) {
+        self.completion = completion
+        self.addedCount = addedCount
+        self.sourceStatuses = sourceStatuses
+        self.customRefreshCompleted = customRefreshCompleted
+        self.cappedWorkCount = cappedWorkCount
+    }
 
     var succeeded: Bool {
         completion == .completed && customRefreshCompleted
+    }
+
+    var wasPartial: Bool {
+        completion != .completed || !customRefreshCompleted || hasSourceFailures || cappedWorkCount > 0
     }
 
     var hasSourceFailures: Bool { sourceStatuses.hasFailures }
@@ -101,7 +147,7 @@ final class LocalRefreshCoordinator: ObservableObject {
                 RefreshDiagnostics.shared.finish(
                     succeeded: result.succeeded,
                     addedCount: result.addedCount,
-                    partial: result.completion != .completed || !result.customRefreshCompleted || result.hasSourceFailures
+                    partial: result.wasPartial
                 )
             }
             self.isRefreshing = false
@@ -141,17 +187,38 @@ final class LocalRefreshCoordinator: ObservableObject {
 
         guard !orderedTerms.isEmpty, !platforms.isEmpty else {
             let customCompleted: Bool
+            let customStatuses: [SourceRefreshStatus]
+            let customAddedCount: Int
+            let cappedWorkCount: Int
             if refreshesCustomURLs, !db.customUrls.isEmpty, isCurrent(generation: generation, profileID: profileID) {
-                customCompleted = await refreshCustomURLs(
+                let custom = await refreshCustomURLs(
+                    request: request,
                     db: db,
                     sourceRevision: sourceRevision,
                     generation: generation,
                     profileID: profileID
-                ).completed
+                )
+                customCompleted = custom.completed
+                customStatuses = custom.statuses
+                customAddedCount = custom.addedCount
+                cappedWorkCount = custom.cappedWorkCount
             } else {
                 customCompleted = true
+                customStatuses = []
+                customAddedCount = 0
+                cappedWorkCount = 0
             }
-            return LocalRefreshResult(completion: Task.isCancelled ? .cancelled : .completed, addedCount: 0, sourceStatuses: [], customRefreshCompleted: customCompleted)
+            if !customStatuses.isEmpty, isCurrent(generation: generation, profileID: profileID) {
+                RefreshDiagnostics.shared.recordSourceStatuses(customStatuses)
+                RefreshDiagnostics.shared.recordCompletedSourceStatuses(RefreshDiagnostics.shared.sourceStatuses)
+            }
+            return LocalRefreshResult(
+                completion: Task.isCancelled ? .cancelled : .completed,
+                addedCount: customAddedCount,
+                sourceStatuses: customStatuses,
+                customRefreshCompleted: customCompleted,
+                cappedWorkCount: cappedWorkCount
+            )
         }
 
         let reports = await ingest(
@@ -164,10 +231,13 @@ final class LocalRefreshCoordinator: ObservableObject {
             profileID: profileID
         )
         var addedCount = reports.addedCount
+        var sourceStatuses = reports.statuses
         var customCompleted = true
+        var cappedWorkCount = 0
         if refreshesCustomURLs {
             if !Task.isCancelled, isCurrent(generation: generation, profileID: profileID) {
                 let custom = await refreshCustomURLs(
+                    request: request,
                     db: db,
                     sourceRevision: sourceRevision,
                     generation: generation,
@@ -175,6 +245,8 @@ final class LocalRefreshCoordinator: ObservableObject {
                 )
                 customCompleted = custom.completed
                 addedCount += custom.addedCount
+                sourceStatuses.append(contentsOf: custom.statuses)
+                cappedWorkCount += custom.cappedWorkCount
             } else {
                 customCompleted = false
             }
@@ -184,14 +256,21 @@ final class LocalRefreshCoordinator: ObservableObject {
             return LocalRefreshResult(
                 completion: .cancelled,
                 addedCount: 0,
-                sourceStatuses: reports.statuses,
-                customRefreshCompleted: false
+                sourceStatuses: sourceStatuses,
+                customRefreshCompleted: false,
+                cappedWorkCount: cappedWorkCount
             )
         }
-        RefreshDiagnostics.shared.recordSourceStatuses(reports.statuses)
+        RefreshDiagnostics.shared.recordSourceStatuses(sourceStatuses)
         RefreshDiagnostics.shared.recordCompletedSourceStatuses(RefreshDiagnostics.shared.sourceStatuses)
         let completion: LocalRefreshCompletion = Task.isCancelled ? .cancelled : .completed
-        return LocalRefreshResult(completion: completion, addedCount: addedCount, sourceStatuses: reports.statuses, customRefreshCompleted: customCompleted)
+        return LocalRefreshResult(
+            completion: completion,
+            addedCount: addedCount,
+            sourceStatuses: sourceStatuses,
+            customRefreshCompleted: customCompleted,
+            cappedWorkCount: cappedWorkCount
+        )
     }
 
     private func ingest(
@@ -211,7 +290,11 @@ final class LocalRefreshCoordinator: ObservableObject {
 
             func add(_ term: WatchTerm) {
                 group.addTask {
-                    await IngestionService.shared.ingestReport(term: term, platforms: platforms)
+                    await IngestionService.shared.ingestReport(
+                        term: term,
+                        platforms: platforms,
+                        maximumAliases: request.maximumAliases
+                    )
                 }
             }
 
@@ -241,20 +324,43 @@ final class LocalRefreshCoordinator: ObservableObject {
     }
 
     private func refreshCustomURLs(
+        request: LocalRefreshRequest,
         db: LocalDB,
         sourceRevision: Int,
         generation: Int,
         profileID: UUID
-    ) async -> (completed: Bool, addedCount: Int) {
-        guard !Task.isCancelled, isCurrent(generation: generation, profileID: profileID) else { return (false, 0) }
-        let customReport = await NetworkManager.shared.scrapeCustomUrlsReport(db.customUrls)
-        guard !Task.isCancelled, isCurrent(generation: generation, profileID: profileID) else { return (false, 0) }
+    ) async -> (completed: Bool, addedCount: Int, statuses: [SourceRefreshStatus], cappedWorkCount: Int) {
+        guard !Task.isCancelled, isCurrent(generation: generation, profileID: profileID) else { return (false, 0, [], 0) }
+        let allCustomUrlsCount = db.customUrls.count
+        let customUrls = request.customURLsToRefresh(db.customUrls)
+        let wasCapped = request.hasCappedCustomURLs(db.customUrls)
+        let customReport = await NetworkManager.shared.scrapeCustomUrlsReport(customUrls)
+        guard !Task.isCancelled, isCurrent(generation: generation, profileID: profileID) else { return (false, 0, [], 0) }
         var addedCount = 0
         let currentItems = db.currentCustomFeedItems(customReport.items)
         if !currentItems.isEmpty {
             addedCount = db.mergeItems(newItems: currentItems, sourceRevision: sourceRevision)
         }
-        return (customReport.completed, addedCount)
+        let outcome: SourceRefreshOutcome
+        if !customReport.completed {
+            outcome = .failed(.httpFailure)
+        } else if !currentItems.isEmpty {
+            outcome = .received
+        } else {
+            outcome = .noResults
+        }
+        let status = SourceRefreshStatus(
+            id: "custom",
+            outcome: outcome,
+            itemCount: currentItems.count,
+            queryCount: customUrls.count
+        )
+        return (
+            customReport.completed,
+            addedCount,
+            [status],
+            wasCapped ? max(0, allCustomUrlsCount - customUrls.count) : 0
+        )
     }
 
     private func isCurrent(generation: Int, profileID: UUID) -> Bool {

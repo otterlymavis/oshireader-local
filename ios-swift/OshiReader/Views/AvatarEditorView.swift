@@ -9,6 +9,11 @@ struct AvatarEditorView: View {
     @StateObject private var i18n = I18nManager.shared
     
     @State private var layers: [AvatarLayer] = []
+    /// zIndex order for `layers`, cached separately so dragging a layer
+    /// (which only changes x/y, never zIndex) doesn't re-sort every layer
+    /// on every touch-move event. Recomputed by `resortLayers()` whenever
+    /// membership or zIndex actually changes.
+    @State private var sortedLayerIds: [String] = []
     @State private var selectedId: String? = nil
     @State private var cropMode = false
     
@@ -86,9 +91,10 @@ struct AvatarEditorView: View {
                                 .foregroundColor(theme.colors.textMuted)
                         }
                     } else {
-                        // Staked layers sorted by zIndex
-                        let sorted = layers.sorted(by: { $0.zIndex < $1.zIndex })
-                        ForEach(sorted) { layer in
+                        // Cached zIndex order; each layer's live x/y/crop
+                        // values are looked up from `layers` on every render.
+                        ForEach(sortedLayerIds, id: \.self) { layerId in
+                            if let layer = layers.first(where: { $0.id == layerId }) {
                             let isSelected = selectedId == layer.id
                             let size = baseSize * layer.scale * scaleFactor
                             let cropX = (layer.cropX ?? 0.0) * scaleFactor
@@ -155,6 +161,7 @@ struct AvatarEditorView: View {
                                     }
                                     .onEnded { _ in isDragging = false }
                             )
+                            }
                         }
                     }
                 }
@@ -320,15 +327,7 @@ struct AvatarEditorView: View {
                             Button(action: { addLayer(url: sticker.thumb) }) {
                                 ZStack {
                                     if let url = URL(string: sticker.thumb) {
-                                        AsyncImage(url: url) { image in
-                                            image
-                                                .resizable()
-                                                .aspectRatio(contentMode: .fit)
-                                                .frame(width: 80, height: 80)
-                                        } placeholder: {
-                                            Color.gray.opacity(0.1)
-                                                .frame(width: 80, height: 80)
-                                        }
+                                        FeedThumbnailView(url: url, size: 80, contentMode: .fit)
                                         
                                         // Plus overlay
                                         VStack {
@@ -372,14 +371,21 @@ struct AvatarEditorView: View {
     
     // MARK: - Layer Logic
     
+    /// Recomputes the cached zIndex display order. Call after any change to
+    /// layer membership or zIndex — not needed for x/y/crop drag updates.
+    private func resortLayers() {
+        sortedLayerIds = layers.sorted(by: { $0.zIndex < $1.zIndex }).map(\.id)
+    }
+
     private func loadComposition() {
         let comp = db.compositions[keyword] ?? []
         self.layers = comp
         if let first = comp.first {
             selectedId = first.id
         }
+        resortLayers()
     }
-    
+
     private func addLayer(url: String) {
         let maxZ = layers.reduce(0) { max($0, $1.zIndex) }
         // Start in the center of 300x300 canvas
@@ -397,13 +403,15 @@ struct AvatarEditorView: View {
         layers.append(newLayer)
         selectedId = newLayer.id
         cropMode = false
+        resortLayers()
     }
-    
+
     private func deleteSelected() {
         guard let id = selectedId else { return }
         layers.removeAll(where: { $0.id == id })
         selectedId = layers.last?.id
         cropMode = false
+        resortLayers()
     }
     
     private func scaleLayer(_ delta: Double) {
@@ -433,12 +441,14 @@ struct AvatarEditorView: View {
         guard let id = selectedId, let idx = layers.firstIndex(where: { $0.id == id }) else { return }
         let maxZ = layers.reduce(0) { max($0, $1.zIndex) }
         layers[idx].zIndex = maxZ + 1
+        resortLayers()
     }
-    
+
     private func sendBack() {
         guard let id = selectedId, let idx = layers.firstIndex(where: { $0.id == id }) else { return }
         let minZ = layers.reduce(0) { min($0, $1.zIndex) }
         layers[idx].zIndex = minZ - 1
+        resortLayers()
     }
     
     private func cropZoom(_ delta: Double) {

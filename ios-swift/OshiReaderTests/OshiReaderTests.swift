@@ -325,6 +325,39 @@ final class OshiReaderTests: XCTestCase {
         ])
     }
 
+    func testBackgroundRefreshCapsAliasesWithoutChangingForegroundSearchKeywords() {
+        let term = WatchTerm(
+            keyword: "Primary Oshi",
+            aliases: ["Alias 1", "Alias 2", "Alias 3", "Alias 4", "Alias 5"]
+        )
+
+        XCTAssertEqual(IngestionService.searchKeywords(for: term), [
+            "Primary Oshi", "Alias 1", "Alias 2", "Alias 3", "Alias 4", "Alias 5"
+        ])
+        XCTAssertEqual(
+            IngestionService.searchKeywords(for: term, maximumAliases: LocalRefreshRequest.background.maximumAliases),
+            ["Primary Oshi", "Alias 1", "Alias 2"]
+        )
+    }
+
+    func testBackgroundRefreshCapsCustomURLsWithoutChangingForegroundSelection() {
+        let urls = (0..<6).map { index in
+            CustomUrl(
+                id: "custom-\(index)",
+                url: "https://example.com/feed-\(index).xml",
+                title: nil,
+                added_at: "2026-08-01T00:00:00Z"
+            )
+        }
+
+        XCTAssertEqual(LocalRefreshRequest.foreground.customURLsToRefresh(urls).map(\.id), urls.map(\.id))
+        XCTAssertFalse(LocalRefreshRequest.foreground.hasCappedCustomURLs(urls))
+        XCTAssertEqual(LocalRefreshRequest.background.customURLsToRefresh(urls).map(\.id), [
+            "custom-0", "custom-1", "custom-2", "custom-3"
+        ])
+        XCTAssertTrue(LocalRefreshRequest.background.hasCappedCustomURLs(urls))
+    }
+
     func testCanonicalURLForDedupRemovesTrackingParametersOnly() {
         XCTAssertEqual(
             IngestionService.canonicalURLForDedup(
@@ -2272,6 +2305,53 @@ final class OshiReaderTests: XCTestCase {
         XCTAssertTrue(result.hasSourceFailures)
     }
 
+    func testRefreshResultTreatsCappedBackgroundWorkAsPartialButSuccessful() {
+        let result = LocalRefreshResult(
+            completion: .completed,
+            addedCount: 0,
+            sourceStatuses: [],
+            customRefreshCompleted: true,
+            cappedWorkCount: 2
+        )
+
+        XCTAssertTrue(result.succeeded)
+        XCTAssertTrue(result.wasPartial)
+    }
+
+    @MainActor
+    func testCustomURLRefreshReportsAllFailedScrapesAsSourceFailure() async {
+        db.setSubscribedPlatforms(platforms: ["custom"])
+        db.customUrls = [
+            CustomUrl(
+                id: "custom:invalid",
+                url: "::::",
+                title: "Broken feed",
+                added_at: "2026-08-01T00:00:00Z"
+            )
+        ]
+
+        let result = await LocalRefreshCoordinator.shared.refresh(.foreground)
+
+        XCTAssertFalse(result.succeeded)
+        XCTAssertEqual(result.sourceStatuses.first?.id, "custom")
+        XCTAssertEqual(result.sourceStatuses.first?.outcome, .failed(.httpFailure))
+    }
+
+    @MainActor
+    func testRefreshDiagnosticsPreservesCustomFailureWithReturnedItems() {
+        let suiteName = "OshiReaderTests.custom.partial.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let diagnostics = RefreshDiagnostics(defaults: defaults)
+
+        diagnostics.recordSourceStatuses([
+            SourceRefreshStatus(id: "custom", outcome: .failed(.httpFailure), itemCount: 1, queryCount: 2)
+        ])
+
+        XCTAssertEqual(diagnostics.sourceStatuses.first?.outcome, .failed(.httpFailure))
+        XCTAssertEqual(diagnostics.sourceStatuses.first?.itemCount, 1)
+    }
+
     @MainActor
     func testRefreshDiagnosticsUsesInjectedDefaultsForLifecycleMetadata() {
         let suiteName = "OshiReaderTests.lifecycle.\(UUID().uuidString)"
@@ -2303,6 +2383,21 @@ final class OshiReaderTests: XCTestCase {
         store.markUsed(termID: third.id)
 
         XCTAssertEqual(store.priorityOrdered([first, second, third]).map(\.id), ["third", "second", "first"])
+    }
+
+    @MainActor
+    func testBackgroundPriorityKeepsNonNotificationTermsAfterNotificationTerms() {
+        let suiteName = "OshiReaderTests.background.priority.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = RecentTermUsageStore(defaults: defaults)
+        let first = WatchTerm(id: "first", keyword: "First", notify_on_new: false)
+        let second = WatchTerm(id: "second", keyword: "Second", notify_on_new: true)
+        let third = WatchTerm(id: "third", keyword: "Third", notify_on_new: false)
+
+        store.markUsed(termID: third.id)
+
+        XCTAssertEqual(store.priorityOrdered([first, second, third]).map(\.id), ["second", "third", "first"])
     }
 
     @MainActor

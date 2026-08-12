@@ -8,6 +8,31 @@ private let _japaneseScriptRegex = try? NSRegularExpression(pattern: "\\p{Hiraga
 private let _bloggerThumbSuffixRegex = try? NSRegularExpression(pattern: "/s72-c$")
 private let _networkISO8601 = ISO8601DateFormatter()
 
+/// `DateFormatter` isn't safe for concurrent access, but constructing one is
+/// comparatively expensive (locale/calendar setup) and RSS parsing happens on
+/// many concurrent tasks per refresh. Pool one formatter per format string
+/// behind a lock instead of building a fresh instance per parse.
+private final class RSSDateFormatterPool {
+    static let shared = RSSDateFormatterPool()
+    private let lock = NSLock()
+    private var formatters: [String: DateFormatter] = [:]
+
+    func date(from string: String, format: String) -> Date? {
+        lock.lock()
+        defer { lock.unlock() }
+        let formatter: DateFormatter
+        if let cached = formatters[format] {
+            formatter = cached
+        } else {
+            formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.dateFormat = format
+            formatters[format] = formatter
+        }
+        return formatter.date(from: string)
+    }
+}
+
 private enum _ScraperRegex {
     static let titleTag = try? NSRegularExpression(
         pattern: #"<title[^>]*>([^<]{1,240})</title>"#,
@@ -305,11 +330,6 @@ class RSSParserDelegate: NSObject, XMLParserDelegate {
     private var currentUpdatedDate = ""
     private var currentDCDate = ""
     private var currentThumbnailUrl: String? = nil
-    private let dateFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        return formatter
-    }()
     private static let dateFormats = [
         "E, d MMM yyyy HH:mm:ss Z",
         "yyyy-MM-dd'T'HH:mm:ssXXXXX",
@@ -413,8 +433,7 @@ class RSSParserDelegate: NSObject, XMLParserDelegate {
 
     private func parseFeedDate(_ dateString: String) -> Date? {
         for format in Self.dateFormats {
-            dateFormatter.dateFormat = format
-            if let date = dateFormatter.date(from: dateString) {
+            if let date = RSSDateFormatterPool.shared.date(from: dateString, format: format) {
                 return date
             }
         }

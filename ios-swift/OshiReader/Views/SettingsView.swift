@@ -202,6 +202,14 @@ struct SettingsView: View {
                             .foregroundColor(theme.colors.textMuted)
                             .accessibilityIdentifier("settings.notificationSetupHint")
 
+                        HStack {
+                            Label(i18n.t("localAlertBackgroundRefresh"), systemImage: "arrow.clockwise")
+                            Spacer()
+                            Text(backgroundRefreshStatusText)
+                                .foregroundColor(backgroundRefreshStatusColor)
+                        }
+                        .accessibilityIdentifier("settings.localAlertBackgroundStatus")
+
                         switch notifications.authorizationStatus {
                         case .notDetermined:
                             Button {
@@ -482,6 +490,10 @@ struct SettingsView: View {
             guard newPhase == .active else { return }
             currentBackgroundRefreshStatus = UIApplication.shared.backgroundRefreshStatus
             Task { await notifications.refreshAuthorizationStatus() }
+        }
+        .onChange(of: notifications.authorizationStatus) { _, status in
+            guard status == .notDetermined || status == .denied else { return }
+            isNotificationsSectionExpanded = true
         }
     }
 
@@ -827,15 +839,8 @@ private struct TermRowView: View {
                         .fill(theme.colors.divider)
                         .frame(width: 38, height: 38)
                     if let avatar = db.oshiAvatars[term.keyword], let url = URL(string: avatar) {
-                        AsyncImage(url: url) { image in
-                            image
-                                .resizable()
-                                .aspectRatio(contentMode: .fill)
-                        } placeholder: {
-                            Text("🎨")
-                        }
-                        .frame(width: 38, height: 38)
-                        .clipShape(Circle())
+                        FeedThumbnailView(url: url, size: 38, cornerRadius: 19, placeholderText: "🎨")
+                            .clipShape(Circle())
                     } else {
                         Text("🎨")
                             .font(.body)
