@@ -287,7 +287,16 @@ final class LocalRefreshCoordinator: ObservableObject {
         generation: Int,
         profileID: UUID
     ) async -> (addedCount: Int, statuses: [SourceRefreshStatus]) {
-        let skippedSourceIDs = RefreshDiagnostics.shared.sourcesInCooldown()
+        // Cooldown only applies to routine (foreground/background) refreshes.
+        // .platform is the user explicitly tapping a source to fetch it now
+        // — honor that override rather than silently no-op-ing for up to
+        // cooldownDuration with no feedback.
+        let skippedSourceIDs: Set<String>
+        if case .platform = request {
+            skippedSourceIDs = []
+        } else {
+            skippedSourceIDs = RefreshDiagnostics.shared.sourcesInCooldown()
+        }
         return await withTaskGroup(of: IngestionReport.self, returning: (Int, [SourceRefreshStatus]).self) { group in
             var iterator = terms.makeIterator()
             var running = 0

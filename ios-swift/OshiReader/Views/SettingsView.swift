@@ -689,34 +689,57 @@ struct SettingsView: View {
     private func submitEncryptedBackupPrompt() {
         do {
             try EncryptedBackupCodec.validatePassword(encryptedBackupPassword)
-            switch encryptedBackupOperation {
-            case .export:
-                guard encryptedBackupPassword == encryptedBackupConfirmation else {
-                    encryptedBackupError = i18n.t("passwordsDoNotMatch")
-                    return
-                }
-                encryptedBackupDocument = EncryptedBackupDocument(data: try db.exportEncryptedBackupData(password: encryptedBackupPassword))
-                encryptedBackupOperation = nil
-                encryptedBackupPassword = ""
-                encryptedBackupConfirmation = ""
-                DispatchQueue.main.async {
-                    showingEncryptedBackupExporter = true
-                }
-            case .import:
-                guard let data = pendingEncryptedBackupData else {
-                    throw EncryptedBackupError.invalidEnvelope
-                }
-                try db.importEncryptedBackupData(data, password: encryptedBackupPassword)
-                encryptedBackupOperation = nil
-                encryptedBackupPassword = ""
-                pendingEncryptedBackupData = nil
-                backupMessage = i18n.t("backupImported")
-                showingBackupMessage = true
-            case nil:
-                break
-            }
         } catch {
             encryptedBackupError = localizedEncryptedBackupMessage(error)
+            return
+        }
+        switch encryptedBackupOperation {
+        case .export:
+            guard encryptedBackupPassword == encryptedBackupConfirmation else {
+                encryptedBackupError = i18n.t("passwordsDoNotMatch")
+                return
+            }
+            let password = encryptedBackupPassword
+            // exportEncryptedBackupData runs its PBKDF2 work off the main
+            // thread; awaiting it here keeps this button tap from freezing
+            // the UI for the duration of key derivation.
+            Task {
+                do {
+                    encryptedBackupDocument = EncryptedBackupDocument(data: try await db.exportEncryptedBackupData(password: password))
+                    encryptedBackupOperation = nil
+                    encryptedBackupPassword = ""
+                    encryptedBackupConfirmation = ""
+                    // Deferred a tick so the sheet dismissal above (from
+                    // clearing encryptedBackupOperation) settles before the
+                    // file exporter presents — presenting immediately in the
+                    // same update as a dismiss can silently no-op in SwiftUI.
+                    DispatchQueue.main.async {
+                        showingEncryptedBackupExporter = true
+                    }
+                } catch {
+                    encryptedBackupError = localizedEncryptedBackupMessage(error)
+                }
+            }
+        case .import:
+            guard let data = pendingEncryptedBackupData else {
+                encryptedBackupError = localizedEncryptedBackupMessage(EncryptedBackupError.invalidEnvelope)
+                return
+            }
+            let password = encryptedBackupPassword
+            Task {
+                do {
+                    try await db.importEncryptedBackupData(data, password: password)
+                    encryptedBackupOperation = nil
+                    encryptedBackupPassword = ""
+                    pendingEncryptedBackupData = nil
+                    backupMessage = i18n.t("backupImported")
+                    showingBackupMessage = true
+                } catch {
+                    encryptedBackupError = localizedEncryptedBackupMessage(error)
+                }
+            }
+        case nil:
+            break
         }
     }
 

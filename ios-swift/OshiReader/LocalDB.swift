@@ -11,11 +11,10 @@ private final class DebouncedFileSaver {
     private var pendingWorkItem: DispatchWorkItem?
 
     func scheduleSave(on queue: DispatchQueue, delay: DispatchTimeInterval = .milliseconds(250), write: @escaping () -> Void) {
-        pendingWorkItem?.cancel()
         lock.lock()
+        pendingWorkItem?.cancel()
         generation &+= 1
         let currentGeneration = generation
-        lock.unlock()
         let workItem = DispatchWorkItem { [weak self] in
             guard let self else { return }
             self.lock.lock()
@@ -25,6 +24,9 @@ private final class DebouncedFileSaver {
             write()
         }
         pendingWorkItem = workItem
+        lock.unlock()
+        // Scheduled for later execution on `queue`, not run inline, so this
+        // can't reenter the lock we're about to release.
         queue.asyncAfter(deadline: .now() + delay, execute: workItem)
     }
 
@@ -33,9 +35,9 @@ private final class DebouncedFileSaver {
     func flush(on queue: DispatchQueue, write: @escaping () -> Void) {
         lock.lock()
         generation &+= 1
-        lock.unlock()
         pendingWorkItem?.cancel()
         pendingWorkItem = nil
+        lock.unlock()
         queue.sync(execute: write)
     }
 }
@@ -1452,9 +1454,15 @@ class LocalDB: ObservableObject {
         return try encoder.encode(backup)
     }
 
+    /// PBKDF2 at 600k iterations is deliberately slow (that's the point —
+    /// see EncryptedBackupCodec); running it detached keeps that off the
+    /// main thread instead of freezing the UI for the export/import prompt.
     @MainActor
-    func exportEncryptedBackupData(password: String) throws -> Data {
-        try EncryptedBackupCodec.encrypt(exportBackupData(), password: password)
+    func exportEncryptedBackupData(password: String) async throws -> Data {
+        let plaintext = try exportBackupData()
+        return try await Task.detached(priority: .userInitiated) {
+            try EncryptedBackupCodec.encrypt(plaintext, password: password)
+        }.value
     }
 
     @MainActor
@@ -1547,9 +1555,13 @@ class LocalDB: ObservableObject {
 
     }
 
+    /// See exportEncryptedBackupData — PBKDF2 runs detached to keep the
+    /// deliberately-slow key derivation off the main thread.
     @MainActor
-    func importEncryptedBackupData(_ data: Data, password: String) throws {
-        let plaintext = try EncryptedBackupCodec.decrypt(data, password: password)
+    func importEncryptedBackupData(_ data: Data, password: String) async throws {
+        let plaintext = try await Task.detached(priority: .userInitiated) {
+            try EncryptedBackupCodec.decrypt(data, password: password)
+        }.value
         try importBackupData(plaintext)
     }
 

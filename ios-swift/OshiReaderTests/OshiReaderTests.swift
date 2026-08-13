@@ -4372,7 +4372,7 @@ final class OshiReaderTests: XCTestCase {
     }
 
     @MainActor
-    func testEncryptedBackupRoundTripPreservesLocalData() throws {
+    func testEncryptedBackupRoundTripPreservesLocalData() async throws {
         let now = ISO8601DateFormatter().string(from: Date())
         let term = WatchTerm(id: "encrypted-term", keyword: "Encrypted Oshi", notify_on_new: true)
         let item = FeedItem(
@@ -4386,14 +4386,14 @@ final class OshiReaderTests: XCTestCase {
         db.customUrls = [CustomUrl(id: "custom:encrypted", url: "https://example.com/feed.xml", title: "Feed", added_at: now)]
         db.amebloBlogs = [AmebloBlog(url: "https://ameblo.jp/encrypted", title: "Blog", addedAt: now)!]
 
-        let encrypted = try db.exportEncryptedBackupData(password: "correct horse battery staple")
+        let encrypted = try await db.exportEncryptedBackupData(password: "correct horse battery staple")
         XCTAssertNotEqual(encrypted, try db.exportBackupData())
 
         db.terms = []
         db.feedItems = []
         db.customUrls = []
         db.amebloBlogs = []
-        try db.importEncryptedBackupData(encrypted, password: "correct horse battery staple")
+        try await db.importEncryptedBackupData(encrypted, password: "correct horse battery staple")
 
         XCTAssertEqual(db.terms.map(\.keyword), ["Encrypted Oshi"])
         XCTAssertEqual(db.feedItems.map(\.id), ["news:encrypted"])
@@ -4402,13 +4402,16 @@ final class OshiReaderTests: XCTestCase {
     }
 
     @MainActor
-    func testEncryptedBackupWrongPasswordLeavesCurrentDataUntouched() throws {
+    func testEncryptedBackupWrongPasswordLeavesCurrentDataUntouched() async throws {
         let term = db.saveTerm(keyword: "Protected Oshi")
-        let encrypted = try db.exportEncryptedBackupData(password: "correct horse battery staple")
+        let encrypted = try await db.exportEncryptedBackupData(password: "correct horse battery staple")
         let beforeTerms = db.terms
         let beforeItems = db.feedItems
 
-        XCTAssertThrowsError(try db.importEncryptedBackupData(encrypted, password: "wrong password here")) { error in
+        do {
+            try await db.importEncryptedBackupData(encrypted, password: "wrong password here")
+            XCTFail("Expected authenticationFailed")
+        } catch {
             XCTAssertEqual(error as? EncryptedBackupError, .authenticationFailed)
         }
         XCTAssertEqual(db.terms, beforeTerms)
@@ -4417,15 +4420,21 @@ final class OshiReaderTests: XCTestCase {
     }
 
     @MainActor
-    func testEncryptedBackupTamperAndTruncationLeaveCurrentDataUntouched() throws {
+    func testEncryptedBackupTamperAndTruncationLeaveCurrentDataUntouched() async throws {
         _ = db.saveTerm(keyword: "Untouched Oshi")
-        let encrypted = try db.exportEncryptedBackupData(password: "correct horse battery staple")
+        let encrypted = try await db.exportEncryptedBackupData(password: "correct horse battery staple")
         let before = db.terms
 
         var tampered = encrypted
         tampered[tampered.count - 1] ^= 1
-        XCTAssertThrowsError(try db.importEncryptedBackupData(tampered, password: "correct horse battery staple"))
-        XCTAssertThrowsError(try db.importEncryptedBackupData(Data(encrypted.prefix(10)), password: "correct horse battery staple"))
+        do {
+            try await db.importEncryptedBackupData(tampered, password: "correct horse battery staple")
+            XCTFail("Expected an error from tampered data")
+        } catch {}
+        do {
+            try await db.importEncryptedBackupData(Data(encrypted.prefix(10)), password: "correct horse battery staple")
+            XCTFail("Expected an error from truncated data")
+        } catch {}
         XCTAssertEqual(db.terms, before)
     }
 
