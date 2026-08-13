@@ -42,6 +42,7 @@ final class RefreshDiagnostics: ObservableObject {
         case stale
         case noResults
         case failed
+        case cooldown
     }
 
     private struct HealthRecord: Codable, Equatable {
@@ -136,6 +137,8 @@ final class RefreshDiagnostics: ObservableObject {
                 outcome = .failed(failure)
             } else if status.outcome == .stale || existing?.outcome == .stale {
                 outcome = .stale
+            } else if status.outcome == .cooldown || existing?.outcome == .cooldown {
+                outcome = .cooldown
             } else {
                 outcome = .noResults
             }
@@ -191,8 +194,10 @@ final class RefreshDiagnostics: ObservableObject {
             if case .failed = $0.outcome { return true }
             return false
         }.count
+        let cooldown = sourceStatuses.filter { $0.outcome == .cooldown }.count
         guard !sourceStatuses.isEmpty else { return "No sources checked" }
-        return "\(received) current · \(stale) stale · \(empty) empty · \(failed) failed"
+        let base = "\(received) current · \(stale) stale · \(empty) empty · \(failed) failed"
+        return cooldown > 0 ? base + " · \(cooldown) cooling down" : base
     }
 
     /// The UI should still explain the current refresh when history has not
@@ -247,11 +252,16 @@ final class RefreshDiagnostics: ObservableObject {
         let grouped = Dictionary(grouping: healthRecords, by: \.sourceID)
         var cooldown = Set<String>()
         for (sourceID, records) in grouped {
-            let sorted = records.sorted { $0.checkedAt < $1.checkedAt }
-            guard let latest = sorted.last, latest.outcome == .failed,
+            // Ignore .cooldown records themselves — they're not a real check
+            // outcome, and treating one as "latest" would end the cooldown
+            // after a single skipped cycle since it isn't .failed. Cooldown
+            // duration is measured from the last genuine failure, not from
+            // the last time we merely skipped checking.
+            let realRecords = records.filter { $0.outcome != .cooldown }.sorted { $0.checkedAt < $1.checkedAt }
+            guard let latest = realRecords.last, latest.outcome == .failed,
                   now.timeIntervalSince(latest.checkedAt) < Self.cooldownDuration else { continue }
             var streak = 0
-            for record in sorted.reversed() {
+            for record in realRecords.reversed() {
                 guard record.outcome == .failed else { break }
                 streak += 1
             }
@@ -324,6 +334,8 @@ final class RefreshDiagnostics: ObservableObject {
             return HealthRecord(sourceID: status.id, checkedAt: completedAt, outcome: .noResults, itemCount: status.itemCount, queryCount: status.queryCount, failure: nil)
         case .failed(let failure):
             return HealthRecord(sourceID: status.id, checkedAt: completedAt, outcome: .failed, itemCount: status.itemCount, queryCount: status.queryCount, failure: failure)
+        case .cooldown:
+            return HealthRecord(sourceID: status.id, checkedAt: completedAt, outcome: .cooldown, itemCount: status.itemCount, queryCount: status.queryCount, failure: nil)
         }
     }
 
@@ -333,6 +345,7 @@ final class RefreshDiagnostics: ObservableObject {
         case .stale: return .stale
         case .noResults: return .noResults
         case .failed: return .failed(record.failure ?? .httpFailure)
+        case .cooldown: return .cooldown
         }
     }
 
@@ -343,6 +356,10 @@ final class RefreshDiagnostics: ObservableObject {
 
     private struct HealthExportSummary: Encodable {
         let id: String
+        /// The live outcome for this refresh cycle (e.g. "cooldown" when the
+        /// source was deliberately skipped), not just historical counts —
+        /// this is what actually answers "why isn't source X updating".
+        let currentOutcome: String?
         let receivedCount: Int
         let staleCount: Int
         let emptyCount: Int
@@ -350,6 +367,16 @@ final class RefreshDiagnostics: ObservableObject {
         let totalItemCount: Int
         let lastCheckedAt: Date
         let lastFailure: String?
+    }
+
+    private static func describe(_ outcome: SourceRefreshOutcome) -> String {
+        switch outcome {
+        case .received: return "received"
+        case .stale: return "stale"
+        case .noResults: return "noResults"
+        case .cooldown: return "cooldown"
+        case .failed(let failure): return "failed(\(failure.rawValue))"
+        }
     }
 
     private struct HealthExport: Encodable {
@@ -364,9 +391,14 @@ final class RefreshDiagnostics: ObservableObject {
     /// local-only app, so this is the way to explain a "why isn't source X
     /// updating" report.
     func exportHealthHistoryJSON() -> Data? {
-        let summaries = sourceHealthSummaries.map {
+        // visibleSourceHealthSummaries, not sourceHealthSummaries — the
+        // latter is only the persisted-history view, which wouldn't reflect
+        // this cycle's in-progress/cooldown status until the next refresh
+        // completes and persists it.
+        let summaries = visibleSourceHealthSummaries.map {
             HealthExportSummary(
                 id: $0.id,
+                currentOutcome: $0.currentStatus.map { Self.describe($0.outcome) },
                 receivedCount: $0.receivedCount,
                 staleCount: $0.staleCount,
                 emptyCount: $0.emptyCount,

@@ -326,7 +326,15 @@ final class LocalRefreshCoordinator: ObservableObject {
             } else {
                 added = 0
             }
-            return (added, statuses)
+            // Surface cooldown as its own status instead of the source
+            // silently having no entry this cycle — recordSourceStatuses
+            // below folds these into the diagnostics the export reads, so
+            // "why isn't source X updating" shows a deliberate skip rather
+            // than a stale leftover from before cooldown started.
+            let cooldownStatuses = skippedSourceIDs.intersection(platforms).map {
+                SourceRefreshStatus(id: $0, outcome: .cooldown, itemCount: 0, queryCount: 0)
+            }
+            return (added, statuses + cooldownStatuses)
         }
     }
 

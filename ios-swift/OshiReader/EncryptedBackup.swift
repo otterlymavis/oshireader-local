@@ -43,6 +43,10 @@ enum EncryptedBackupCodec {
     /// count in the header so this can be raised again in the future
     /// without breaking existing backups.
     static let iterations = 600_000
+    /// Upper bound on a v2 envelope's header-supplied iteration count — a
+    /// generous ceiling above `iterations` for future increases, without
+    /// letting an untrusted file force an effectively unbounded PBKDF2 run.
+    static let maximumIterations = 5_000_000
     static let maximumPasswordLength = 256
     static let maximumEnvelopeBytes = LocalDB.maximumBackupBytes + 512
 
@@ -105,7 +109,12 @@ enum EncryptedBackupCodec {
         } else {
             guard envelope.count >= v2HeaderLength else { throw EncryptedBackupError.invalidEnvelope }
             iterationsUsed = uint32(fromBigEndianBytes: Data(envelope[baseHeaderLength..<v2HeaderLength]))
-            guard iterationsUsed > 0 else { throw EncryptedBackupError.invalidEnvelope }
+            // Bound the untrusted header value — without a ceiling, a
+            // corrupt or malicious file could set this near UInt32.max and
+            // hang PBKDF2 for an effectively unbounded time.
+            guard iterationsUsed > 0, iterationsUsed <= maximumIterations else {
+                throw EncryptedBackupError.invalidEnvelope
+            }
             headerLength = v2HeaderLength
         }
         guard envelope.count <= maximumEnvelopeBytes else { throw EncryptedBackupError.invalidEnvelope }

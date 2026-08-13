@@ -72,7 +72,13 @@ enum KeychainHelper {
             return status == errSecSuccess || status == errSecItemNotFound || isRunningTests
         }
 
-        let updateStatus = SecItemUpdate(base as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+        // Also re-set kSecAttrAccessible on update so an item saved before
+        // this device-only hardening gets migrated the next time it's
+        // written, rather than keeping its original accessibility forever.
+        let updateStatus = SecItemUpdate(base as CFDictionary, [
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+        ] as CFDictionary)
         let succeeded: Bool
         if updateStatus == errSecSuccess {
             succeeded = true

@@ -132,6 +132,7 @@ struct FeedView: View {
     @State private var savedItemIds: Set<String>
     @State private var showFilterSheet = false
     @State private var showAddUrlSheet = false
+    @State private var showingCustomUrlLimitMessage = false
     @State private var showReorderSheet = false
     @State private var showSourceStatusSheet = false
     @State private var pendingHiddenFeedItem: FeedItem? = nil
@@ -283,7 +284,10 @@ struct FeedView: View {
         }
         .sheet(isPresented: $showAddUrlSheet) {
             AddUrlSheet(customUrlString: $customUrlString, customUrlTitle: $customUrlTitle, theme: theme, i18n: i18n) {
-                db.addCustomUrl(url: customUrlString, title: customUrlTitle)
+                guard db.addCustomUrl(url: customUrlString, title: customUrlTitle) != .limitReached else {
+                    showingCustomUrlLimitMessage = true
+                    return
+                }
                 let sourceRevision = db.dataRevision
                 Task {
                     let customItems = await NetworkManager.shared.scrapeCustomUrls(db.customUrls)
@@ -335,6 +339,11 @@ struct FeedView: View {
             }
         } message: {
             Text(i18n.t("stopFollowingMessage"))
+        }
+        .alert(i18n.t("addCustomFeed"), isPresented: $showingCustomUrlLimitMessage) {
+            Button(i18n.t("ok"), role: .cancel) {}
+        } message: {
+            Text(i18n.t("customUrlLimitReached"))
         }
         .onChange(of: selectedKeyword) { _, keyword in handleSelectedKeywordChange(keyword) }
         .onChange(of: selectedPlatform) { _, _ in rebuildFeedCache(resetDisplayedCount: true) }
@@ -589,8 +598,10 @@ struct FeedView: View {
     }
 
     /// Filters the already-materialized `cachedFilteredItems` by title/content
-    /// substring — cheap enough (at most ~100 items) to compute directly at
-    /// render time without its own cache, unlike `cachedFilteredItems` itself.
+    /// substring — cheap enough to compute directly at render time without
+    /// its own cache, unlike `cachedFilteredItems` itself. Capped the same
+    /// way the non-search path caps `canLoadMore` at 100, since a broad
+    /// query against a large feed could otherwise match hundreds of items.
     private var trimmedSearchText: String {
         searchText.trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -598,10 +609,10 @@ struct FeedView: View {
     private var searchedFeedItems: [FeedItem] {
         let query = trimmedSearchText
         guard !query.isEmpty else { return cachedVisibleItems }
-        return cachedFilteredItems.filter {
+        return Array(cachedFilteredItems.filter {
             ($0.title?.localizedCaseInsensitiveContains(query) ?? false) ||
                 ($0.content_text?.localizedCaseInsensitiveContains(query) ?? false)
-        }
+        }.prefix(100))
     }
 
     private var feedList: some View {
@@ -1022,6 +1033,8 @@ private struct SourceStatusRow: View {
             return i18n.t("sourceFailureQueries")
                 .replacingOccurrences(of: "{failure}", with: failure.displayName)
                 .replacingOccurrences(of: "{queries}", with: "\(status.queryCount)")
+        case .cooldown:
+            return i18n.t("sourceCooldown")
         }
     }
 

@@ -1,6 +1,45 @@
 import Foundation
 import Combine
 
+/// Coalesces rapid mutations of a single JSON-backed store into one
+/// debounced disk write (e.g. hiding several items in a row produces one
+/// write instead of N full re-encodes), while still allowing an immediate
+/// synchronous flush for lifecycle transitions like app backgrounding.
+private final class DebouncedFileSaver {
+    private let lock = NSLock()
+    private var generation = 0
+    private var pendingWorkItem: DispatchWorkItem?
+
+    func scheduleSave(on queue: DispatchQueue, delay: DispatchTimeInterval = .milliseconds(250), write: @escaping () -> Void) {
+        pendingWorkItem?.cancel()
+        lock.lock()
+        generation &+= 1
+        let currentGeneration = generation
+        lock.unlock()
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.lock.lock()
+            let isCurrent = self.generation == currentGeneration
+            self.lock.unlock()
+            guard isCurrent else { return }
+            write()
+        }
+        pendingWorkItem = workItem
+        queue.asyncAfter(deadline: .now() + delay, execute: workItem)
+    }
+
+    /// Cancels any pending debounced write and performs `write` synchronously
+    /// on `queue` right now.
+    func flush(on queue: DispatchQueue, write: @escaping () -> Void) {
+        lock.lock()
+        generation &+= 1
+        lock.unlock()
+        pendingWorkItem?.cancel()
+        pendingWorkItem = nil
+        queue.sync(execute: write)
+    }
+}
+
 private struct LocalRestoreManifest: Codable {
     let stagingDirectory: String
     let files: [String]
@@ -64,12 +103,9 @@ class LocalDB: ObservableObject {
     private let pendingWritesLock = NSLock()
     private let contentCacheGenerationLock = NSLock()
     private var pendingWrites = 0
-    private var feedItemsSaveGeneration = 0
-    private var pendingFeedItemsSaveWorkItem: DispatchWorkItem?
-    private var hiddenItemsSaveGeneration = 0
-    private var pendingHiddenItemsSaveWorkItem: DispatchWorkItem?
-    private var termsSaveGeneration = 0
-    private var pendingTermsSaveWorkItem: DispatchWorkItem?
+    private let feedItemsSaver = DebouncedFileSaver()
+    private let hiddenItemsSaver = DebouncedFileSaver()
+    private let termsSaver = DebouncedFileSaver()
     private var contentCacheGenerationValue = 0
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
@@ -355,133 +391,49 @@ class LocalDB: ObservableObject {
         queue.sync {}
     }
 
+    private func writeEncoded<T: Encodable>(_ value: T, to name: String) {
+        do {
+            let data = try encoder.encode(value)
+            try data.write(to: fileURL(for: name), options: [.atomic])
+        } catch {
+            AppLogger.persistence.error("Failed to save \(name): \(error.localizedDescription)")
+        }
+    }
+
     /// Coalesces rapid feed merges into one serialized disk write while keeping
     /// the in-memory feed immediately available to SwiftUI.
     func flushPendingFeedItemsSave() {
         let snapshot = feedItems
-        pendingWritesLock.lock()
-        feedItemsSaveGeneration &+= 1
-        pendingWritesLock.unlock()
-        pendingFeedItemsSaveWorkItem?.cancel()
-        pendingFeedItemsSaveWorkItem = nil
-        queue.sync {
-            do {
-                let data = try self.encoder.encode(snapshot)
-                try data.write(to: self.fileURL(for: "feed_items"), options: [.atomic])
-            } catch {
-                AppLogger.persistence.error("Failed to save feed_items: \(error.localizedDescription)")
-            }
-        }
+        feedItemsSaver.flush(on: queue) { [weak self] in self?.writeEncoded(snapshot, to: "feed_items") }
     }
 
     private func saveFeedItemsSoon() {
-        pendingFeedItemsSaveWorkItem?.cancel()
         let snapshot = feedItems
-        pendingWritesLock.lock()
-        feedItemsSaveGeneration &+= 1
-        let generation = feedItemsSaveGeneration
-        pendingWritesLock.unlock()
-        let workItem = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            self.pendingWritesLock.lock()
-            let isCurrent = self.feedItemsSaveGeneration == generation
-            self.pendingWritesLock.unlock()
-            guard isCurrent else { return }
-            do {
-                let data = try self.encoder.encode(snapshot)
-                try data.write(to: self.fileURL(for: "feed_items"), options: [.atomic])
-            } catch {
-                AppLogger.persistence.error("Failed to save feed_items: \(error.localizedDescription)")
-            }
-        }
-        pendingFeedItemsSaveWorkItem = workItem
-        queue.asyncAfter(deadline: .now() + .milliseconds(250), execute: workItem)
+        feedItemsSaver.scheduleSave(on: queue) { [weak self] in self?.writeEncoded(snapshot, to: "feed_items") }
     }
 
     private func flushPendingHiddenItemsSave() {
         let snapshot = Array(hiddenItems)
-        pendingWritesLock.lock()
-        hiddenItemsSaveGeneration &+= 1
-        pendingWritesLock.unlock()
-        pendingHiddenItemsSaveWorkItem?.cancel()
-        pendingHiddenItemsSaveWorkItem = nil
-        queue.sync {
-            do {
-                let data = try self.encoder.encode(snapshot)
-                try data.write(to: self.fileURL(for: "hidden_items"), options: [.atomic])
-            } catch {
-                AppLogger.persistence.error("Failed to save hidden_items: \(error.localizedDescription)")
-            }
-        }
+        hiddenItemsSaver.flush(on: queue) { [weak self] in self?.writeEncoded(snapshot, to: "hidden_items") }
     }
 
     /// Coalesces rapid hide/unhide actions the same way `saveFeedItemsSoon`
     /// coalesces feed merges, instead of a full re-encode+write per action.
     private func saveHiddenItemsSoon() {
-        pendingHiddenItemsSaveWorkItem?.cancel()
         let snapshot = Array(hiddenItems)
-        pendingWritesLock.lock()
-        hiddenItemsSaveGeneration &+= 1
-        let generation = hiddenItemsSaveGeneration
-        pendingWritesLock.unlock()
-        let workItem = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            self.pendingWritesLock.lock()
-            let isCurrent = self.hiddenItemsSaveGeneration == generation
-            self.pendingWritesLock.unlock()
-            guard isCurrent else { return }
-            do {
-                let data = try self.encoder.encode(snapshot)
-                try data.write(to: self.fileURL(for: "hidden_items"), options: [.atomic])
-            } catch {
-                AppLogger.persistence.error("Failed to save hidden_items: \(error.localizedDescription)")
-            }
-        }
-        pendingHiddenItemsSaveWorkItem = workItem
-        queue.asyncAfter(deadline: .now() + .milliseconds(250), execute: workItem)
+        hiddenItemsSaver.scheduleSave(on: queue) { [weak self] in self?.writeEncoded(snapshot, to: "hidden_items") }
     }
 
     private func flushPendingTermsSave() {
         let snapshot = terms
-        pendingWritesLock.lock()
-        termsSaveGeneration &+= 1
-        pendingWritesLock.unlock()
-        pendingTermsSaveWorkItem?.cancel()
-        pendingTermsSaveWorkItem = nil
-        queue.sync {
-            do {
-                let data = try self.encoder.encode(snapshot)
-                try data.write(to: self.fileURL(for: "terms"), options: [.atomic])
-            } catch {
-                AppLogger.persistence.error("Failed to save terms: \(error.localizedDescription)")
-            }
-        }
+        termsSaver.flush(on: queue) { [weak self] in self?.writeEncoded(snapshot, to: "terms") }
     }
 
     /// Coalesces rapid term edits the same way `saveFeedItemsSoon` coalesces
     /// feed merges, instead of a full re-encode+write per action.
     private func saveTermsSoon() {
-        pendingTermsSaveWorkItem?.cancel()
         let snapshot = terms
-        pendingWritesLock.lock()
-        termsSaveGeneration &+= 1
-        let generation = termsSaveGeneration
-        pendingWritesLock.unlock()
-        let workItem = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            self.pendingWritesLock.lock()
-            let isCurrent = self.termsSaveGeneration == generation
-            self.pendingWritesLock.unlock()
-            guard isCurrent else { return }
-            do {
-                let data = try self.encoder.encode(snapshot)
-                try data.write(to: self.fileURL(for: "terms"), options: [.atomic])
-            } catch {
-                AppLogger.persistence.error("Failed to save terms: \(error.localizedDescription)")
-            }
-        }
-        pendingTermsSaveWorkItem = workItem
-        queue.asyncAfter(deadline: .now() + .milliseconds(250), execute: workItem)
+        termsSaver.scheduleSave(on: queue) { [weak self] in self?.writeEncoded(snapshot, to: "terms") }
     }
 
     private func saveEncodedFilesSynchronously(
@@ -1313,15 +1265,15 @@ class LocalDB: ObservableObject {
         return entry.id + key.dropFirst(legacyID.count)
     }
 
-    func addCustomUrl(url: String, title: String) {
-        guard let entry = Self.normalizedCustomUrlEntry(url: url, title: title, addedAt: Self.iso8601.string(from: Date())) else { return }
-        runOnMain {
-            if self.customUrls.contains(where: { $0.id == entry.id }) { return }
-            guard self.customUrls.count < Self.maximumCustomUrls else { return }
-            self.advanceDataRevision()
-            self.customUrls.insert(entry, at: 0)
-            self.saveToFile(name: "custom_urls", value: self.customUrls)
-        }
+    @discardableResult
+    func addCustomUrl(url: String, title: String) -> CustomUrlAddResult {
+        guard let entry = Self.normalizedCustomUrlEntry(url: url, title: title, addedAt: Self.iso8601.string(from: Date())) else { return .invalidURL }
+        guard !customUrls.contains(where: { $0.id == entry.id }) else { return .duplicate }
+        guard customUrls.count < Self.maximumCustomUrls else { return .limitReached }
+        advanceDataRevision()
+        customUrls.insert(entry, at: 0)
+        saveToFile(name: "custom_urls", value: customUrls)
+        return .added
     }
     
     func removeCustomUrl(id: String) {

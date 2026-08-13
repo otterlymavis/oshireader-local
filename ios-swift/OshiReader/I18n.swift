@@ -223,6 +223,12 @@ class I18nManager: ObservableObject {
             "zh-TW": "{failure} · {queries} 次查詢",
             "zh-CN": "{failure} · {queries} 次查询"
         ],
+        "sourceCooldown": [
+            "en": "Skipped — repeated failures, retrying later",
+            "ja": "スキップ — 連続失敗のため後で再試行します",
+            "zh-TW": "已略過 — 連續失敗，稍後重試",
+            "zh-CN": "已跳过 — 连续失败，稍后重试"
+        ],
         "notChecked": [
             "en": "Not checked",
             "ja": "未確認",
@@ -312,6 +318,12 @@ class I18nManager: ObservableObject {
             "ja": "キーワードごとに追加できる別名は5件までです。",
             "zh-TW": "每個關鍵字最多可新增5個別名。",
             "zh-CN": "每个关键词最多可添加5个别名。"
+        ],
+        "customUrlLimitReached": [
+            "en": "You can add up to 200 custom URLs.",
+            "ja": "追加できるカスタムURLは200件までです。",
+            "zh-TW": "最多可新增200個自訂網址。",
+            "zh-CN": "最多可添加200个自定义网址。"
         ],
         "oshiEmpty": [
             "en": "Add your Oshi!",

@@ -253,6 +253,13 @@ enum AmebloBlogAddResult: Equatable {
     case limitReached
 }
 
+enum CustomUrlAddResult: Equatable {
+    case added
+    case invalidURL
+    case duplicate
+    case limitReached
+}
+
 // MARK: - AvatarLayer
 struct AvatarLayer: Codable, Hashable, Identifiable {
     let id: String

@@ -29,6 +29,10 @@ enum SourceRefreshOutcome: Equatable {
     case stale
     case noResults
     case failed(SourceRefreshFailure)
+    /// Deliberately skipped this refresh — see
+    /// `RefreshDiagnostics.sourcesInCooldown` — rather than actually
+    /// checked and found empty/failed.
+    case cooldown
 }
 
 struct SourceRefreshStatus: Identifiable, Equatable {
@@ -43,7 +47,7 @@ extension Sequence where Element == SourceRefreshStatus {
         contains {
             switch $0.outcome {
             case .stale, .failed: return true
-            case .received, .noResults: return false
+            case .received, .noResults, .cooldown: return false
             }
         }
     }
