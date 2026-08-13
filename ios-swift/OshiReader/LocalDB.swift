@@ -1435,6 +1435,8 @@ class LocalDB: ObservableObject {
     @MainActor
     func exportBackupData() throws -> Data {
         flushPendingFeedItemsSave()
+        flushPendingHiddenItemsSave()
+        flushPendingTermsSave()
         let backup = LocalBackup(
             exportedAt: Self.iso8601.string(from: Date()),
             terms: terms,

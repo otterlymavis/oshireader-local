@@ -97,6 +97,7 @@ struct SettingsView: View {
     @State private var showingEncryptedBackupExporter = false
     @State private var showingEncryptedBackupImporter = false
     @State private var encryptedBackupOperation: EncryptedBackupOperation?
+    @State private var isSubmittingEncryptedBackup = false
     @State private var encryptedBackupPassword = ""
     @State private var encryptedBackupConfirmation = ""
     @State private var encryptedBackupError = ""
@@ -355,6 +356,7 @@ struct SettingsView: View {
                     password: $encryptedBackupPassword,
                     confirmation: $encryptedBackupConfirmation,
                     errorMessage: $encryptedBackupError,
+                    isSubmitting: isSubmittingEncryptedBackup,
                     onCancel: cancelEncryptedBackupPrompt,
                     onSubmit: submitEncryptedBackupPrompt
                 )
@@ -687,6 +689,10 @@ struct SettingsView: View {
     }
 
     private func submitEncryptedBackupPrompt() {
+        // Making this async (to move PBKDF2 off the main thread) reopened a
+        // double-tap window the old synchronous call implicitly closed by
+        // freezing the UI — guard re-entry explicitly instead.
+        guard !isSubmittingEncryptedBackup else { return }
         do {
             try EncryptedBackupCodec.validatePassword(encryptedBackupPassword)
         } catch {
@@ -700,10 +706,12 @@ struct SettingsView: View {
                 return
             }
             let password = encryptedBackupPassword
+            isSubmittingEncryptedBackup = true
             // exportEncryptedBackupData runs its PBKDF2 work off the main
             // thread; awaiting it here keeps this button tap from freezing
             // the UI for the duration of key derivation.
             Task {
+                defer { isSubmittingEncryptedBackup = false }
                 do {
                     encryptedBackupDocument = EncryptedBackupDocument(data: try await db.exportEncryptedBackupData(password: password))
                     encryptedBackupOperation = nil
@@ -726,7 +734,9 @@ struct SettingsView: View {
                 return
             }
             let password = encryptedBackupPassword
+            isSubmittingEncryptedBackup = true
             Task {
+                defer { isSubmittingEncryptedBackup = false }
                 do {
                     try await db.importEncryptedBackupData(data, password: password)
                     encryptedBackupOperation = nil
@@ -1250,6 +1260,7 @@ private struct EncryptedBackupPasswordSheet: View {
     @Binding var password: String
     @Binding var confirmation: String
     @Binding var errorMessage: String
+    let isSubmitting: Bool
     let onCancel: () -> Void
     let onSubmit: () -> Void
     @StateObject private var i18n = I18nManager.shared
@@ -1285,8 +1296,20 @@ private struct EncryptedBackupPasswordSheet: View {
                 }
 
                 Section {
-                    Button(isExport ? i18n.t("exportEncryptedBackup") : i18n.t("importEncryptedBackup"), action: onSubmit)
-                        .accessibilityIdentifier("settings.encryptedBackupSubmitButton")
+                    Button {
+                        onSubmit()
+                    } label: {
+                        if isSubmitting {
+                            HStack {
+                                ProgressView()
+                                Text(isExport ? i18n.t("exportEncryptedBackup") : i18n.t("importEncryptedBackup"))
+                            }
+                        } else {
+                            Text(isExport ? i18n.t("exportEncryptedBackup") : i18n.t("importEncryptedBackup"))
+                        }
+                    }
+                    .disabled(isSubmitting)
+                    .accessibilityIdentifier("settings.encryptedBackupSubmitButton")
                     Button(i18n.t("cancel"), role: .cancel, action: onCancel)
                         .accessibilityIdentifier("settings.encryptedBackupCancelButton")
                 }

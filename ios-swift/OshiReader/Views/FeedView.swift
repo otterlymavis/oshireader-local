@@ -285,7 +285,14 @@ struct FeedView: View {
         .sheet(isPresented: $showAddUrlSheet) {
             AddUrlSheet(customUrlString: $customUrlString, customUrlTitle: $customUrlTitle, theme: theme, i18n: i18n) {
                 guard db.addCustomUrl(url: customUrlString, title: customUrlTitle) != .limitReached else {
-                    showingCustomUrlLimitMessage = true
+                    // Dismiss the sheet before presenting the alert — SwiftUI
+                    // won't reliably show an alert on a view whose sheet is
+                    // still active (same class of issue worked around in
+                    // SettingsView.submitEncryptedBackupPrompt).
+                    showAddUrlSheet = false
+                    DispatchQueue.main.async {
+                        showingCustomUrlLimitMessage = true
+                    }
                     return
                 }
                 let sourceRevision = db.dataRevision

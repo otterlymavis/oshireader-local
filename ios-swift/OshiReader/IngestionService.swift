@@ -902,7 +902,7 @@ final class IngestionService {
         createReq.httpBody = "device_type=pc".data(using: .utf8)
 
         guard case .success(let cData, let cResp) = await request(createReq),
-              cResp.statusCode == 200,
+              (200...299).contains(cResp.statusCode),
               let cJson = (try? JSONSerialization.jsonObject(with: cData)) as? [String: Any],
               let result = cJson["result"] as? [String: Any],
               let uid = result["platform_uid"] as? String,
@@ -1476,7 +1476,7 @@ final class IngestionService {
         ]
         guard let url = comps.url,
               case .success(let data, let resp) = await httpGET(url, headers: ["Authorization": "Bearer \(bearer)"], timeout: 10),
-              resp.statusCode == 200,
+              (200...299).contains(resp.statusCode),
               let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
             await recordFailure(.invalidPayload)
             return []
