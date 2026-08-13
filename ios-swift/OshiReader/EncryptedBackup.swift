@@ -32,14 +32,24 @@ enum EncryptedBackupError: LocalizedError, Equatable {
 
 enum EncryptedBackupCodec {
     static let magic = Data("OSHIREADER".utf8)
-    static let currentVersion: UInt8 = 1
+    static let currentVersion: UInt8 = 2
     static let saltLength = 16
     static let keyLength = 32
-    static let iterations = 150_000
+    /// Iteration count used for every v1 envelope ever produced by this app.
+    /// Not stored on-disk for v1 (it predates the iteration-count header
+    /// field), so it must stay fixed to keep old backups decryptable.
+    static let legacyIterations = 150_000
+    /// Iteration count for v2+ envelopes, which carry their own iteration
+    /// count in the header so this can be raised again in the future
+    /// without breaking existing backups.
+    static let iterations = 600_000
     static let maximumPasswordLength = 256
     static let maximumEnvelopeBytes = LocalDB.maximumBackupBytes + 512
 
-    private static let headerLength = magic.count + 4
+    /// magic + version + saltLength + nonceLength + tagLength
+    private static let baseHeaderLength = magic.count + 4
+    /// v2 header additionally carries a 4-byte big-endian iteration count.
+    private static let v2HeaderLength = baseHeaderLength + 4
 
     static func validatePassword(_ password: String) throws {
         guard password.count >= 12, password.count <= maximumPasswordLength else {
@@ -54,9 +64,9 @@ enum EncryptedBackupCodec {
         }
 
         let salt = try randomData(count: saltLength)
-        let key = try deriveKey(password: password, salt: salt)
+        let key = try deriveKey(password: password, salt: salt, iterations: iterations)
         let nonce = AES.GCM.Nonce()
-        let header = makeHeader(version: currentVersion, saltLength: salt.count, nonceLength: 12, tagLength: 16)
+        let header = makeHeader(saltLength: salt.count, nonceLength: 12, tagLength: 16, iterations: iterations)
         let sealed = try AES.GCM.seal(plaintext, using: key, nonce: nonce, authenticating: header)
 
         var envelope = header
@@ -72,20 +82,33 @@ enum EncryptedBackupCodec {
 
     static func decrypt(_ envelope: Data, password: String) throws -> Data {
         try validatePassword(password)
-        guard envelope.count >= headerLength else { throw EncryptedBackupError.invalidEnvelope }
+        guard envelope.count >= baseHeaderLength else { throw EncryptedBackupError.invalidEnvelope }
         guard Data(envelope.prefix(magic.count)) == magic else { throw EncryptedBackupError.invalidEnvelope }
 
         let version = envelope[magic.count]
-        guard version == currentVersion else { throw EncryptedBackupError.unsupportedVersion }
+        guard version == 1 || version == 2 else { throw EncryptedBackupError.unsupportedVersion }
+
         let saltLength = Int(envelope[magic.count + 1])
         let nonceLength = Int(envelope[magic.count + 2])
         let tagLength = Int(envelope[magic.count + 3])
         guard saltLength == Self.saltLength,
               nonceLength == 12,
-              tagLength == 16,
-              envelope.count <= maximumEnvelopeBytes else {
+              tagLength == 16 else {
             throw EncryptedBackupError.invalidEnvelope
         }
+
+        let headerLength: Int
+        let iterationsUsed: Int
+        if version == 1 {
+            headerLength = baseHeaderLength
+            iterationsUsed = legacyIterations
+        } else {
+            guard envelope.count >= v2HeaderLength else { throw EncryptedBackupError.invalidEnvelope }
+            iterationsUsed = uint32(fromBigEndianBytes: Data(envelope[baseHeaderLength..<v2HeaderLength]))
+            guard iterationsUsed > 0 else { throw EncryptedBackupError.invalidEnvelope }
+            headerLength = v2HeaderLength
+        }
+        guard envelope.count <= maximumEnvelopeBytes else { throw EncryptedBackupError.invalidEnvelope }
 
         let payloadStart = headerLength
         let saltEnd = payloadStart + saltLength
@@ -99,7 +122,7 @@ enum EncryptedBackupCodec {
         let nonceData = Data(envelope[saltEnd..<nonceEnd])
         let ciphertext = Data(envelope[nonceEnd..<tagStart])
         let tag = Data(envelope[tagStart..<envelope.count])
-        let key = try deriveKey(password: password, salt: salt)
+        let key = try deriveKey(password: password, salt: salt, iterations: iterationsUsed)
         let nonce: AES.GCM.Nonce
         do {
             nonce = try AES.GCM.Nonce(data: nonceData)
@@ -112,13 +135,35 @@ enum EncryptedBackupCodec {
         }
     }
 
-    private static func makeHeader(version: UInt8, saltLength: Int, nonceLength: Int, tagLength: Int) -> Data {
+    private static func makeHeader(saltLength: Int, nonceLength: Int, tagLength: Int, iterations: Int) -> Data {
         var header = magic
-        header.append(version)
+        header.append(currentVersion)
         header.append(UInt8(saltLength))
         header.append(UInt8(nonceLength))
         header.append(UInt8(tagLength))
+        header.append(uint32BigEndianBytes(iterations))
         return header
+    }
+
+    private static func uint32BigEndianBytes(_ value: Int) -> Data {
+        // Shift the raw value directly — `.bigEndian` returns a value whose
+        // in-*memory* layout is big-endian, not one whose numeric value is
+        // byte-order-reversed, so shifting on top of `.bigEndian` (rather
+        // than reading its memory via `withUnsafeBytes`) double-converts.
+        let v = UInt32(value)
+        return Data([
+            UInt8((v >> 24) & 0xFF),
+            UInt8((v >> 16) & 0xFF),
+            UInt8((v >> 8) & 0xFF),
+            UInt8(v & 0xFF),
+        ])
+    }
+
+    private static func uint32(fromBigEndianBytes data: Data) -> Int {
+        let bytes = [UInt8](data)
+        guard bytes.count == 4 else { return 0 }
+        let value = (UInt32(bytes[0]) << 24) | (UInt32(bytes[1]) << 16) | (UInt32(bytes[2]) << 8) | UInt32(bytes[3])
+        return Int(value)
     }
 
     private static func randomData(count: Int) throws -> Data {
@@ -128,7 +173,7 @@ enum EncryptedBackupCodec {
         return Data(bytes)
     }
 
-    private static func deriveKey(password: String, salt: Data) throws -> SymmetricKey {
+    private static func deriveKey(password: String, salt: Data, iterations: Int) throws -> SymmetricKey {
         guard let passwordData = password.data(using: .utf8) else {
             throw EncryptedBackupError.keyDerivationFailed
         }

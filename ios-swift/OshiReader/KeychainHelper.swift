@@ -79,7 +79,7 @@ enum KeychainHelper {
         } else if updateStatus == errSecItemNotFound {
             var add = base
             add[kSecValueData as String] = data
-            add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+            add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
             succeeded = SecItemAdd(add as CFDictionary, nil) == errSecSuccess
         } else {
             succeeded = false

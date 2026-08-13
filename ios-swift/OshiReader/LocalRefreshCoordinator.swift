@@ -208,14 +208,18 @@ final class LocalRefreshCoordinator: ObservableObject {
                 customAddedCount = 0
                 cappedWorkCount = 0
             }
+            let aggregatedCustomStatuses: [SourceRefreshStatus]
             if !customStatuses.isEmpty, isCurrent(generation: generation, profileID: profileID) {
                 RefreshDiagnostics.shared.recordSourceStatuses(customStatuses)
-                RefreshDiagnostics.shared.recordCompletedSourceStatuses(RefreshDiagnostics.shared.sourceStatuses)
+                aggregatedCustomStatuses = RefreshDiagnostics.shared.sourceStatuses
+                RefreshDiagnostics.shared.recordCompletedSourceStatuses(aggregatedCustomStatuses)
+            } else {
+                aggregatedCustomStatuses = customStatuses
             }
             return LocalRefreshResult(
                 completion: Task.isCancelled ? .cancelled : .completed,
                 addedCount: customAddedCount,
-                sourceStatuses: customStatuses,
+                sourceStatuses: aggregatedCustomStatuses,
                 customRefreshCompleted: customCompleted,
                 cappedWorkCount: cappedWorkCount
             )

@@ -155,11 +155,11 @@ class LocalDB: ObservableObject {
         var loadedCompositions: [String: [AvatarLayer]] = [:]
         var hiddenArray: [String] = []
 
-        loadConcurrently { loadedTerms = self.loadFromFile(name: "terms", defaultValue: []) }
-        loadConcurrently { loadedFeedItems = self.loadFromFile(name: "feed_items", defaultValue: []) }
-        loadConcurrently { loadedCustomUrls = self.loadFromFile(name: "custom_urls", defaultValue: []) }
-        loadConcurrently { loadedSavedPages = self.loadFromFile(name: "saved_pages", defaultValue: []) }
-        loadConcurrently { loadedAmebloBlogs = self.loadFromFile(name: "ameblo_blogs", defaultValue: []) }
+        loadConcurrently { loadedTerms = self.loadArrayFromFile(name: "terms") }
+        loadConcurrently { loadedFeedItems = self.loadArrayFromFile(name: "feed_items") }
+        loadConcurrently { loadedCustomUrls = self.loadArrayFromFile(name: "custom_urls") }
+        loadConcurrently { loadedSavedPages = self.loadArrayFromFile(name: "saved_pages") }
+        loadConcurrently { loadedAmebloBlogs = self.loadArrayFromFile(name: "ameblo_blogs") }
         loadConcurrently {
             let subscribedPlatformsURL = self.fileURL(for: "subscribed_platforms")
             hasSavedSubscribedPlatforms = FileManager.default.fileExists(atPath: subscribedPlatformsURL.path)
@@ -243,6 +243,40 @@ class LocalDB: ObservableObject {
         do {
             let data = try Data(contentsOf: url)
             return try decoder.decode(T.self, from: data)
+        } catch {
+            AppLogger.persistence.error("Failed to load \(name): \(error.localizedDescription)")
+            return defaultValue
+        }
+    }
+
+    /// Wraps a single array element so one malformed entry doesn't fail the
+    /// whole array decode — `decode()` swallows the per-element error and
+    /// leaves `value` nil instead of throwing.
+    private struct FailableDecodable<Wrapped: Decodable>: Decodable {
+        let value: Wrapped?
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.singleValueContainer()
+            value = try? container.decode(Wrapped.self)
+        }
+    }
+
+    /// Like `loadFromFile`, but for array-backed stores: a single corrupt
+    /// element is skipped and logged instead of discarding the entire store
+    /// (which previously meant one bad entry could wipe out everything else
+    /// in the file on the next unrelated write).
+    private func loadArrayFromFile<T: Decodable>(name: String, defaultValue: [T] = []) -> [T] {
+        let url = fileURL(for: name)
+        guard FileManager.default.fileExists(atPath: url.path) else { return defaultValue }
+        do {
+            let data = try Data(contentsOf: url)
+            let wrapped = try decoder.decode([FailableDecodable<T>].self, from: data)
+            let decoded = wrapped.compactMap(\.value)
+            let skippedCount = wrapped.count - decoded.count
+            if skippedCount > 0 {
+                AppLogger.persistence.error("Skipped \(skippedCount) malformed entr\(skippedCount == 1 ? "y" : "ies") while loading \(name)")
+            }
+            return decoded
         } catch {
             AppLogger.persistence.error("Failed to load \(name): \(error.localizedDescription)")
             return defaultValue

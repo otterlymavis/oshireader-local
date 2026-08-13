@@ -892,6 +892,7 @@ final class IngestionService {
               let result = cJson["result"] as? [String: Any],
               let uid = result["platform_uid"] as? String,
               let token = result["platform_token"] as? String else {
+            await recordFailure(.invalidPayload)
             return []
         }
 
@@ -913,6 +914,7 @@ final class IngestionService {
         ]) { _, new in new }
         guard case .success(let data, _) = await httpGET(searchURL, headers: searchHeaders, timeout: 15),
               let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+            await recordFailure(.invalidPayload)
             return []
         }
 
@@ -1461,6 +1463,7 @@ final class IngestionService {
               case .success(let data, let resp) = await httpGET(url, headers: ["Authorization": "Bearer \(bearer)"], timeout: 10),
               resp.statusCode == 200,
               let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+            await recordFailure(.invalidPayload)
             return []
         }
         let includes = json["includes"] as? [String: Any] ?? [:]
