@@ -429,7 +429,12 @@ struct FeedView: View {
     private var feedMainState: some View {
         if refreshCoordinator.isRefreshing && cachedFilteredItems.isEmpty {
             feedLoadingState
-        } else if searchedFeedItems.isEmpty {
+        // searchedFeedItems recomputes a filter pass every access (unlike
+        // cachedFilteredItems/cachedVisibleItems); when there's no active
+        // search it's equal to cachedVisibleItems, so check that directly
+        // instead of paying for the scan a second time here and a third
+        // time in feedList's ForEach.
+        } else if trimmedSearchText.isEmpty ? cachedVisibleItems.isEmpty : searchedFeedItems.isEmpty {
             emptyFeedState
         } else {
             feedList

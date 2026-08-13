@@ -21,6 +21,18 @@ enum KeychainHelper {
         "\(service):\(key.rawValue)"
     }
 
+    /// Raw data lookup for a query dictionary that already identifies the
+    /// item (service+account) — used to snapshot a value before a
+    /// delete-then-add so a failed add can attempt to restore it.
+    private static func readRawData(base: [String: Any]) -> Data? {
+        var query = base
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        var result: AnyObject?
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess else { return nil }
+        return result as? Data
+    }
+
     /// Read a stored secret. Returns nil when absent or empty.
     static func read(_ key: Key) -> String? {
         let query: [String: Any] = [
@@ -76,11 +88,20 @@ enum KeychainHelper {
         // not reliably changeable on an existing item via update, so this
         // is also how an item saved before the this-device-only hardening
         // gets migrated, instead of keeping its original accessibility.
+        // Read the previous value first so a failed add (delete succeeded,
+        // add didn't) can attempt to restore it instead of losing the
+        // credential outright.
+        let previousData = readRawData(base: base)
         SecItemDelete(base as CFDictionary)
         var add = base
         add[kSecValueData as String] = data
         add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         let succeeded = SecItemAdd(add as CFDictionary, nil) == errSecSuccess
+        if !succeeded, let previousData {
+            var restore = base
+            restore[kSecValueData as String] = previousData
+            _ = SecItemAdd(restore as CFDictionary, nil)
+        }
         if succeeded || isRunningTests {
             fallbackLock.lock()
             testFallbackStore[fallbackKey(key)] = data

@@ -370,6 +370,7 @@ struct SettingsView: View {
             .onChange(of: encryptedBackupOperation) { _, newValue in
                 if newValue == nil {
                     encryptedBackupTask?.cancel()
+                    isSubmittingEncryptedBackup = false
                 }
             }
             .fileExporter(
@@ -692,6 +693,13 @@ struct SettingsView: View {
 
     private func cancelEncryptedBackupPrompt() {
         encryptedBackupTask?.cancel()
+        // PBKDF2 itself can't be interrupted mid-derivation, so the
+        // cancelled Task's own `defer` won't clear this until that
+        // (now-orphaned, effect-free thanks to the isCancelled checks)
+        // computation finally finishes. Reset it here instead, so
+        // resubmitting right after cancelling isn't blocked by the
+        // re-entry guard for however long that takes.
+        isSubmittingEncryptedBackup = false
         encryptedBackupOperation = nil
         encryptedBackupPassword = ""
         encryptedBackupConfirmation = ""
