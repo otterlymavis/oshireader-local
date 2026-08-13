@@ -58,15 +58,34 @@ class LocalDB: ObservableObject {
     private var pendingWrites = 0
     private var feedItemsSaveGeneration = 0
     private var pendingFeedItemsSaveWorkItem: DispatchWorkItem?
+    private var hiddenItemsSaveGeneration = 0
+    private var pendingHiddenItemsSaveWorkItem: DispatchWorkItem?
+    private var termsSaveGeneration = 0
+    private var pendingTermsSaveWorkItem: DispatchWorkItem?
     private var contentCacheGenerationValue = 0
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
     private let profileStore: LocalProfileStore
-    
+
+    // `queryFeed` is called on nearly every re-render of the feed view, but
+    // its filter/sort/dedup pass is expensive. `objectWillChange` fires on
+    // every `@Published` mutation (feedItems, hiddenItems, terms,
+    // subscribedPlatforms, and others queryFeed doesn't use), so bumping a
+    // generation counter from it over-invalidates on unrelated changes
+    // (e.g. an avatar edit) but never under-invalidates — unlike hand-picking
+    // call sites to bump a counter, which is exactly the kind of thing that's
+    // easy to miss one of and silently serve stale query results.
+    private var queryFeedGeneration = 0
+    private var queryFeedInvalidationSubscription: AnyCancellable?
+    private var queryFeedCache: (keyword: String?, days: Int, generation: Int, hourBucket: Int, result: [FeedItem])?
+
     private init() {
         self.profileStore = LocalProfileStore.shared
         recoverPendingRestoreIfNeeded()
         loadAll()
+        queryFeedInvalidationSubscription = objectWillChange.sink { [weak self] _ in
+            self?.queryFeedGeneration &+= 1
+        }
     }
     
     // MARK: - File Paths
@@ -323,6 +342,8 @@ class LocalDB: ObservableObject {
     /// have reached disk. Intended for lifecycle transitions, not UI actions.
     func flushPendingWrites() {
         flushPendingFeedItemsSave()
+        flushPendingHiddenItemsSave()
+        flushPendingTermsSave()
         queue.sync {}
     }
 
@@ -366,6 +387,92 @@ class LocalDB: ObservableObject {
             }
         }
         pendingFeedItemsSaveWorkItem = workItem
+        queue.asyncAfter(deadline: .now() + .milliseconds(250), execute: workItem)
+    }
+
+    private func flushPendingHiddenItemsSave() {
+        let snapshot = Array(hiddenItems)
+        pendingWritesLock.lock()
+        hiddenItemsSaveGeneration &+= 1
+        pendingWritesLock.unlock()
+        pendingHiddenItemsSaveWorkItem?.cancel()
+        pendingHiddenItemsSaveWorkItem = nil
+        queue.sync {
+            do {
+                let data = try self.encoder.encode(snapshot)
+                try data.write(to: self.fileURL(for: "hidden_items"), options: [.atomic])
+            } catch {
+                AppLogger.persistence.error("Failed to save hidden_items: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Coalesces rapid hide/unhide actions the same way `saveFeedItemsSoon`
+    /// coalesces feed merges, instead of a full re-encode+write per action.
+    private func saveHiddenItemsSoon() {
+        pendingHiddenItemsSaveWorkItem?.cancel()
+        let snapshot = Array(hiddenItems)
+        pendingWritesLock.lock()
+        hiddenItemsSaveGeneration &+= 1
+        let generation = hiddenItemsSaveGeneration
+        pendingWritesLock.unlock()
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.pendingWritesLock.lock()
+            let isCurrent = self.hiddenItemsSaveGeneration == generation
+            self.pendingWritesLock.unlock()
+            guard isCurrent else { return }
+            do {
+                let data = try self.encoder.encode(snapshot)
+                try data.write(to: self.fileURL(for: "hidden_items"), options: [.atomic])
+            } catch {
+                AppLogger.persistence.error("Failed to save hidden_items: \(error.localizedDescription)")
+            }
+        }
+        pendingHiddenItemsSaveWorkItem = workItem
+        queue.asyncAfter(deadline: .now() + .milliseconds(250), execute: workItem)
+    }
+
+    private func flushPendingTermsSave() {
+        let snapshot = terms
+        pendingWritesLock.lock()
+        termsSaveGeneration &+= 1
+        pendingWritesLock.unlock()
+        pendingTermsSaveWorkItem?.cancel()
+        pendingTermsSaveWorkItem = nil
+        queue.sync {
+            do {
+                let data = try self.encoder.encode(snapshot)
+                try data.write(to: self.fileURL(for: "terms"), options: [.atomic])
+            } catch {
+                AppLogger.persistence.error("Failed to save terms: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Coalesces rapid term edits the same way `saveFeedItemsSoon` coalesces
+    /// feed merges, instead of a full re-encode+write per action.
+    private func saveTermsSoon() {
+        pendingTermsSaveWorkItem?.cancel()
+        let snapshot = terms
+        pendingWritesLock.lock()
+        termsSaveGeneration &+= 1
+        let generation = termsSaveGeneration
+        pendingWritesLock.unlock()
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.pendingWritesLock.lock()
+            let isCurrent = self.termsSaveGeneration == generation
+            self.pendingWritesLock.unlock()
+            guard isCurrent else { return }
+            do {
+                let data = try self.encoder.encode(snapshot)
+                try data.write(to: self.fileURL(for: "terms"), options: [.atomic])
+            } catch {
+                AppLogger.persistence.error("Failed to save terms: \(error.localizedDescription)")
+            }
+        }
+        pendingTermsSaveWorkItem = workItem
         queue.asyncAfter(deadline: .now() + .milliseconds(250), execute: workItem)
     }
 
@@ -487,7 +594,7 @@ class LocalDB: ObservableObject {
         runOnMain {
             self.advanceDataRevision()
             self.terms.insert(term, at: 0)
-            self.saveToFile(name: "terms", value: self.terms)
+            self.saveTermsSoon()
         }
         return term
     }
@@ -526,7 +633,7 @@ class LocalDB: ObservableObject {
                 }
                 if let aliases = aliases { term.aliases = aliases }
                 self.terms[idx] = term
-                self.saveToFile(name: "terms", value: self.terms)
+                self.saveTermsSoon()
             }
         }
     }
@@ -545,7 +652,7 @@ class LocalDB: ObservableObject {
                     RecentTermUsageStore.shared.remove(termID: id)
                     NotificationManager.shared.clearNotification(forTermID: id)
                 }
-                self.saveToFile(name: "terms", value: self.terms)
+                self.saveTermsSoon()
                 
                 // Also clean up items containing that watch term keyword
                 self.feedItems.removeAll(where: { $0.watch_term_keyword == keyword })
@@ -555,7 +662,7 @@ class LocalDB: ObservableObject {
                     if remainingHiddenSuffixes.contains(where: { hiddenKey.hasSuffix($0) }) { return true }
                     return !hiddenKey.hasSuffix(hiddenSuffix)
                 }
-                self.saveToFile(name: "hidden_items", value: Array(self.hiddenItems))
+                self.saveHiddenItemsSoon()
                 self.saveFeedItemsSoon()
             }
         }
@@ -733,7 +840,7 @@ class LocalDB: ObservableObject {
         let key = "\(id)::\(watchTermKeyword)"
         runOnMain {
             self.hiddenItems.insert(key)
-            self.saveToFile(name: "hidden_items", value: Array(self.hiddenItems))
+            self.saveHiddenItemsSoon()
             
             self.feedItems.removeAll(where: { $0.id == id && $0.watch_term_keyword == watchTermKeyword })
             self.saveFeedItemsSoon()
@@ -752,6 +859,22 @@ class LocalDB: ObservableObject {
     
     // MARK: - Query Feed (Filtering)
     func queryFeed(keyword: String?, days: Int) -> [FeedItem] {
+        // Bucketed by hour so a long-lived cache entry can't drift more than
+        // an hour stale against the days-based cutoff in computeQueryFeed —
+        // the generation counter alone only invalidates on data mutations,
+        // not on the passage of real time.
+        let hourBucket = Int(Date().timeIntervalSince1970 / 3600)
+        if let cache = queryFeedCache,
+           cache.keyword == keyword, cache.days == days,
+           cache.generation == queryFeedGeneration, cache.hourBucket == hourBucket {
+            return cache.result
+        }
+        let result = computeQueryFeed(keyword: keyword, days: days)
+        queryFeedCache = (keyword: keyword, days: days, generation: queryFeedGeneration, hourBucket: hourBucket, result: result)
+        return result
+    }
+
+    private func computeQueryFeed(keyword: String?, days: Int) -> [FeedItem] {
         let now = Date()
         // days == 0 means "All Time" — no cutoff applied
         let cutoffDate = days > 0 ? Calendar.current.date(byAdding: .day, value: -days, to: now) : nil
@@ -1020,7 +1143,7 @@ class LocalDB: ObservableObject {
             self.subscribedPlatforms = normalizedPlatforms
             self.saveToFile(name: "subscribed_platforms", value: self.subscribedPlatforms)
             if termsChanged {
-                self.saveToFile(name: "terms", value: self.terms)
+                self.saveTermsSoon()
             }
         }
     }
@@ -1221,7 +1344,7 @@ class LocalDB: ObservableObject {
                 .subtracting(removedHiddenKeys)
             self.saveToFile(name: "custom_urls", value: self.customUrls)
             self.saveToFile(name: "saved_pages", value: self.savedPages)
-            self.saveToFile(name: "hidden_items", value: Array(self.hiddenItems))
+            self.saveHiddenItemsSoon()
             self.saveFeedItemsSoon()
         }
     }

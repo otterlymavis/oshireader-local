@@ -127,6 +127,7 @@ struct FeedView: View {
     @State private var displayedCount: Int = 20
     @State private var cachedFilteredItems: [FeedItem]
     @State private var cachedVisibleItems: [FeedItem]
+    @State private var cachedOrderedPlatforms: [String]
     @State private var savedItemIds: Set<String>
     @State private var showFilterSheet = false
     @State private var showAddUrlSheet = false
@@ -153,6 +154,7 @@ struct FeedView: View {
         _cachedFilteredItems = State(initialValue: initialFilteredItems)
         _cachedVisibleItems = State(initialValue: Array(initialFilteredItems.prefix(20)))
         _savedItemIds = State(initialValue: Set(db.savedPages.map(\.id)))
+        _cachedOrderedPlatforms = State(initialValue: Self.makeOrderedPlatforms(db: db))
     }
     
     private let timeRanges = [
@@ -203,7 +205,9 @@ struct FeedView: View {
         return result
     }
     
-    var orderedPlatforms: [String] {
+    var orderedPlatforms: [String] { cachedOrderedPlatforms }
+
+    static func makeOrderedPlatforms(db: LocalDB) -> [String] {
         let subs = db.subscribedPlatforms
         guard let order = db.sourcesOrder else { return subs }
         let orderSet = Set(order)
@@ -272,7 +276,7 @@ struct FeedView: View {
             }
         }
         .sheet(isPresented: $showFilterSheet) {
-            FilterPanel(selectedKeyword: $selectedKeyword, mediaFilter: $mediaFilter, daysFilter: $daysFilter, theme: theme, i18n: i18n, timeRanges: timeRanges)
+            FilterPanel(selectedKeyword: $selectedKeyword, mediaFilter: $mediaFilter, daysFilter: $daysFilter, db: db, theme: theme, i18n: i18n, timeRanges: timeRanges)
                 .presentationDetents([.medium])
         }
         .sheet(isPresented: $showAddUrlSheet) {
@@ -335,7 +339,11 @@ struct FeedView: View {
         .onChange(of: daysFilter) { _, newDays in handleDaysFilterChange(newDays) }
         .onChange(of: mediaFilter) { _, _ in rebuildFeedCache(resetDisplayedCount: true) }
         .onChange(of: db.feedItems) { _, _ in rebuildFeedCache() }
-        .onChange(of: db.subscribedPlatforms) { _, _ in rebuildFeedCache(resetDisplayedCount: true) }
+        .onChange(of: db.subscribedPlatforms) { _, _ in
+            rebuildFeedCache(resetDisplayedCount: true)
+            cachedOrderedPlatforms = Self.makeOrderedPlatforms(db: db)
+        }
+        .onChange(of: db.sourcesOrder) { _, _ in cachedOrderedPlatforms = Self.makeOrderedPlatforms(db: db) }
         .onChange(of: db.terms) { _, _ in rebuildFeedCache(resetDisplayedCount: true) }
         .onChange(of: db.hiddenItems) { _, _ in rebuildFeedCache(resetDisplayedCount: true) }
         .onChange(of: db.savedPages) { _, newValue in savedItemIds = Set(newValue.map(\.id)) }
@@ -1176,6 +1184,7 @@ struct FilterPanel: View {
     @Binding var selectedKeyword: String?
     @Binding var mediaFilter: String
     @Binding var daysFilter: Int
+    @ObservedObject var db: LocalDB
     let theme: ThemeManager
     let i18n: I18nManager
     let timeRanges: [(label: String, days: Int)]
@@ -1245,7 +1254,7 @@ struct FilterPanel: View {
                         FilterButton(text: i18n.t("all"), isSelected: selectedKeyword == nil, theme: theme) {
                             selectedKeyword = nil
                         }
-                        ForEach(LocalDB.shared.terms) { term in
+                        ForEach(db.terms) { term in
                             FilterButton(text: term.keyword, isSelected: selectedKeyword == term.keyword, theme: theme) {
                                 selectedKeyword = term.keyword
                             }

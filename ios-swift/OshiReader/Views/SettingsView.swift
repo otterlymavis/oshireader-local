@@ -135,6 +135,7 @@ struct SettingsView: View {
                     ForEach(db.terms) { term in
                         TermRowView(
                             term: term,
+                            avatarURL: db.oshiAvatars[term.keyword],
                             db: db,
                             theme: theme,
                             i18n: i18n,
@@ -821,7 +822,14 @@ struct SettingsView: View {
 
 private struct TermRowView: View {
     let term: WatchTerm
-    @ObservedObject var db: LocalDB
+    /// Looked up by the parent (which observes `db`) so this row only
+    /// depends on the one piece of `LocalDB` state it actually renders,
+    /// instead of re-rendering on every unrelated `LocalDB` publish (e.g. a
+    /// background refresh appending feed items).
+    let avatarURL: String?
+    /// Not observed — used only to invoke mutating methods (`updateTerm`),
+    /// never read reactively in `body`.
+    let db: LocalDB
     @ObservedObject var theme: ThemeManager
     @ObservedObject var i18n: I18nManager
     let allPlatforms: [(String, String)]
@@ -838,7 +846,7 @@ private struct TermRowView: View {
                     Circle()
                         .fill(theme.colors.divider)
                         .frame(width: 38, height: 38)
-                    if let avatar = db.oshiAvatars[term.keyword], let url = URL(string: avatar) {
+                    if let avatarURL, let url = URL(string: avatarURL) {
                         FeedThumbnailView(url: url, size: 38, cornerRadius: 19, placeholderText: "🎨")
                             .clipShape(Circle())
                     } else {
