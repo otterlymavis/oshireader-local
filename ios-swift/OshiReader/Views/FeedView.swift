@@ -132,7 +132,7 @@ struct FeedView: View {
     @State private var savedItemIds: Set<String>
     @State private var showFilterSheet = false
     @State private var showAddUrlSheet = false
-    @State private var showingCustomUrlLimitMessage = false
+    @State private var customUrlAddFailure: CustomUrlAddResult?
     @State private var showReorderSheet = false
     @State private var showSourceStatusSheet = false
     @State private var pendingHiddenFeedItem: FeedItem? = nil
@@ -284,14 +284,15 @@ struct FeedView: View {
         }
         .sheet(isPresented: $showAddUrlSheet) {
             AddUrlSheet(customUrlString: $customUrlString, customUrlTitle: $customUrlTitle, theme: theme, i18n: i18n) {
-                guard db.addCustomUrl(url: customUrlString, title: customUrlTitle) != .limitReached else {
+                let result = db.addCustomUrl(url: customUrlString, title: customUrlTitle)
+                guard result == .added else {
                     // Dismiss the sheet before presenting the alert — SwiftUI
                     // won't reliably show an alert on a view whose sheet is
                     // still active (same class of issue worked around in
                     // SettingsView.submitEncryptedBackupPrompt).
                     showAddUrlSheet = false
                     DispatchQueue.main.async {
-                        showingCustomUrlLimitMessage = true
+                        customUrlAddFailure = result
                     }
                     return
                 }
@@ -347,10 +348,16 @@ struct FeedView: View {
         } message: {
             Text(i18n.t("stopFollowingMessage"))
         }
-        .alert(i18n.t("addCustomFeed"), isPresented: $showingCustomUrlLimitMessage) {
+        .alert(
+            i18n.t("addCustomFeed"),
+            isPresented: Binding(
+                get: { customUrlAddFailure != nil },
+                set: { if !$0 { customUrlAddFailure = nil } }
+            )
+        ) {
             Button(i18n.t("ok"), role: .cancel) {}
         } message: {
-            Text(i18n.t("customUrlLimitReached"))
+            Text(customUrlAddFailureMessage)
         }
         .onChange(of: selectedKeyword) { _, keyword in handleSelectedKeywordChange(keyword) }
         .onChange(of: selectedPlatform) { _, _ in rebuildFeedCache(resetDisplayedCount: true) }
@@ -659,6 +666,14 @@ struct FeedView: View {
         if mediaFilter == "media_only" { count += 1 }
         if daysFilter != 30 { count += 1 }
         return count
+    }
+
+    private var customUrlAddFailureMessage: String {
+        switch customUrlAddFailure {
+        case .limitReached: return i18n.t("customUrlLimitReached")
+        case .duplicate: return i18n.t("customUrlDuplicate")
+        case .invalidURL, .added, nil: return i18n.t("invalidUrl")
+        }
     }
 
     private var isFilteredEmptyState: Bool {

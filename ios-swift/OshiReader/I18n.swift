@@ -451,6 +451,12 @@ class I18nManager: ObservableObject {
             "zh-TW": "無效的網址",
             "zh-CN": "无效的链接"
         ],
+        "customUrlDuplicate": [
+            "en": "This URL has already been added.",
+            "ja": "このURLはすでに追加されています。",
+            "zh-TW": "此網址已新增過。",
+            "zh-CN": "此网址已添加过。"
+        ],
         "readerLoadingPage": [
             "en": "Loading page...",
             "ja": "ページを読み込み中...",

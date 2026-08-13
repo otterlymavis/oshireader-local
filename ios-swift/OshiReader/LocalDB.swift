@@ -73,13 +73,13 @@ class LocalDB: ObservableObject {
     static let maximumBackupBytes = 20 * 1024 * 1024
     static let maximumProfileTransferBytes = 22 * 1024 * 1024
     private static let maxFeedItems = 600
-    /// Matches the interactive-add ceiling to the backup-import limit
-    /// (`importBackupData`'s `custom_urls.count <= 200` check) so a device
-    /// can never accumulate more custom URLs than a backup could restore.
+    /// Shared by the interactive-add cap and `importBackupData`'s validation
+    /// guard, so a device can never accumulate more custom URLs than a
+    /// backup could restore.
     private static let maximumCustomUrls = 200
-    /// Matches the backup-import limit (`saved_pages.count <= 2_000`).
-    /// Saved pages are deliberate user bookmarks, not auto-ingested feed
-    /// content, so this is far higher than `maxFeedItems`.
+    /// Shared by the interactive-add cap and `importBackupData`'s validation
+    /// guard. Saved pages are deliberate user bookmarks, not auto-ingested
+    /// feed content, so this is far higher than `maxFeedItems`.
     private static let maximumSavedPages = 2_000
     private static let minFeedItemsPerSubscribedPlatform = 8
     private static let minFeedItemsPerDiscussionPlatform = 25
@@ -1479,8 +1479,8 @@ class LocalDB: ObservableObject {
         }
         guard backup.terms.count <= 200,
               backup.feed_items.count <= 2_000,
-              backup.saved_pages.count <= 2_000,
-              backup.custom_urls.count <= 200,
+              backup.saved_pages.count <= Self.maximumSavedPages,
+              backup.custom_urls.count <= Self.maximumCustomUrls,
               backup.ameblo_blogs.count <= AmebloBlog.maximumCount,
               backup.oshi_avatars.count <= 200,
               backup.compositions.count <= 200,

@@ -72,24 +72,15 @@ enum KeychainHelper {
             return status == errSecSuccess || status == errSecItemNotFound || isRunningTests
         }
 
-        // Also re-set kSecAttrAccessible on update so an item saved before
-        // this device-only hardening gets migrated the next time it's
-        // written, rather than keeping its original accessibility forever.
-        let updateStatus = SecItemUpdate(base as CFDictionary, [
-            kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
-        ] as CFDictionary)
-        let succeeded: Bool
-        if updateStatus == errSecSuccess {
-            succeeded = true
-        } else if updateStatus == errSecItemNotFound {
-            var add = base
-            add[kSecValueData as String] = data
-            add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-            succeeded = SecItemAdd(add as CFDictionary, nil) == errSecSuccess
-        } else {
-            succeeded = false
-        }
+        // Delete-then-add rather than SecItemUpdate: kSecAttrAccessible is
+        // not reliably changeable on an existing item via update, so this
+        // is also how an item saved before the this-device-only hardening
+        // gets migrated, instead of keeping its original accessibility.
+        SecItemDelete(base as CFDictionary)
+        var add = base
+        add[kSecValueData as String] = data
+        add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        let succeeded = SecItemAdd(add as CFDictionary, nil) == errSecSuccess
         if succeeded || isRunningTests {
             fallbackLock.lock()
             testFallbackStore[fallbackKey(key)] = data

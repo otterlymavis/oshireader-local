@@ -98,6 +98,7 @@ struct SettingsView: View {
     @State private var showingEncryptedBackupImporter = false
     @State private var encryptedBackupOperation: EncryptedBackupOperation?
     @State private var isSubmittingEncryptedBackup = false
+    @State private var encryptedBackupTask: Task<Void, Never>?
     @State private var encryptedBackupPassword = ""
     @State private var encryptedBackupConfirmation = ""
     @State private var encryptedBackupError = ""
@@ -360,7 +361,16 @@ struct SettingsView: View {
                     onCancel: cancelEncryptedBackupPrompt,
                     onSubmit: submitEncryptedBackupPrompt
                 )
+                .interactiveDismissDisabled(isSubmittingEncryptedBackup)
                 .presentationDetents([.medium])
+            }
+            // Swipe-to-dismiss sets encryptedBackupOperation directly,
+            // bypassing cancelEncryptedBackupPrompt — catch that path too so
+            // an in-flight submission can't outlive the dismissed sheet.
+            .onChange(of: encryptedBackupOperation) { _, newValue in
+                if newValue == nil {
+                    encryptedBackupTask?.cancel()
+                }
             }
             .fileExporter(
                 isPresented: $showingBackupExporter,
@@ -681,6 +691,7 @@ struct SettingsView: View {
     }
 
     private func cancelEncryptedBackupPrompt() {
+        encryptedBackupTask?.cancel()
         encryptedBackupOperation = nil
         encryptedBackupPassword = ""
         encryptedBackupConfirmation = ""
@@ -709,11 +720,15 @@ struct SettingsView: View {
             isSubmittingEncryptedBackup = true
             // exportEncryptedBackupData runs its PBKDF2 work off the main
             // thread; awaiting it here keeps this button tap from freezing
-            // the UI for the duration of key derivation.
-            Task {
+            // the UI for the duration of key derivation. Cancellation is
+            // checked after the await since export doesn't mutate any
+            // persisted state — there's nothing to undo, just UI to skip.
+            encryptedBackupTask = Task {
                 defer { isSubmittingEncryptedBackup = false }
                 do {
-                    encryptedBackupDocument = EncryptedBackupDocument(data: try await db.exportEncryptedBackupData(password: password))
+                    let data = try await db.exportEncryptedBackupData(password: password)
+                    guard !Task.isCancelled else { return }
+                    encryptedBackupDocument = EncryptedBackupDocument(data: data)
                     encryptedBackupOperation = nil
                     encryptedBackupPassword = ""
                     encryptedBackupConfirmation = ""
@@ -725,6 +740,7 @@ struct SettingsView: View {
                         showingEncryptedBackupExporter = true
                     }
                 } catch {
+                    guard !Task.isCancelled else { return }
                     encryptedBackupError = localizedEncryptedBackupMessage(error)
                 }
             }
@@ -735,16 +751,26 @@ struct SettingsView: View {
             }
             let password = encryptedBackupPassword
             isSubmittingEncryptedBackup = true
-            Task {
+            encryptedBackupTask = Task {
                 defer { isSubmittingEncryptedBackup = false }
                 do {
-                    try await db.importEncryptedBackupData(data, password: password)
+                    // Unlike export, importBackupData mutates local data and
+                    // can't be undone — decrypt (the slow PBKDF2 step) first,
+                    // check for cancellation, and only then apply the import,
+                    // instead of letting an already-cancelled request still
+                    // overwrite the user's data.
+                    let plaintext = try await Task.detached(priority: .userInitiated) {
+                        try EncryptedBackupCodec.decrypt(data, password: password)
+                    }.value
+                    guard !Task.isCancelled else { return }
+                    try db.importBackupData(plaintext)
                     encryptedBackupOperation = nil
                     encryptedBackupPassword = ""
                     pendingEncryptedBackupData = nil
                     backupMessage = i18n.t("backupImported")
                     showingBackupMessage = true
                 } catch {
+                    guard !Task.isCancelled else { return }
                     encryptedBackupError = localizedEncryptedBackupMessage(error)
                 }
             }
