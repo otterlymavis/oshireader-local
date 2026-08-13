@@ -287,7 +287,8 @@ final class LocalRefreshCoordinator: ObservableObject {
         generation: Int,
         profileID: UUID
     ) async -> (addedCount: Int, statuses: [SourceRefreshStatus]) {
-        await withTaskGroup(of: IngestionReport.self, returning: (Int, [SourceRefreshStatus]).self) { group in
+        let skippedSourceIDs = RefreshDiagnostics.shared.sourcesInCooldown()
+        return await withTaskGroup(of: IngestionReport.self, returning: (Int, [SourceRefreshStatus]).self) { group in
             var iterator = terms.makeIterator()
             var running = 0
             var batches = [[FeedItem]]()
@@ -298,7 +299,8 @@ final class LocalRefreshCoordinator: ObservableObject {
                     await IngestionService.shared.ingestReport(
                         term: term,
                         platforms: platforms,
-                        maximumAliases: request.maximumAliases
+                        maximumAliases: request.maximumAliases,
+                        skippedSourceIDs: skippedSourceIDs
                     )
                 }
             }

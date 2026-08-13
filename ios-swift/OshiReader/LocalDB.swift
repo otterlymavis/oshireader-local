@@ -32,6 +32,14 @@ class LocalDB: ObservableObject {
     static let maximumBackupBytes = 20 * 1024 * 1024
     static let maximumProfileTransferBytes = 22 * 1024 * 1024
     private static let maxFeedItems = 600
+    /// Matches the interactive-add ceiling to the backup-import limit
+    /// (`importBackupData`'s `custom_urls.count <= 200` check) so a device
+    /// can never accumulate more custom URLs than a backup could restore.
+    private static let maximumCustomUrls = 200
+    /// Matches the backup-import limit (`saved_pages.count <= 2_000`).
+    /// Saved pages are deliberate user bookmarks, not auto-ingested feed
+    /// content, so this is far higher than `maxFeedItems`.
+    private static let maximumSavedPages = 2_000
     private static let minFeedItemsPerSubscribedPlatform = 8
     private static let minFeedItemsPerDiscussionPlatform = 25
     private static let discussionActivityPlatforms: Set<String> = ["5ch", "girlschannel"]
@@ -1107,6 +1115,9 @@ class LocalDB: ObservableObject {
                     source: item.source
                 )
                 self.savedPages.insert(page, at: 0)
+                if self.savedPages.count > Self.maximumSavedPages {
+                    self.savedPages.removeLast(self.savedPages.count - Self.maximumSavedPages)
+                }
                 isSaved = true
             }
             self.saveToFile(name: "saved_pages", value: self.savedPages)
@@ -1306,6 +1317,7 @@ class LocalDB: ObservableObject {
         guard let entry = Self.normalizedCustomUrlEntry(url: url, title: title, addedAt: Self.iso8601.string(from: Date())) else { return }
         runOnMain {
             if self.customUrls.contains(where: { $0.id == entry.id }) { return }
+            guard self.customUrls.count < Self.maximumCustomUrls else { return }
             self.advanceDataRevision()
             self.customUrls.insert(entry, at: 0)
             self.saveToFile(name: "custom_urls", value: self.customUrls)

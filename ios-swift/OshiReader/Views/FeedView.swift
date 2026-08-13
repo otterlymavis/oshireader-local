@@ -128,6 +128,7 @@ struct FeedView: View {
     @State private var cachedFilteredItems: [FeedItem]
     @State private var cachedVisibleItems: [FeedItem]
     @State private var cachedOrderedPlatforms: [String]
+    @State private var searchText = ""
     @State private var savedItemIds: Set<String>
     @State private var showFilterSheet = false
     @State private var showAddUrlSheet = false
@@ -275,6 +276,7 @@ struct FeedView: View {
                 refreshToolbarContent
             }
         }
+        .searchable(text: $searchText, prompt: i18n.t("search"))
         .sheet(isPresented: $showFilterSheet) {
             FilterPanel(selectedKeyword: $selectedKeyword, mediaFilter: $mediaFilter, daysFilter: $daysFilter, db: db, theme: theme, i18n: i18n, timeRanges: timeRanges)
                 .presentationDetents([.medium])
@@ -388,6 +390,7 @@ struct FeedView: View {
                     ReorderSourcesButtonLabel(color: theme.colors.textMuted, background: theme.colors.divider)
                 }
                 .accessibilityIdentifier("feed.reorderSourcesButton")
+                .accessibilityLabel(i18n.t("reorderSources"))
             }
             .background(theme.colors.card)
             .overlay(
@@ -403,7 +406,7 @@ struct FeedView: View {
     private var feedMainState: some View {
         if refreshCoordinator.isRefreshing && cachedFilteredItems.isEmpty {
             feedLoadingState
-        } else if cachedFilteredItems.isEmpty {
+        } else if searchedFeedItems.isEmpty {
             emptyFeedState
         } else {
             feedList
@@ -585,13 +588,29 @@ struct FeedView: View {
         }
     }
 
+    /// Filters the already-materialized `cachedFilteredItems` by title/content
+    /// substring — cheap enough (at most ~100 items) to compute directly at
+    /// render time without its own cache, unlike `cachedFilteredItems` itself.
+    private var trimmedSearchText: String {
+        searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var searchedFeedItems: [FeedItem] {
+        let query = trimmedSearchText
+        guard !query.isEmpty else { return cachedVisibleItems }
+        return cachedFilteredItems.filter {
+            ($0.title?.localizedCaseInsensitiveContains(query) ?? false) ||
+                ($0.content_text?.localizedCaseInsensitiveContains(query) ?? false)
+        }
+    }
+
     private var feedList: some View {
         List {
-            ForEach(cachedVisibleItems) { item in
+            ForEach(searchedFeedItems) { item in
                 feedListRow(for: item)
             }
 
-            if canLoadMore {
+            if trimmedSearchText.isEmpty, canLoadMore {
                 Button {
                     loadMoreFeedItems()
                 } label: {
@@ -626,7 +645,8 @@ struct FeedView: View {
 
     private var isFilteredEmptyState: Bool {
         let unfiltered = Self.makeFilteredItems(db: db, keyword: nil, platform: nil, mediaFilter: "all", days: 30)
-        return !unfiltered.isEmpty && cachedFilteredItems.isEmpty
+        guard !unfiltered.isEmpty else { return false }
+        return cachedFilteredItems.isEmpty || searchedFeedItems.isEmpty
     }
 
     private func clearFeedFilters() {
@@ -634,6 +654,7 @@ struct FeedView: View {
         selectedPlatform = nil
         mediaFilter = "all"
         daysFilter = 30
+        searchText = ""
     }
 
     private func handleSelectedKeywordChange(_ keyword: String?) {
@@ -796,9 +817,11 @@ struct FeedView: View {
             }
             .swipeActions(edge: .leading, allowsFullSwipe: true) {
                 saveToggleButton(for: item)
+                shareButton(for: item)
             }
             .contextMenu {
                 saveToggleButton(for: item)
+                shareButton(for: item)
                 stopFollowingButton(for: item)
                 hidePostButton(for: item)
             }
@@ -823,9 +846,11 @@ struct FeedView: View {
             }
             .swipeActions(edge: .leading, allowsFullSwipe: true) {
                 saveToggleButton(for: item)
+                shareButton(for: item)
             }
             .contextMenu {
                 saveToggleButton(for: item)
+                shareButton(for: item)
                 stopFollowingButton(for: item)
                 hidePostButton(for: item)
             }
@@ -842,6 +867,16 @@ struct FeedView: View {
                   systemImage: savedItemIds.contains(item.id) ? "bookmark.slash" : "bookmark")
         }
         .tint(theme.colors.primary)
+    }
+
+    @ViewBuilder
+    private func shareButton(for item: FeedItem) -> some View {
+        if let url = URL(string: item.url) {
+            ShareLink(item: url) {
+                Label(i18n.t("share"), systemImage: "square.and.arrow.up")
+            }
+            .tint(theme.colors.primary)
+        }
     }
 
     @ViewBuilder

@@ -31,6 +31,12 @@ final class RefreshDiagnostics: ObservableObject {
     static let healthHistoryKey = "refresh_diagnostics.source_health_history"
     static let healthHistoryRetention: TimeInterval = 10 * 24 * 60 * 60
 
+    /// Consecutive failed checks (from the most recent, unbroken by a
+    /// success) before a source is considered chronically broken and put in
+    /// cooldown, instead of being retried at full frequency every refresh.
+    private static let cooldownFailureThreshold = 3
+    private static let cooldownDuration: TimeInterval = 30 * 60
+
     private enum HealthOutcome: String, Codable {
         case received
         case stale
@@ -231,6 +237,31 @@ final class RefreshDiagnostics: ObservableObject {
 
     var hasSourceFailures: Bool { sourceStatuses.hasFailures }
 
+    /// Source IDs with `cooldownFailureThreshold`+ consecutive failed checks
+    /// (no success in between) whose most recent check was within
+    /// `cooldownDuration`. Callers should skip fetching these sources for
+    /// this refresh instead of retrying a chronically broken source at full
+    /// frequency; the source is retried again once the cooldown elapses, and
+    /// any success (even during a later refresh) clears the streak.
+    func sourcesInCooldown(at now: Date = Date()) -> Set<String> {
+        let grouped = Dictionary(grouping: healthRecords, by: \.sourceID)
+        var cooldown = Set<String>()
+        for (sourceID, records) in grouped {
+            let sorted = records.sorted { $0.checkedAt < $1.checkedAt }
+            guard let latest = sorted.last, latest.outcome == .failed,
+                  now.timeIntervalSince(latest.checkedAt) < Self.cooldownDuration else { continue }
+            var streak = 0
+            for record in sorted.reversed() {
+                guard record.outcome == .failed else { break }
+                streak += 1
+            }
+            if streak >= Self.cooldownFailureThreshold {
+                cooldown.insert(sourceID)
+            }
+        }
+        return cooldown
+    }
+
     private func rebuildHealthSummaries(now: Date) {
         let cutoff = now.addingTimeInterval(-Self.healthHistoryRetention)
         healthRecords = healthRecords.filter { $0.checkedAt >= cutoff }
@@ -308,5 +339,52 @@ final class RefreshDiagnostics: ObservableObject {
     private static func date(_ defaults: UserDefaults, key: String) -> Date? {
         let value = defaults.double(forKey: key)
         return value > 0 ? Date(timeIntervalSince1970: value) : nil
+    }
+
+    private struct HealthExportSummary: Encodable {
+        let id: String
+        let receivedCount: Int
+        let staleCount: Int
+        let emptyCount: Int
+        let failedCount: Int
+        let totalItemCount: Int
+        let lastCheckedAt: Date
+        let lastFailure: String?
+    }
+
+    private struct HealthExport: Encodable {
+        let generatedAt: Date
+        let retentionDays: Int
+        let summaries: [HealthExportSummary]
+        let records: [HealthRecord]
+    }
+
+    /// Serializes the current per-source health summary and raw check
+    /// history to JSON. There's no server-side log to inspect in this
+    /// local-only app, so this is the way to explain a "why isn't source X
+    /// updating" report.
+    func exportHealthHistoryJSON() -> Data? {
+        let summaries = sourceHealthSummaries.map {
+            HealthExportSummary(
+                id: $0.id,
+                receivedCount: $0.receivedCount,
+                staleCount: $0.staleCount,
+                emptyCount: $0.emptyCount,
+                failedCount: $0.failedCount,
+                totalItemCount: $0.totalItemCount,
+                lastCheckedAt: $0.lastCheckedAt,
+                lastFailure: $0.lastFailure?.rawValue
+            )
+        }
+        let export = HealthExport(
+            generatedAt: Date(),
+            retentionDays: Int(Self.healthHistoryRetention / (24 * 60 * 60)),
+            summaries: summaries,
+            records: healthRecords
+        )
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return try? encoder.encode(export)
     }
 }

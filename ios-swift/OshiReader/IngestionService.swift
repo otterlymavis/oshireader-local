@@ -204,11 +204,15 @@ final class IngestionService {
 
     /// Fetch every subscribed source for one watch term. Network errors in any
     /// single source are swallowed (that source just contributes no items).
-    func ingest(term: WatchTerm, platforms: Set<String>, maximumAliases: Int? = nil) async -> [FeedItem] {
-        await ingestReport(term: term, platforms: platforms, maximumAliases: maximumAliases).items
+    func ingest(term: WatchTerm, platforms: Set<String>, maximumAliases: Int? = nil, skippedSourceIDs: Set<String> = []) async -> [FeedItem] {
+        await ingestReport(term: term, platforms: platforms, maximumAliases: maximumAliases, skippedSourceIDs: skippedSourceIDs).items
     }
 
-    func ingestReport(term: WatchTerm, platforms: Set<String>, maximumAliases: Int? = nil) async -> IngestionReport {
+    /// - Parameter skippedSourceIDs: Sources to skip entirely for this call
+    ///   (e.g. chronically failing sources currently in cooldown — see
+    ///   `RefreshDiagnostics.sourcesInCooldown`), so they aren't retried at
+    ///   full frequency every refresh.
+    func ingestReport(term: WatchTerm, platforms: Set<String>, maximumAliases: Int? = nil, skippedSourceIDs: Set<String> = []) async -> IngestionReport {
         let primaryKeyword = term.keyword.trimmingCharacters(in: .whitespacesAndNewlines)
         let searchKeywords = Self.searchKeywords(for: term, maximumAliases: maximumAliases)
         guard !primaryKeyword.isEmpty, !searchKeywords.isEmpty else {
@@ -223,7 +227,7 @@ final class IngestionService {
         let recorder = SourceFailureRecorder()
         return await withTaskGroup(of: (String, [FeedItem]).self) { group in
             func add(_ id: String, _ work: @escaping (String) async -> [FeedItem]) {
-                guard effectivePlatforms.contains(id) else { return }
+                guard effectivePlatforms.contains(id), !skippedSourceIDs.contains(id) else { return }
                 for searchKeyword in searchKeywords {
                     group.addTask {
                         guard await Self.sourceRequestLimiter.acquire() else { return (id, []) }

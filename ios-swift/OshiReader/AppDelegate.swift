@@ -32,9 +32,13 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     ) {
         AppLogger.network.notice("Legacy background fetch started")
         Task { @MainActor in
-            let refreshed = await BackgroundRefreshManager.shared.refreshNow()
-            AppLogger.network.notice("Legacy background fetch completed success=\(refreshed)")
-            completionHandler(refreshed ? .newData : .failed)
+            let outcome = await BackgroundRefreshManager.shared.refreshNow()
+            AppLogger.network.notice("Legacy background fetch completed outcome=\(String(describing: outcome))")
+            switch outcome {
+            case .newData: completionHandler(.newData)
+            case .noData: completionHandler(.noData)
+            case .failed: completionHandler(.failed)
+            }
         }
     }
 

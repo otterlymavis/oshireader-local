@@ -523,6 +523,12 @@ class I18nManager: ObservableObject {
             "zh-TW": "分享圖片",
             "zh-CN": "分享图片"
         ],
+        "share": [
+            "en": "Share",
+            "ja": "共有",
+            "zh-TW": "分享",
+            "zh-CN": "分享"
+        ],
         "saveImage": [
             "en": "Save Image",
             "ja": "画像を保存",
@@ -1483,6 +1489,12 @@ class I18nManager: ObservableObject {
             "zh-TW": "匯出本機備份",
             "zh-CN": "导出本地备份"
         ],
+        "exportDiagnostics": [
+            "en": "Export Diagnostics",
+            "ja": "診断データを書き出す",
+            "zh-TW": "匯出診斷資料",
+            "zh-CN": "导出诊断数据"
+        ],
         "importBackup": [
             "en": "Import Local Backup",
             "ja": "ローカルバックアップを読み込む",
@@ -1596,6 +1608,12 @@ class I18nManager: ObservableObject {
             "ja": "バックアップファイルが大きすぎます。",
             "zh-TW": "備份檔案太大。",
             "zh-CN": "备份文件太大。"
+        ],
+        "diagnosticsExportFailed": [
+            "en": "Couldn't export diagnostics.",
+            "ja": "診断データを書き出せませんでした。",
+            "zh-TW": "無法匯出診斷資料。",
+            "zh-CN": "无法导出诊断数据。"
         ],
         "backupTooManyPlatforms": [
             "en": "Backup contains too many platforms.",

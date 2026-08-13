@@ -91,6 +91,8 @@ struct SettingsView: View {
     @State private var backupDocument = LocalBackupDocument()
     @State private var showingBackupExporter = false
     @State private var showingBackupImporter = false
+    @State private var diagnosticsDocument = LocalBackupDocument()
+    @State private var showingDiagnosticsExporter = false
     @State private var encryptedBackupDocument = EncryptedBackupDocument()
     @State private var showingEncryptedBackupExporter = false
     @State private var showingEncryptedBackupImporter = false
@@ -369,6 +371,17 @@ struct SettingsView: View {
                     showingBackupMessage = true
                 }
             }
+            .fileExporter(
+                isPresented: $showingDiagnosticsExporter,
+                document: diagnosticsDocument,
+                contentType: .json,
+                defaultFilename: "oshireader-diagnostics.json"
+            ) { result in
+                if case .failure(let error) = result {
+                    backupMessage = localizedBackupMessage(error)
+                    showingBackupMessage = true
+                }
+            }
             .fileImporter(isPresented: $showingBackupImporter, allowedContentTypes: [.json]) { result in
                 do {
                     let url = try result.get()
@@ -607,6 +620,19 @@ struct SettingsView: View {
                     Label(i18n.t("exportBackup"), systemImage: "square.and.arrow.up")
                 }
                 .accessibilityIdentifier("settings.exportBackupButton")
+
+                Button {
+                    if let data = RefreshDiagnostics.shared.exportHealthHistoryJSON() {
+                        diagnosticsDocument = LocalBackupDocument(data: data)
+                        showingDiagnosticsExporter = true
+                    } else {
+                        backupMessage = i18n.t("diagnosticsExportFailed")
+                        showingBackupMessage = true
+                    }
+                } label: {
+                    Label(i18n.t("exportDiagnostics"), systemImage: "stethoscope")
+                }
+                .accessibilityIdentifier("settings.exportDiagnosticsButton")
 
                 Button {
                     showingBackupImporter = true

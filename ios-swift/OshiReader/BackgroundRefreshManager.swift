@@ -24,6 +24,12 @@ private actor BackgroundRefreshWaiter {
     }
 }
 
+enum BackgroundRefreshOutcome: Equatable {
+    case newData
+    case noData
+    case failed
+}
+
 /// Keeps the local-only feed useful when the app has not been opened recently.
 /// iOS decides the exact execution time; this is a best-effort refresh, not a
 /// replacement for a server scheduler.
@@ -64,8 +70,8 @@ final class BackgroundRefreshManager {
         }
     }
 
-    func refreshNow() async -> Bool {
-        guard !ProcessInfo.processInfo.arguments.contains("--uitesting") else { return false }
+    func refreshNow() async -> BackgroundRefreshOutcome {
+        guard !ProcessInfo.processInfo.arguments.contains("--uitesting") else { return .failed }
         let waiter = BackgroundRefreshWaiter()
         let worker = Task { @MainActor in
             let result = await LocalRefreshCoordinator.shared.refreshIfIdle(.background)
@@ -85,11 +91,12 @@ final class BackgroundRefreshManager {
         if result.completion == .expired {
             LocalRefreshCoordinator.shared.cancel()
             worker.cancel()
-            return false
+            return .failed
         }
-        guard result.completion == .completed else { return false }
+        guard result.completion == .completed else { return .failed }
         UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: LocalProfileStore.defaultsKey("background_refresh.last_completed_at"))
-        return result.succeeded
+        guard result.succeeded else { return .failed }
+        return result.addedCount > 0 ? .newData : .noData
     }
 
     private func cancelActiveRefresh() {
@@ -100,8 +107,8 @@ final class BackgroundRefreshManager {
         task.expirationHandler = { [weak self] in
             Task { @MainActor in self?.cancelActiveRefresh() }
         }
-        let success = await refreshNow()
-        task.setTaskCompleted(success: success)
+        let outcome = await refreshNow()
+        task.setTaskCompleted(success: outcome != .failed)
         schedule()
     }
 }
