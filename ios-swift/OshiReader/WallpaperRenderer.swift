@@ -18,12 +18,22 @@ enum WallpaperRenderer {
     static func render(layers: [AvatarLayer]) async -> String? {
         // Download each layer's image up front — ImageRenderer can't resolve
         // AsyncImage, so layers must already be UIImages at render time.
-        var loaded: [(layer: AvatarLayer, image: UIImage)] = []
-        for layer in layers.sorted(by: { $0.zIndex < $1.zIndex }) {
-            guard let url = URL(string: layer.imageUrl),
-                  let (data, _) = try? await URLSession.shared.data(from: url),
-                  let image = UIImage(data: data) else { continue }
-            loaded.append((layer, image))
+        // Fetched concurrently since compose() re-sorts by zIndex anyway, so
+        // download order doesn't need to match layer order.
+        let loaded = await withTaskGroup(of: (layer: AvatarLayer, image: UIImage)?.self) { group in
+            for layer in layers {
+                group.addTask {
+                    guard let url = URL(string: layer.imageUrl),
+                          let (data, _) = try? await URLSession.shared.data(from: url),
+                          let image = UIImage(data: data) else { return nil }
+                    return (layer: layer, image: image)
+                }
+            }
+            var results: [(layer: AvatarLayer, image: UIImage)] = []
+            for await entry in group {
+                if let entry { results.append(entry) }
+            }
+            return results
         }
         guard let png = compose(loaded)?.pngData() else { return nil }
 

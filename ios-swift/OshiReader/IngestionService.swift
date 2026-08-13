@@ -684,7 +684,9 @@ final class IngestionService {
                 titlePatterns: titlePatterns
             )
         }
-        if recentItems.count >= limit { return recentItems }
+        // The recent-window query already satisfies most refreshes; only pay
+        // for the full historical query when it came back close to empty.
+        if recentItems.count >= min(limit, 3) { return recentItems }
 
         guard let url = googleNewsURL(query, locale: locale),
               let entries = await fetchGoogleNewsEntries(url, locale: locale) else { return recentItems }
@@ -1511,7 +1513,7 @@ final class IngestionService {
     // MARK: - Shared helpers
 
     private func httpGET(_ url: URL, headers: [String: String] = [:], timeout: TimeInterval = 12) async -> TransportResult {
-        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData)
+        var request = URLRequest(url: url, cachePolicy: .useProtocolCachePolicy)
         request.timeoutInterval = timeout
         for (k, v) in headers { request.setValue(v, forHTTPHeaderField: k) }
         return await execute(request)
@@ -1533,6 +1535,10 @@ final class IngestionService {
     private func execute(_ request: URLRequest) async -> TransportResult {
         for attempt in 0..<Self.maximumTransportAttempts {
             let result: TransportResult
+            // Only set for .httpFailure, where retryability depends on the
+            // specific status code rather than the (Codable, persisted)
+            // failure case, which collapses every non-401/403/429 status.
+            var httpFailureIsRetryable: Bool?
             do {
                 let (data, response) = try await requestExecutor(request)
                 guard let http = response as? HTTPURLResponse else {
@@ -1543,6 +1549,9 @@ final class IngestionService {
                     return .success(data, http)
                 }
                 result = .failure(Self.failure(forHTTPStatus: http.statusCode))
+                if case .failure(.httpFailure) = result {
+                    httpFailureIsRetryable = (500...599).contains(http.statusCode)
+                }
             } catch let error as URLError {
                 result = .failure(Self.failure(for: error))
             } catch {
@@ -1550,7 +1559,7 @@ final class IngestionService {
             }
 
             guard case .failure(let failure) = result,
-                  Self.isRetryable(failure),
+                  httpFailureIsRetryable ?? Self.isRetryable(failure),
                   attempt + 1 < Self.maximumTransportAttempts,
                   !Task.isCancelled else {
                 return await finish(result)
