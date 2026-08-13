@@ -1266,7 +1266,12 @@ class LocalDB: ObservableObject {
     }
 
     @discardableResult
+    /// Must be called on the main thread — unlike most other mutators here,
+    /// it returns a result synchronously (to let the caller show a
+    /// limit-reached message) so it can't dispatch through `runOnMain` the
+    /// way `removeCustomUrl` does.
     func addCustomUrl(url: String, title: String) -> CustomUrlAddResult {
+        dispatchPrecondition(condition: .onQueue(.main))
         guard let entry = Self.normalizedCustomUrlEntry(url: url, title: title, addedAt: Self.iso8601.string(from: Date())) else { return .invalidURL }
         guard !customUrls.contains(where: { $0.id == entry.id }) else { return .duplicate }
         guard customUrls.count < Self.maximumCustomUrls else { return .limitReached }

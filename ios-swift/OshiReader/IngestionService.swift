@@ -46,8 +46,13 @@ extension Sequence where Element == SourceRefreshStatus {
     var hasFailures: Bool {
         contains {
             switch $0.outcome {
-            case .stale, .failed: return true
-            case .received, .noResults, .cooldown: return false
+            // .cooldown means "known broken, deliberately not rechecked this
+            // cycle" — it must still read as a failure, or the toolbar
+            // warning and "some sources incomplete" messaging silently go
+            // quiet for a source that's still actually broken, which is the
+            // opposite of what surfacing .cooldown was for.
+            case .stale, .failed, .cooldown: return true
+            case .received, .noResults: return false
             }
         }
     }
