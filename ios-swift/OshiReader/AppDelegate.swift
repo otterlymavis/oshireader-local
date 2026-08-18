@@ -13,16 +13,11 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         NotificationManager.shared.registerNotificationCategories()
         application.setMinimumBackgroundFetchInterval(BackgroundRefreshManager.minimumInterval)
         BackgroundRefreshManager.shared.register()
-        BackgroundRefreshManager.shared.schedule()
         return true
     }
 
     func applicationDidEnterBackground(_ application: UIApplication) {
         LocalDB.shared.flushPendingWrites()
-        BackgroundRefreshManager.shared.schedule()
-    }
-
-    func applicationDidBecomeActive(_ application: UIApplication) {
         BackgroundRefreshManager.shared.schedule()
     }
 

@@ -90,6 +90,7 @@ private actor SourceFailureRecorder {
 final class IngestionService {
     static let freshnessWindow: TimeInterval = 10 * 24 * 60 * 60
     static let googleNewsLookbackDays = 10
+    static let twitterPublicIndexSource = "twitter_public_index"
     static let shared = IngestionService(classifyFreshness: true)
     typealias RequestExecutor = @Sendable (URLRequest) async throws -> (Data, URLResponse)
     typealias RetrySleeper = @Sendable (UInt64) async -> Void
@@ -149,6 +150,9 @@ final class IngestionService {
 
     @TaskLocal private static var sourceFailureRecorder: SourceFailureRecorder?
     @TaskLocal private static var sourceID: String?
+    @TaskLocal private static var transportAttemptLimit: Int = maximumTransportAttempts
+    @TaskLocal private static var requestTimeoutCap: TimeInterval?
+    @TaskLocal private static var requestDeadline: Date?
 
     private let browserUA = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
     private let rssUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15"
@@ -221,7 +225,29 @@ final class IngestionService {
     ///   (e.g. chronically failing sources currently in cooldown — see
     ///   `RefreshDiagnostics.sourcesInCooldown`), so they aren't retried at
     ///   full frequency every refresh.
-    func ingestReport(term: WatchTerm, platforms: Set<String>, maximumAliases: Int? = nil, skippedSourceIDs: Set<String> = []) async -> IngestionReport {
+    func ingestReport(
+        term: WatchTerm,
+        platforms: Set<String>,
+        maximumAliases: Int? = nil,
+        skippedSourceIDs: Set<String> = [],
+        transportAttemptLimit: Int? = nil,
+        requestTimeoutCap: TimeInterval? = nil,
+        requestDeadline: Date? = nil
+    ) async -> IngestionReport {
+        if transportAttemptLimit != nil || requestTimeoutCap != nil || requestDeadline != nil {
+            return await Self.$transportAttemptLimit.withValue(max(1, transportAttemptLimit ?? Self.maximumTransportAttempts)) {
+                await Self.$requestTimeoutCap.withValue(requestTimeoutCap) {
+                    await Self.$requestDeadline.withValue(requestDeadline) {
+                        await ingestReport(
+                            term: term,
+                            platforms: platforms,
+                            maximumAliases: maximumAliases,
+                            skippedSourceIDs: skippedSourceIDs
+                        )
+                    }
+                }
+            }
+        }
         let primaryKeyword = term.keyword.trimmingCharacters(in: .whitespacesAndNewlines)
         let searchKeywords = Self.searchKeywords(for: term, maximumAliases: maximumAliases)
         guard !primaryKeyword.isEmpty, !searchKeywords.isEmpty else {
@@ -1457,12 +1483,11 @@ final class IngestionService {
         return nil
     }
 
-    // MARK: - Twitter / X (API v2 recent search, requires stored bearer token)
+    // MARK: - Twitter / X (API v2 recent search with public-index fallback)
 
     private func fetchTwitter(keyword: String, mediaOnly: Bool) async -> [FeedItem] {
         guard let bearer = KeychainHelper.read(.twitterBearerToken) else {
-            await recordFailure(.missingCredential)
-            return []
+            return await fetchTwitterPublicIndex(keyword: keyword, mediaOnly: mediaOnly)
         }
         let query = mediaOnly ? "\(keyword) has:media" : keyword
         var comps = URLComponents(string: "https://api.twitter.com/2/tweets/search/recent")!
@@ -1478,8 +1503,7 @@ final class IngestionService {
               case .success(let data, let resp) = await httpGET(url, headers: ["Authorization": "Bearer \(bearer)"], timeout: 10),
               (200...299).contains(resp.statusCode),
               let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
-            await recordFailure(.invalidPayload)
-            return []
+            return await fetchTwitterPublicIndex(keyword: keyword, mediaOnly: mediaOnly)
         }
         let includes = json["includes"] as? [String: Any] ?? [:]
         var users = [String: [String: Any]]()
@@ -1520,7 +1544,34 @@ final class IngestionService {
                 source: "twitter_api"
             ))
         }
-        return items
+        if !items.isEmpty || mediaOnly { return items }
+        return await fetchTwitterPublicIndex(keyword: keyword, mediaOnly: false)
+    }
+
+    private func fetchTwitterPublicIndex(keyword: String, mediaOnly: Bool) async -> [FeedItem] {
+        guard !mediaOnly else { return [] }
+        return await fetchGoogleNews(
+            keyword: keyword,
+            query: "\(keyword) site:x.com",
+            platform: "twitter",
+            mediaType: "text",
+            mediaOnly: false
+        ).map { item in
+            FeedItem(
+                id: item.id,
+                platform: item.platform,
+                url: item.url,
+                title: item.title,
+                content_text: item.content_text,
+                author: item.author,
+                thumbnail_url: item.thumbnail_url,
+                media_type: item.media_type,
+                published_at: item.published_at,
+                watch_term_keyword: item.watch_term_keyword,
+                fetched_at: item.fetched_at,
+                source: Self.twitterPublicIndexSource
+            )
+        }
     }
 
     // MARK: - Shared helpers
@@ -1546,14 +1597,24 @@ final class IngestionService {
     }
 
     private func execute(_ request: URLRequest) async -> TransportResult {
-        for attempt in 0..<Self.maximumTransportAttempts {
+        let attemptLimit = max(1, Self.transportAttemptLimit)
+        var boundedRequest = request
+        if let deadline = Self.requestDeadline {
+            let remaining = deadline.timeIntervalSinceNow
+            guard remaining > 0 else { return await finish(.failure(.timeout)) }
+            boundedRequest.timeoutInterval = min(boundedRequest.timeoutInterval, remaining)
+        }
+        if let cap = Self.requestTimeoutCap {
+            boundedRequest.timeoutInterval = min(boundedRequest.timeoutInterval, cap)
+        }
+        for attempt in 0..<attemptLimit {
             let result: TransportResult
             // Only set for .httpFailure, where retryability depends on the
             // specific status code rather than the (Codable, persisted)
             // failure case, which collapses every non-401/403/429 status.
             var httpFailureIsRetryable: Bool?
             do {
-                let (data, response) = try await requestExecutor(request)
+                let (data, response) = try await requestExecutor(boundedRequest)
                 guard let http = response as? HTTPURLResponse else {
                     result = .failure(.invalidResponse)
                     return await finish(result)
@@ -1573,7 +1634,7 @@ final class IngestionService {
 
             guard case .failure(let failure) = result,
                   httpFailureIsRetryable ?? Self.isRetryable(failure),
-                  attempt + 1 < Self.maximumTransportAttempts,
+                  attempt + 1 < attemptLimit,
                   !Task.isCancelled else {
                 return await finish(result)
             }

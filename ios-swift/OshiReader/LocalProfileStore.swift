@@ -293,6 +293,7 @@ final class LocalProfileStore: ObservableObject {
             "refresh_diagnostics.last_started_at", "refresh_diagnostics.last_completed_at",
             "refresh_diagnostics.last_succeeded", "refresh_diagnostics.last_added_count",
             "refresh_diagnostics.last_was_partial", "background_refresh.last_completed_at",
+            "background_refresh.last_completed_unit_id", "background_refresh.selection_cursor",
             "app_theme_mode", "app_color_style", "app_font_choice", "app_font_size_choice",
             "selected_lang", "auto_translate_reader"
         ]

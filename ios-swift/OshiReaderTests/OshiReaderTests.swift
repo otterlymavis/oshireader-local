@@ -24,6 +24,14 @@ private actor RequestCapture {
     }
 }
 
+private actor RequestPolicyCapture {
+    private(set) var requests: [(url: String, timeout: TimeInterval)] = []
+
+    func record(_ request: URLRequest) {
+        requests.append((request.url?.absoluteString ?? "", request.timeoutInterval))
+    }
+}
+
 private actor RetryGate {
     private var entered = false
 
@@ -336,26 +344,109 @@ final class OshiReaderTests: XCTestCase {
         ])
         XCTAssertEqual(
             IngestionService.searchKeywords(for: term, maximumAliases: LocalRefreshRequest.background.maximumAliases),
-            ["Primary Oshi", "Alias 1", "Alias 2"]
+            ["Primary Oshi", "Alias 1"]
         )
     }
 
-    func testBackgroundRefreshCapsCustomURLsWithoutChangingForegroundSelection() {
-        let urls = (0..<6).map { index in
-            CustomUrl(
-                id: "custom-\(index)",
-                url: "https://example.com/feed-\(index).xml",
-                title: nil,
-                added_at: "2026-08-01T00:00:00Z"
-            )
+    func testBackgroundRefreshPlanRotatesTermsAndSourcesWithoutStarvation() {
+        let first = WatchTerm(id: "first", keyword: "First")
+        let second = WatchTerm(id: "second", keyword: "Second")
+        let platforms = ["youtube", "news", "mdpr", "oricon", "custom"]
+
+        let plans = (0..<3).map {
+            BackgroundRefreshPlan.make(terms: [first, second], subscribedPlatforms: platforms, legacyCursor: $0)
         }
 
-        XCTAssertEqual(LocalRefreshRequest.foreground.customURLsToRefresh(urls).map(\.id), urls.map(\.id))
-        XCTAssertFalse(LocalRefreshRequest.foreground.hasCappedCustomURLs(urls))
-        XCTAssertEqual(LocalRefreshRequest.background.customURLsToRefresh(urls).map(\.id), [
-            "custom-0", "custom-1", "custom-2", "custom-3"
+        XCTAssertEqual(plans[0].units.first, .source(term: first, platform: "mdpr"))
+        XCTAssertEqual(plans[1].units.first, .source(term: second, platform: "mdpr"))
+        XCTAssertEqual(plans[2].units.first, .source(term: first, platform: "news"))
+        XCTAssertTrue(plans.allSatisfy { $0.totalWorkCount == 8 })
+        XCTAssertEqual(Set(plans[0].units), Set([
+            .source(term: first, platform: "youtube"),
+            .source(term: first, platform: "news"),
+            .source(term: first, platform: "mdpr"),
+            .source(term: first, platform: "oricon"),
+            .source(term: second, platform: "youtube"),
+            .source(term: second, platform: "news"),
+            .source(term: second, platform: "mdpr"),
+            .source(term: second, platform: "oricon")
+        ]))
+    }
+
+    func testBackgroundRefreshPlanHonorsSelectedSourcesAndSkipsCustomPlatform() {
+        let selected = WatchTerm(
+            id: "selected",
+            keyword: "Selected",
+            source_mode: .selected,
+            selected_platforms: ["mdpr", "custom"]
+        )
+
+        let plan = BackgroundRefreshPlan.make(
+            terms: [selected],
+            subscribedPlatforms: ["youtube", "mdpr", "custom"],
+            customURLs: [],
+            legacyCursor: 5
+        )
+
+        XCTAssertEqual(plan.units, [.source(term: selected, platform: "mdpr")])
+        XCTAssertEqual(plan.totalWorkCount, 1)
+    }
+
+    func testBackgroundRefreshPlanIncludesAndRotatesCustomURLs() {
+        let term = WatchTerm(id: "term", keyword: "Term")
+        let custom = CustomUrl(id: "custom", url: "https://example.com", title: nil, added_at: "2026-08-01T00:00:00Z")
+
+        let plan = BackgroundRefreshPlan.make(
+            terms: [term],
+            subscribedPlatforms: ["news"],
+            customURLs: [custom],
+            legacyCursor: 1
+        )
+
+        XCTAssertEqual(plan.units, [
+            .custom(custom),
+            .source(term: term, platform: "news")
         ])
-        XCTAssertTrue(LocalRefreshRequest.background.hasCappedCustomURLs(urls))
+        XCTAssertEqual(plan.totalWorkCount, 2)
+    }
+
+    func testBackgroundRefreshPlanResumesAfterStableUnitWhenPriorityOrderChanges() {
+        let first = WatchTerm(id: "first", keyword: "First")
+        let second = WatchTerm(id: "second", keyword: "Second")
+        let completed = BackgroundRefreshUnit.source(term: second, platform: "youtube")
+
+        let plan = BackgroundRefreshPlan.make(
+            terms: [second, first],
+            subscribedPlatforms: ["youtube", "news"],
+            lastCompletedUnitID: completed.stableID,
+            legacyCursor: 99
+        )
+
+        XCTAssertEqual(plan.units.first, .source(term: first, platform: "news"))
+        XCTAssertEqual(Set(plan.units).count, 4)
+    }
+
+    func testBackgroundRefreshCheckpointRejectsLateAndStaleUnits() {
+        let deadline = Date()
+
+        XCTAssertTrue(BackgroundRefreshCheckpoint.isValid(
+            sourceRevision: 4,
+            currentRevision: 4,
+            completedAt: deadline,
+            deadline: deadline
+        ))
+        XCTAssertFalse(BackgroundRefreshCheckpoint.isValid(
+            sourceRevision: 4,
+            currentRevision: 5,
+            completedAt: deadline,
+            deadline: deadline
+        ))
+        XCTAssertFalse(BackgroundRefreshCheckpoint.isValid(
+            sourceRevision: 4,
+            currentRevision: 4,
+            completedAt: deadline.addingTimeInterval(0.001),
+            deadline: deadline
+        ))
     }
 
     func testCanonicalURLForDedupRemovesTrackingParametersOnly() {
@@ -2063,6 +2154,57 @@ final class OshiReaderTests: XCTestCase {
         XCTAssertEqual(report.sourceStatuses.first?.outcome, .received)
     }
 
+    func testBackgroundTransportPolicyUsesOneBoundedAttemptPerRequest() async {
+        let capture = RequestPolicyCapture()
+        let service = IngestionService(
+            requestExecutor: { request in
+                await capture.record(request)
+                throw URLError(.timedOut)
+            },
+            retrySleeper: { _ in }
+        )
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "Bounded Oshi"),
+            platforms: ["barks"],
+            maximumAliases: 0,
+            transportAttemptLimit: 1,
+            requestTimeoutCap: 7
+        )
+
+        let requests = await capture.requests
+        XCTAssertFalse(requests.isEmpty)
+        XCTAssertTrue(requests.allSatisfy { $0.timeout == 7 })
+        XCTAssertEqual(requests.filter { $0.url == "https://barks.jp/feed/" }.count, 1)
+        XCTAssertEqual(report.sourceStatuses.first?.outcome, .failed(.timeout))
+    }
+
+    func testBackgroundAbsoluteDeadlineStopsSequentialFallbackRequests() async {
+        let capture = RequestPolicyCapture()
+        let service = IngestionService(
+            requestExecutor: { request in
+                await capture.record(request)
+                try? await Task.sleep(nanoseconds: 60_000_000)
+                throw URLError(.timedOut)
+            },
+            retrySleeper: { _ in }
+        )
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "Deadline Oshi"),
+            platforms: ["barks"],
+            maximumAliases: 0,
+            transportAttemptLimit: 1,
+            requestTimeoutCap: 7,
+            requestDeadline: Date(timeIntervalSinceNow: 0.03)
+        )
+
+        let requests = await capture.requests
+        XCTAssertEqual(requests.count, 1)
+        XCTAssertLessThanOrEqual(requests[0].timeout, 0.03)
+        XCTAssertEqual(report.sourceStatuses.first?.outcome, .failed(.timeout))
+    }
+
     func testRetryNetworkFailureThenSuccessCanReturnNoResults() async {
         let capture = RequestCapture()
         let service = IngestionService(
@@ -2361,24 +2503,62 @@ final class OshiReaderTests: XCTestCase {
         XCTAssertFalse(report.items.isEmpty)
     }
 
-    func testMissingTwitterCredentialIsReported() async {
+    func testMissingTwitterCredentialUsesPublicIndexFallback() async throws {
+        let existing = KeychainHelper.read(.twitterBearerToken)
+        KeychainHelper.save(.twitterBearerToken, nil)
+        defer { KeychainHelper.save(.twitterBearerToken, existing) }
+
+        let rss = """
+        <rss version="2.0"><channel><item>
+        <title>Credential Oshi posted an update - x.com</title>
+        <link>https://news.google.com/rss/articles/twitter-public-result</link>
+        <pubDate>Fri, 14 Aug 2026 12:00:00 GMT</pubDate>
+        </item></channel></rss>
+        """.data(using: .utf8)!
+        let capture = RequestCapture()
+
+        let report = await IngestionService(
+            requestExecutor: { request in
+                await capture.record(request.url?.absoluteString ?? "")
+                return (
+                    rss,
+                    try XCTUnwrap(HTTPURLResponse(
+                        url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                    ))
+                )
+            },
+            classifyFreshness: true,
+            now: { ISO8601DateFormatter().date(from: "2026-08-15T12:00:00Z")! }
+        ).ingestReport(
+            term: WatchTerm(keyword: "Credential Oshi"),
+            platforms: ["twitter"]
+        )
+
+        XCTAssertEqual(report.sourceStatuses.first?.outcome, .received)
+        XCTAssertEqual(report.items.count, 1)
+        XCTAssertEqual(report.items.first?.source, IngestionService.twitterPublicIndexSource)
+        let requestedPublicIndex = await capture.contains { url in
+            url.contains("news.google.com/rss/search") && url.contains("site:x.com")
+        }
+        XCTAssertTrue(requestedPublicIndex)
+    }
+
+    func testMissingTwitterCredentialDoesNotClaimMediaResultsFromPublicIndex() async {
         let existing = KeychainHelper.read(.twitterBearerToken)
         KeychainHelper.save(.twitterBearerToken, nil)
         defer { KeychainHelper.save(.twitterBearerToken, existing) }
 
         let report = await IngestionService(
             requestExecutor: { _ in
-                XCTFail("Twitter should not make a request without credentials")
+                XCTFail("Media-only X refresh must not use text-only public index results")
                 throw URLError(.cancelled)
             }
         ).ingestReport(
-            term: WatchTerm(keyword: "Credential Oshi"),
+            term: WatchTerm(keyword: "Credential Oshi", collection_mode: "media_only"),
             platforms: ["twitter"]
         )
 
-        XCTAssertTrue(report.sourceStatuses.contains {
-            $0.outcome == .failed(.missingCredential)
-        })
+        XCTAssertEqual(report.sourceStatuses.first?.outcome, .noResults)
     }
 
     func testKeychainSaveReportsSuccessfulWrite() {
@@ -2972,6 +3152,31 @@ final class OshiReaderTests: XCTestCase {
         XCTAssertEqual(summary?.receivedCount, 1)
         XCTAssertEqual(summary?.totalItemCount, 1)
         XCTAssertEqual(summary?.currentStatus?.queryCount, 1)
+    }
+
+    @MainActor
+    func testSourceHealthHistoryReplacesProvisionalRecordsWithinOneRefresh() {
+        let suiteName = "OshiReaderTests.health.provisional.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let diagnostics = RefreshDiagnostics(defaults: defaults)
+        let refreshStart = Date(timeIntervalSinceNow: -60)
+
+        diagnostics.recordCompletedSourceStatuses([
+            SourceRefreshStatus(id: "barks", outcome: .noResults, itemCount: 0, queryCount: 1)
+        ], completedAt: refreshStart.addingTimeInterval(-60))
+        diagnostics.recordCompletedSourceStatuses([
+            SourceRefreshStatus(id: "barks", outcome: .failed(.timeout), itemCount: 0, queryCount: 1)
+        ], completedAt: refreshStart.addingTimeInterval(1), replacingRecordsSince: refreshStart)
+        diagnostics.recordCompletedSourceStatuses([
+            SourceRefreshStatus(id: "barks", outcome: .failed(.rateLimited), itemCount: 0, queryCount: 2)
+        ], completedAt: refreshStart.addingTimeInterval(2), replacingRecordsSince: refreshStart)
+
+        let summary = diagnostics.sourceHealthSummaries.first { $0.id == "barks" }
+        XCTAssertEqual(summary?.emptyCount, 1)
+        XCTAssertEqual(summary?.failedCount, 1)
+        XCTAssertEqual(summary?.lastFailure, .rateLimited)
+        XCTAssertEqual(summary?.currentStatus?.queryCount, 2)
     }
 
     @MainActor
@@ -3857,6 +4062,32 @@ final class OshiReaderTests: XCTestCase {
     }
 
     @MainActor
+    func testTwitterPublicIndexItemsStayFeedOnly() async {
+        let center = MockNotificationCenter(status: .authorized)
+        let manager = NotificationManager(center: center)
+        let term = WatchTerm(id: "twitter-index", keyword: "Index Oshi", notify_on_new: true)
+        let nowString = ISO8601DateFormatter().string(from: Date())
+        let item = FeedItem(
+            id: "twitter:index-result",
+            platform: "twitter",
+            url: "https://news.google.com/rss/articles/index-result",
+            title: "Index Oshi posted an update - x.com",
+            content_text: nil,
+            author: nil,
+            thumbnail_url: nil,
+            media_type: "text",
+            published_at: nowString,
+            watch_term_keyword: term.keyword,
+            fetched_at: nowString,
+            source: IngestionService.twitterPublicIndexSource
+        )
+
+        await manager.notifyForNewItems([item], terms: [term])
+
+        XCTAssertTrue(center.requests.isEmpty)
+    }
+
+    @MainActor
     func testLocalDigestDoesNotScheduleWithoutNotificationPermission() async throws {
         let center = MockNotificationCenter(status: .notDetermined)
         let manager = NotificationManager(center: center)
@@ -3999,6 +4230,109 @@ final class OshiReaderTests: XCTestCase {
 
         XCTAssertEqual(db.mergeItems(newItems: [item]), 1)
         XCTAssertEqual(db.mergeItems(newItems: [item]), 0)
+    }
+
+    @MainActor
+    func testMergeItemsCanHandNotificationWorkToBackgroundCoordinator() {
+        let nowString = ISO8601DateFormatter().string(from: Date())
+        let existing = FeedItem(
+            id: "news:existing", platform: "news", url: "https://example.com/existing",
+            title: "Existing", content_text: nil, author: nil, thumbnail_url: nil,
+            media_type: "article", published_at: nowString, watch_term_keyword: "Existing",
+            fetched_at: nowString
+        )
+        let incoming = FeedItem(
+            id: "news:incoming", platform: "news", url: "https://example.com/incoming",
+            title: "Incoming", content_text: nil, author: nil, thumbnail_url: nil,
+            media_type: "article", published_at: nowString, watch_term_keyword: "Incoming",
+            fetched_at: nowString
+        )
+        XCTAssertEqual(db.mergeItems(newItems: [existing]), 1)
+        var handedOffItems = [FeedItem]()
+
+        XCTAssertEqual(db.mergeItems(newItems: [incoming], notificationHandler: { items, _ in
+            handedOffItems = items
+        }), 1)
+
+        XCTAssertEqual(handedOffItems.map(\.id), [incoming.id])
+    }
+
+    @MainActor
+    func testMergeResultReportsExistingItemMutationWithoutAddition() {
+        let oldDate = "2026-08-13T10:00:00Z"
+        let newDate = "2026-08-14T10:00:00Z"
+        let original = FeedItem(
+            id: "news:refresh-existing", platform: "news", url: "https://example.com/refresh-existing",
+            title: "Old", content_text: nil, author: nil, thumbnail_url: nil,
+            media_type: "article", published_at: oldDate, watch_term_keyword: "Refresh",
+            fetched_at: oldDate
+        )
+        let refreshed = FeedItem(
+            id: original.id, platform: original.platform, url: original.url,
+            title: "A much longer refreshed title", content_text: "Updated", author: nil, thumbnail_url: nil,
+            media_type: original.media_type, published_at: newDate, watch_term_keyword: original.watch_term_keyword,
+            fetched_at: newDate
+        )
+        db.feedItems = [original]
+
+        let result = db.mergeItemsResult(newItems: [refreshed])
+
+        XCTAssertEqual(result.addedCount, 0)
+        XCTAssertTrue(result.didMutate)
+        XCTAssertEqual(db.feedItems.first?.fetched_at, newDate)
+    }
+
+    func testBackgroundNotificationBatchSuppressesEntireInitialLoad() {
+        let item = FeedItem(
+            id: "news:bootstrap", platform: "news", url: "https://example.com/bootstrap",
+            title: "Bootstrap", content_text: nil, author: nil, thumbnail_url: nil,
+            media_type: "article", published_at: "2026-08-14T10:00:00Z",
+            watch_term_keyword: "Bootstrap", fetched_at: "2026-08-14T10:00:00Z"
+        )
+        var batch = BackgroundRefreshNotificationBatch(feedWasEmptyAtStart: true)
+
+        batch.capture([item])
+
+        XCTAssertTrue(batch.survivingItems(in: [item]).isEmpty)
+    }
+
+    func testBackgroundNotificationBatchDropsItemsEvictedByLaterUnits() {
+        let evicted = FeedItem(
+            id: "news:evicted", platform: "news", url: "https://example.com/evicted",
+            title: "Evicted", content_text: nil, author: nil, thumbnail_url: nil,
+            media_type: "article", published_at: "2026-08-13T10:00:00Z",
+            watch_term_keyword: "Cap", fetched_at: "2026-08-14T10:00:00Z"
+        )
+        let surviving = FeedItem(
+            id: "news:surviving", platform: "news", url: "https://example.com/surviving",
+            title: "Surviving", content_text: nil, author: nil, thumbnail_url: nil,
+            media_type: "article", published_at: "2026-08-14T10:00:00Z",
+            watch_term_keyword: "Cap", fetched_at: "2026-08-14T10:00:00Z"
+        )
+        var batch = BackgroundRefreshNotificationBatch(feedWasEmptyAtStart: false)
+        batch.capture([evicted, surviving])
+
+        XCTAssertEqual(batch.survivingItems(in: [surviving]).map(\.id), [surviving.id])
+    }
+
+    @MainActor
+    func testCancelledNotificationTaskDoesNotScheduleRequest() async {
+        let center = MockNotificationCenter(status: .authorized)
+        let manager = NotificationManager(center: center)
+        let term = WatchTerm(id: "cancelled", keyword: "Cancelled", notify_on_new: true)
+        let nowString = ISO8601DateFormatter().string(from: Date())
+        let item = FeedItem(
+            id: "news:cancelled", platform: "news", url: "https://example.com/cancelled",
+            title: "Cancelled", content_text: nil, author: nil, thumbnail_url: nil,
+            media_type: "article", published_at: nowString, watch_term_keyword: term.keyword,
+            fetched_at: nowString
+        )
+
+        let task = Task { await manager.notifyForNewItems([item], terms: [term], includeAttachments: false) }
+        task.cancel()
+        await task.value
+
+        XCTAssertTrue(center.requests.isEmpty)
     }
     
     // MARK: - Feature 3: Feed Querying & Filters (Strict matches, platform toggles, days)
@@ -4252,6 +4586,78 @@ final class OshiReaderTests: XCTestCase {
                 )
             }
         }
+    }
+
+    func testReaderViewSiblingNavigationWalksAdjacentFeedItems() throws {
+        let now = ISO8601DateFormatter().string(from: Date())
+        func item(_ id: String) -> FeedItem {
+            FeedItem(
+                id: id,
+                platform: "youtube",
+                url: "https://example.com/\(id)",
+                title: id,
+                content_text: nil,
+                author: nil,
+                thumbnail_url: nil,
+                media_type: "article",
+                published_at: now,
+                watch_term_keyword: "Aiko",
+                fetched_at: now
+            )
+        }
+        let first = item("first")
+        let middle = item("middle")
+        let last = item("last")
+        let siblings = [first, middle, last]
+
+        let atFirst = ReaderView(feedItem: first, siblingItems: siblings)
+        XCTAssertEqual(atFirst.currentSiblingIndex, 0)
+        XCTAssertNil(atFirst.previousSiblingItem)
+        XCTAssertEqual(atFirst.nextSiblingItem?.id, "middle")
+
+        let atMiddle = ReaderView(feedItem: middle, siblingItems: siblings)
+        XCTAssertEqual(atMiddle.currentSiblingIndex, 1)
+        XCTAssertEqual(atMiddle.previousSiblingItem?.id, "first")
+        XCTAssertEqual(atMiddle.nextSiblingItem?.id, "last")
+
+        let atLast = ReaderView(feedItem: last, siblingItems: siblings)
+        XCTAssertEqual(atLast.currentSiblingIndex, 2)
+        XCTAssertEqual(atLast.previousSiblingItem?.id, "middle")
+        XCTAssertNil(atLast.nextSiblingItem)
+
+        let noSiblings = ReaderView(feedItem: first)
+        XCTAssertNil(noSiblings.currentSiblingIndex)
+        XCTAssertNil(noSiblings.previousSiblingItem)
+        XCTAssertNil(noSiblings.nextSiblingItem)
+
+        let notInList = ReaderView(feedItem: item("stranger"), siblingItems: siblings)
+        XCTAssertNil(notInList.currentSiblingIndex)
+        XCTAssertNil(notInList.previousSiblingItem)
+        XCTAssertNil(notInList.nextSiblingItem)
+    }
+
+    @MainActor
+    func testReaderViewNavigateUpdatesCurrentItemAndNotifiesParent() throws {
+        let now = ISO8601DateFormatter().string(from: Date())
+        let fromItem = FeedItem(
+            id: "5ch:from", platform: "5ch", url: "https://idol.5ch.net/test/read.cgi/board/1111111111",
+            title: "From", content_text: nil, author: nil, thumbnail_url: nil,
+            media_type: "text", published_at: now, watch_term_keyword: "Aiko", fetched_at: now
+        )
+        let toItem = FeedItem(
+            id: "youtube:to", platform: "youtube", url: "https://www.youtube.com/watch?v=abc",
+            title: "To", content_text: nil, author: nil, thumbnail_url: nil,
+            media_type: "video", published_at: now, watch_term_keyword: "Aiko", fetched_at: now
+        )
+
+        var navigatedTo: FeedItem?
+        let reader = ReaderView(feedItem: fromItem, siblingItems: [fromItem, toItem], onNavigate: { navigatedTo = $0 })
+        reader.navigate(to: toItem)
+
+        // `navigate(to:)` also reassigns @State (currentItem, readerMode, ...), but
+        // @State writes on a struct instance never mounted into a view hierarchy don't
+        // persist — only the plain side effect (the onNavigate callback) is observable here.
+        XCTAssertEqual(navigatedTo?.id, "youtube:to")
     }
 
     @MainActor

@@ -200,7 +200,7 @@ class NetworkManager {
         await scrapeCustomUrlsReport(urls).items
     }
 
-    func scrapeCustomUrlsReport(_ urls: [CustomUrl]) async -> CustomURLScrapeReport {
+    func scrapeCustomUrlsReport(_ urls: [CustomUrl], requestTimeout: TimeInterval = 12) async -> CustomURLScrapeReport {
         guard !urls.isEmpty else { return CustomURLScrapeReport(items: [], failedCount: 0) }
 
         return await withTaskGroup(of: (item: FeedItem?, succeeded: Bool).self) { group in
@@ -211,7 +211,7 @@ class NetworkManager {
 
             func add(_ entry: CustomUrl) {
                 group.addTask {
-                    await self.scrapeCustomUrl(entry)
+                    await self.scrapeCustomUrl(entry, requestTimeout: requestTimeout)
                 }
                 running += 1
             }
@@ -235,7 +235,7 @@ class NetworkManager {
         }
     }
 
-    private func scrapeCustomUrl(_ entry: CustomUrl) async -> (item: FeedItem?, succeeded: Bool) {
+    private func scrapeCustomUrl(_ entry: CustomUrl, requestTimeout: TimeInterval = 12) async -> (item: FeedItem?, succeeded: Bool) {
         let normalized = normalizedCustomUrl(entry.url)
         guard let url = URL(string: normalized) else { return (nil, false) }
 
@@ -245,7 +245,7 @@ class NetworkManager {
 
         do {
             var request = URLRequest(url: url)
-            request.timeoutInterval = 12
+            request.timeoutInterval = requestTimeout
             request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1", forHTTPHeaderField: "User-Agent")
 
             let (data, response) = try await URLSession.shared.data(for: request)

@@ -128,7 +128,6 @@ struct FeedView: View {
     @State private var cachedFilteredItems: [FeedItem]
     @State private var cachedVisibleItems: [FeedItem]
     @State private var cachedOrderedPlatforms: [String]
-    @State private var searchText = ""
     @State private var savedItemIds: Set<String>
     @State private var showFilterSheet = false
     @State private var showAddUrlSheet = false
@@ -240,7 +239,7 @@ struct FeedView: View {
                     
                     NavigationStack {
                         if let item = selectedItem {
-                            ReaderView(feedItem: item)
+                            ReaderView(feedItem: item, siblingItems: cachedVisibleItems, onNavigate: { selectedItem = $0 })
                                 .id(item.id)
                         } else {
                             VStack(spacing: 16) {
@@ -277,7 +276,6 @@ struct FeedView: View {
                 refreshToolbarContent
             }
         }
-        .searchable(text: $searchText, prompt: i18n.t("search"))
         .sheet(isPresented: $showFilterSheet) {
             FilterPanel(selectedKeyword: $selectedKeyword, mediaFilter: $mediaFilter, daysFilter: $daysFilter, db: db, theme: theme, i18n: i18n, timeRanges: timeRanges)
                 .presentationDetents([.medium])
@@ -429,12 +427,7 @@ struct FeedView: View {
     private var feedMainState: some View {
         if refreshCoordinator.isRefreshing && cachedFilteredItems.isEmpty {
             feedLoadingState
-        // searchedFeedItems recomputes a filter pass every access (unlike
-        // cachedFilteredItems/cachedVisibleItems); when there's no active
-        // search it's equal to cachedVisibleItems, so check that directly
-        // instead of paying for the scan a second time here and a third
-        // time in feedList's ForEach.
-        } else if trimmedSearchText.isEmpty ? cachedVisibleItems.isEmpty : searchedFeedItems.isEmpty {
+        } else if cachedVisibleItems.isEmpty {
             emptyFeedState
         } else {
             feedList
@@ -616,31 +609,13 @@ struct FeedView: View {
         }
     }
 
-    /// Filters the already-materialized `cachedFilteredItems` by title/content
-    /// substring — cheap enough to compute directly at render time without
-    /// its own cache, unlike `cachedFilteredItems` itself. Capped the same
-    /// way the non-search path caps `canLoadMore` at 100, since a broad
-    /// query against a large feed could otherwise match hundreds of items.
-    private var trimmedSearchText: String {
-        searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private var searchedFeedItems: [FeedItem] {
-        let query = trimmedSearchText
-        guard !query.isEmpty else { return cachedVisibleItems }
-        return Array(cachedFilteredItems.filter {
-            ($0.title?.localizedCaseInsensitiveContains(query) ?? false) ||
-                ($0.content_text?.localizedCaseInsensitiveContains(query) ?? false)
-        }.prefix(100))
-    }
-
     private var feedList: some View {
         List {
-            ForEach(searchedFeedItems) { item in
+            ForEach(cachedVisibleItems) { item in
                 feedListRow(for: item)
             }
 
-            if trimmedSearchText.isEmpty, canLoadMore {
+            if canLoadMore {
                 Button {
                     loadMoreFeedItems()
                 } label: {
@@ -684,7 +659,7 @@ struct FeedView: View {
     private var isFilteredEmptyState: Bool {
         let unfiltered = Self.makeFilteredItems(db: db, keyword: nil, platform: nil, mediaFilter: "all", days: 30)
         guard !unfiltered.isEmpty else { return false }
-        return cachedFilteredItems.isEmpty || searchedFeedItems.isEmpty
+        return cachedFilteredItems.isEmpty
     }
 
     private func clearFeedFilters() {
@@ -692,7 +667,6 @@ struct FeedView: View {
         selectedPlatform = nil
         mediaFilter = "all"
         daysFilter = 30
-        searchText = ""
     }
 
     private func handleSelectedKeywordChange(_ keyword: String?) {
@@ -864,7 +838,7 @@ struct FeedView: View {
                 hidePostButton(for: item)
             }
         } else {
-            NavigationLink(destination: ReaderView(feedItem: item)
+            NavigationLink(destination: ReaderView(feedItem: item, siblingItems: cachedVisibleItems)
                 .onAppear { markRecentUse(for: item) }) {
                 FeedCard(item: item, isSaved: savedItemIds.contains(item.id), theme: theme)
             }

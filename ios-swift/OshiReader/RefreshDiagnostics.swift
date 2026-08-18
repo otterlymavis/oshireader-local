@@ -158,9 +158,19 @@ final class RefreshDiagnostics: ObservableObject {
 
     /// Persists one source-health record per source for a completed refresh.
     /// Callers pass statuses already aggregated across terms and aliases.
-    func recordCompletedSourceStatuses(_ statuses: [SourceRefreshStatus], completedAt: Date = Date()) {
+    func recordCompletedSourceStatuses(
+        _ statuses: [SourceRefreshStatus],
+        completedAt: Date = Date(),
+        replacingRecordsSince replacementStart: Date? = nil
+    ) {
         let cutoff = completedAt.addingTimeInterval(-Self.healthHistoryRetention)
         var records = healthRecords.filter { $0.checkedAt >= cutoff }
+        if let replacementStart {
+            let sourceIDs = Set(statuses.map(\.id))
+            records.removeAll {
+                sourceIDs.contains($0.sourceID) && $0.checkedAt >= replacementStart
+            }
+        }
         records.append(contentsOf: statuses.map { Self.healthRecord(from: $0, completedAt: completedAt) })
         healthRecords = records.sorted { $0.checkedAt < $1.checkedAt }
         persistHealthRecords()

@@ -125,6 +125,46 @@ final class OshiReaderUITests: XCTestCase {
         (firstExistingButton(containing: "UITest saved article") ?? savedTitle).tap()
 
         XCTAssertNotNil(waitForButton(identifier: "reader.modeToggleButton", timeout: 5))
+        // Saved articles aren't opened from an ordered list, so there are no
+        // siblings to page through.
+        XCTAssertFalse(app.buttons["reader.previousArticleButton"].exists)
+        XCTAssertFalse(app.buttons["reader.nextArticleButton"].exists)
+    }
+
+    func testReaderPrevNextNavigationWalksTheFeedList() throws {
+        app.terminate()
+        app.launchArguments = ["--uitesting", "--uitesting-all-platform-sort-feed"]
+        app.launch()
+        tapTab(index: 0, labels: ["Feed"])
+
+        let cards = app.buttons.matching(identifier: "feed.card")
+        XCTAssertTrue(cards.element(boundBy: 1).waitForExistence(timeout: 5), "Expected multiple seeded feed items")
+        cards.element(boundBy: 0).tap()
+
+        let previousButton = waitForButton(identifier: "reader.previousArticleButton", timeout: 5)
+        let nextButton = waitForButton(identifier: "reader.nextArticleButton", timeout: 5)
+        XCTAssertNotNil(previousButton)
+        XCTAssertNotNil(nextButton)
+        // Opened the first item in the list: nothing before it, something after it.
+        XCTAssertFalse(previousButton?.isEnabled ?? true)
+        XCTAssertTrue(nextButton?.isEnabled ?? false)
+
+        // Hop forward a couple of siblings (the seeded fixture has well over a
+        // dozen), confirming "previous" turns on and "next" stays available.
+        let hops = 2
+        for step in 1...hops {
+            nextButton?.tap()
+            XCTAssertTrue(previousButton?.isEnabled ?? false, "Previous should be enabled after moving to item \(step)")
+            XCTAssertTrue(nextButton?.isEnabled ?? false, "Next should still be enabled at item \(step)")
+        }
+
+        // Walk back the same distance and confirm we land exactly on the first
+        // item again (previous disabled, next enabled).
+        for _ in 1...hops {
+            previousButton?.tap()
+        }
+        XCTAssertFalse(previousButton?.isEnabled ?? true, "Should be back at the first item")
+        XCTAssertTrue(nextButton?.isEnabled ?? false)
     }
 
     func testSearchFlow() throws {

@@ -123,8 +123,6 @@ struct ContentView: View {
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
                 UNUserNotificationCenter.current().setBadgeCount(0)
-            } else if phase == .background {
-                BackgroundRefreshManager.shared.schedule()
             }
         }
         .onReceive(notificationNavigation.$selectedItem) { item in

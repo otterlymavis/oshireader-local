@@ -631,14 +631,59 @@ class LocalDB: ObservableObject {
     }
     
     // MARK: - Feed Items & Merging
-    @MainActor
-    func mergeItems(newItems: [FeedItem], sourceRevision: Int? = nil) -> Int {
-        mergeItemsBatched(newItemsBatches: [newItems], sourceRevision: sourceRevision)
+    struct FeedMergeResult: Equatable {
+        let addedCount: Int
+        let didMutate: Bool
     }
 
     @MainActor
-    func mergeItemsBatched(newItemsBatches: [[FeedItem]], sourceRevision: Int? = nil) -> Int {
-        guard sourceRevision == nil || sourceRevision == dataRevision else { return 0 }
+    func mergeItems(
+        newItems: [FeedItem],
+        sourceRevision: Int? = nil,
+        notificationHandler: (([FeedItem], [WatchTerm]) -> Void)? = nil
+    ) -> Int {
+        mergeItemsResult(
+            newItems: newItems,
+            sourceRevision: sourceRevision,
+            notificationHandler: notificationHandler
+        ).addedCount
+    }
+
+    @MainActor
+    func mergeItemsResult(
+        newItems: [FeedItem],
+        sourceRevision: Int? = nil,
+        notificationHandler: (([FeedItem], [WatchTerm]) -> Void)? = nil
+    ) -> FeedMergeResult {
+        mergeItemsBatchedResult(
+            newItemsBatches: [newItems],
+            sourceRevision: sourceRevision,
+            notificationHandler: notificationHandler
+        )
+    }
+
+    @MainActor
+    func mergeItemsBatched(
+        newItemsBatches: [[FeedItem]],
+        sourceRevision: Int? = nil,
+        notificationHandler: (([FeedItem], [WatchTerm]) -> Void)? = nil
+    ) -> Int {
+        mergeItemsBatchedResult(
+            newItemsBatches: newItemsBatches,
+            sourceRevision: sourceRevision,
+            notificationHandler: notificationHandler
+        ).addedCount
+    }
+
+    @MainActor
+    func mergeItemsBatchedResult(
+        newItemsBatches: [[FeedItem]],
+        sourceRevision: Int? = nil,
+        notificationHandler: (([FeedItem], [WatchTerm]) -> Void)? = nil
+    ) -> FeedMergeResult {
+        guard sourceRevision == nil || sourceRevision == dataRevision else {
+            return FeedMergeResult(addedCount: 0, didMutate: false)
+        }
         var addedCount = 0
         var addedItems: [FeedItem] = []
         
@@ -704,15 +749,22 @@ class LocalDB: ObservableObject {
             let notifyItems = addedItems.filter { survivedKeys.contains(Self.feedItemKey($0)) }
             if !notifyItems.isEmpty {
                 let terms = self.terms
-                Task {
-                    await NotificationManager.shared.notifyForNewItems(notifyItems, terms: terms)
+                if let notificationHandler {
+                    notificationHandler(notifyItems, terms)
+                } else {
+                    Task {
+                        await NotificationManager.shared.notifyForNewItems(notifyItems, terms: terms)
+                    }
                 }
             }
         }
 
+        let didMutate = finalItems != self.feedItems
         self.feedItems = finalItems
-        self.saveFeedItemsSoon()
-        return addedCount
+        if didMutate {
+            self.saveFeedItemsSoon()
+        }
+        return FeedMergeResult(addedCount: addedCount, didMutate: didMutate)
     }
 
     private static func feedItemKey(_ item: FeedItem) -> String {

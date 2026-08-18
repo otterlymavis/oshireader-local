@@ -63,8 +63,11 @@ final class BackgroundRefreshManager {
         let request = BGAppRefreshTaskRequest(identifier: Self.taskIdentifier)
         request.earliestBeginDate = Date(timeIntervalSinceNow: Self.minimumInterval)
         do {
-            BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: Self.taskIdentifier)
+            // Submitting the same refresh identifier replaces its pending
+            // request. Do not cancel first: if submission fails, the existing
+            // request must remain queued so background refresh can recover.
             try BGTaskScheduler.shared.submit(request)
+            AppLogger.network.notice("Background refresh request submitted")
         } catch {
             AppLogger.network.warning("Background refresh scheduling failed: \(error.localizedDescription)")
         }
@@ -104,11 +107,13 @@ final class BackgroundRefreshManager {
     }
 
     private func handle(_ task: BGAppRefreshTask) async {
+        // Queue the next opportunity before starting network work. If iOS
+        // expires or terminates this run, a future refresh remains pending.
+        schedule()
         task.expirationHandler = { [weak self] in
             Task { @MainActor in self?.cancelActiveRefresh() }
         }
         let outcome = await refreshNow()
         task.setTaskCompleted(success: outcome != .failed)
-        schedule()
     }
 }

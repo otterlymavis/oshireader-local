@@ -148,10 +148,10 @@ final class NotificationManager: ObservableObject {
     }
 
     func notifyForNewItems(_ items: [FeedItem], terms: [WatchTerm], includeAttachments: Bool = true) async {
-        guard !items.isEmpty else { return }
+        guard !Task.isCancelled, !items.isEmpty else { return }
         let generation = localNotificationGeneration
         await refreshAuthorizationStatus()
-        guard generation == localNotificationGeneration else { return }
+        guard !Task.isCancelled, generation == localNotificationGeneration else { return }
         guard canScheduleNotifications else { return }
 
         let notifiedKeywords = Set(terms.filter(\.notify_on_new).map(\.keyword))
@@ -163,13 +163,16 @@ final class NotificationManager: ObservableObject {
             notifiedTermsByKeyword[term.keyword] = notifiedTermsByKeyword[term.keyword] ?? term
         }
 
-        let matchingItems = items.filter { notifiedKeywords.contains($0.watch_term_keyword) }
+        let matchingItems = items.filter {
+            notifiedKeywords.contains($0.watch_term_keyword)
+                && $0.source != IngestionService.twitterPublicIndexSource
+        }
         let itemsByKeyword = Dictionary(grouping: matchingItems) {
             $0.watch_term_keyword
         }
 
         for (keyword, keywordItems) in itemsByKeyword where !keywordItems.isEmpty {
-            guard generation == localNotificationGeneration else { return }
+            guard !Task.isCancelled, generation == localNotificationGeneration else { return }
             guard let term = notifiedTermsByKeyword[keyword] else { continue }
             let count = keywordItems.count
             let representative = keywordItems.sorted {
@@ -209,10 +212,10 @@ final class NotificationManager: ObservableObject {
                 trigger: nil
             )
             do {
-                guard generation == localNotificationGeneration else { return }
+                guard !Task.isCancelled, generation == localNotificationGeneration else { return }
                 center.removePendingNotificationRequests(withIdentifiers: [request.identifier])
                 try await center.add(request)
-                guard generation == localNotificationGeneration else {
+                guard !Task.isCancelled, generation == localNotificationGeneration else {
                     center.removePendingNotificationRequests(withIdentifiers: [request.identifier])
                     center.removeDeliveredNotifications(withIdentifiers: [request.identifier])
                     return
