@@ -43,8 +43,14 @@ struct SavedView: View {
                     
                     NavigationStack {
                         if let page = selectedPage {
-                            ReaderView(feedItem: page.toFeedItem())
-                                .id(page.id)
+                            ReaderView(
+                                feedItem: page.toFeedItem(),
+                                siblingItems: db.savedPages.map { $0.toFeedItem() },
+                                onNavigate: { item in
+                                    selectedPage = db.savedPages.first(where: { $0.id == item.id })
+                                }
+                            )
+                            .id(page.id)
                         } else {
                             VStack(spacing: 16) {
                                 Text("📂")
@@ -111,7 +117,7 @@ struct SavedView: View {
                                 }
                             }
                         } else {
-                            NavigationLink(destination: ReaderView(feedItem: page.toFeedItem())) {
+                            NavigationLink(destination: ReaderView(feedItem: page.toFeedItem(), siblingItems: db.savedPages.map { $0.toFeedItem() })) {
                                 SavedPageCard(page: page, theme: theme)
                             }
                             .buttonStyle(PlainButtonStyle())

@@ -125,10 +125,12 @@ final class OshiReaderUITests: XCTestCase {
         (firstExistingButton(containing: "UITest saved article") ?? savedTitle).tap()
 
         XCTAssertNotNil(waitForButton(identifier: "reader.modeToggleButton", timeout: 5))
-        // Saved articles aren't opened from an ordered list, so there are no
-        // siblings to page through.
-        XCTAssertFalse(app.buttons["reader.previousArticleButton"].exists)
-        XCTAssertFalse(app.buttons["reader.nextArticleButton"].exists)
+        // The fixture seeds exactly one saved page, so prev/next render but
+        // both stay disabled — nothing to page to in either direction.
+        let previousButton = waitForButton(identifier: "reader.previousArticleButton", timeout: 5)
+        let nextButton = waitForButton(identifier: "reader.nextArticleButton", timeout: 5)
+        XCTAssertFalse(previousButton?.isEnabled ?? true)
+        XCTAssertFalse(nextButton?.isEnabled ?? true)
     }
 
     func testReaderPrevNextNavigationWalksTheFeedList() throws {
