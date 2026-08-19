@@ -260,6 +260,25 @@ struct SettingsView: View {
                         .accessibilityIdentifier("settings.autoTranslateToggle")
                 }
 
+                Section(
+                    header: Text(i18n.t("credentialsSection")),
+                    footer: Text(i18n.t("credentialsFooter"))
+                ) {
+                    if db.subscribedPlatforms.contains("twitter"),
+                       twitterBearerToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Label(i18n.t("twitterTokenMissingHint"), systemImage: "exclamationmark.triangle")
+                            .font(.caption)
+                            .foregroundColor(.orange)
+                            .accessibilityIdentifier("settings.twitterTokenMissingHint")
+                    }
+                    SecureField(i18n.t("twitterBearerTokenPlaceholder"), text: $twitterBearerToken)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .onSubmit { KeychainHelper.save(.twitterBearerToken, twitterBearerToken) }
+                        .onDisappear { KeychainHelper.save(.twitterBearerToken, twitterBearerToken) }
+                        .accessibilityIdentifier("settings.twitterBearerTokenField")
+                }
+
                 // Section: Customizations
                 Section {
                     DisclosureGroup(isExpanded: $isAppearanceSectionExpanded) {

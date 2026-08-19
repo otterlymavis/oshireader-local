@@ -1082,6 +1082,18 @@ class I18nManager: ObservableObject {
             "zh-TW": "僅儲存在此裝置的 Keychain。X 結果需要你自己的 Bearer Token；未設定時會略過該來源。",
             "zh-CN": "仅存储在此设备的 Keychain。X 结果需要你自己的 Bearer Token；未设置时会跳过该来源。"
         ],
+        "twitterBearerTokenPlaceholder": [
+            "en": "X Bearer Token",
+            "ja": "X Bearer Token",
+            "zh-TW": "X Bearer Token",
+            "zh-CN": "X Bearer Token"
+        ],
+        "twitterTokenMissingHint": [
+            "en": "X results are limited to a public search and won't trigger notifications until you add a bearer token below.",
+            "ja": "Bearer Tokenを下に設定するまで、Xの結果は公開検索のみに限定され、通知も届きません。",
+            "zh-TW": "在下方設定 Bearer Token 之前，X 的結果僅限公開搜尋，也不會觸發通知。",
+            "zh-CN": "在下方设置 Bearer Token 之前，X 的结果仅限公开搜索，也不会触发通知。"
+        ],
         "themeStyle": [
             "en": "Style",
             "ja": "スタイル",
