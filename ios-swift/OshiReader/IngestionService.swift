@@ -370,20 +370,7 @@ final class IngestionService {
     }
 
     private func withWatchTermKeyword(_ item: FeedItem, keyword: String) -> FeedItem {
-        FeedItem(
-            id: item.id,
-            platform: item.platform,
-            url: item.url,
-            title: item.title,
-            content_text: item.content_text,
-            author: item.author,
-            thumbnail_url: item.thumbnail_url,
-            media_type: item.media_type,
-            published_at: item.published_at,
-            watch_term_keyword: keyword,
-            fetched_at: item.fetched_at,
-            source: item.source
-        )
+        item.with(watch_term_keyword: keyword)
     }
 
     // MARK: - General news
@@ -530,9 +517,8 @@ final class IngestionService {
                 hasFallbackEligibleFailure = hasFallbackEligibleFailure || fallbackEligible
             }
 
-            var seen = Set<String>()
             return (
-                sortedByPublishedDate(all.filter { seen.insert($0.id).inserted }).prefix(25).map { $0 },
+                dedupedSortedCapped(all),
                 parsedAnyFeed,
                 failedAnyFeed,
                 hasFallbackEligibleFailure
@@ -602,13 +588,7 @@ final class IngestionService {
         if let firstFailure = results.compactMap({ $0.2 }).first {
             await recordFailure(firstFailure)
         }
-        var seen = Set<String>()
-        return results
-            .flatMap(\.1)
-            .filter { seen.insert($0.id).inserted }
-            .sorted { self.feedItemSortPrecedes($0, $1) }
-            .prefix(25)
-            .map { $0 }
+        return dedupedSortedCapped(results.flatMap(\.1))
     }
 
     // MARK: - Google News site-filtered RSS (5ch, girlschannel, mdpr, oricon, yahoonews, niconico fallback)
@@ -1798,12 +1778,11 @@ final class IngestionService {
         items.sorted(by: feedItemSortPrecedes)
     }
 
-    private func feedItemSortPrecedes(_ lhs: FeedItem, _ rhs: FeedItem) -> Bool {
-        let lhsDate = parseISO8601Date(lhs.published_at) ?? .distantPast
-        let rhsDate = parseISO8601Date(rhs.published_at) ?? .distantPast
-        if lhsDate != rhsDate { return lhsDate > rhsDate }
-        if lhs.id != rhs.id { return lhs.id < rhs.id }
-        return lhs.url < rhs.url
+    /// Dedupes by `FeedItem.id`, sorts newest-first, and caps to `limit` — the
+    /// common tail of every fetcher that merges several source queries.
+    private func dedupedSortedCapped(_ items: [FeedItem], limit: Int = 25) -> [FeedItem] {
+        var seen = Set<String>()
+        return sortedByPublishedDate(items.filter { seen.insert($0.id).inserted }).prefix(limit).map { $0 }
     }
 
     /// Stable FNV-1a hash so the same article URL yields the same FeedItem id

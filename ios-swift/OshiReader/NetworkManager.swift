@@ -101,7 +101,8 @@ class NetworkManager {
     // MARK: - Irasutoya popular / search
     func getPopularIrasutoya() async throws -> [IrasutoyaImage] {
         let feed1 = "https://www.irasutoya.com/feeds/posts/default?alt=json&max-results=20"
-        let categoryUrl = "https://www.irasutoya.com/feeds/posts/default/-/\(URLQueryItem(name: "", value: "人物").value!.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "")?alt=json&max-results=15"
+        let categoryQuery = "人物".addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "人物"
+        let categoryUrl = "https://www.irasutoya.com/feeds/posts/default/-/\(categoryQuery)?alt=json&max-results=15"
 
         async let fetch1 = fetchBloggerFeed(feed1)
         async let fetch2 = fetchBloggerFeed(categoryUrl)

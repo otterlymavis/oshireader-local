@@ -184,6 +184,51 @@ struct FeedItem: Codable, Hashable, Identifiable {
     let watch_term_keyword: String
     let fetched_at: String
     var source: String? = nil
+
+    /// Returns a copy with the given fields overridden. Omitted parameters
+    /// keep this item's current value; for `Optional`-typed fields, pass
+    /// `.some(nil)` to explicitly clear them (a bare `nil` argument means
+    /// "leave unchanged," not "set to nil").
+    func with(
+        id: String? = nil,
+        platform: String? = nil,
+        url: String? = nil,
+        title: String?? = nil,
+        content_text: String?? = nil,
+        author: String?? = nil,
+        thumbnail_url: String?? = nil,
+        media_type: String? = nil,
+        published_at: String? = nil,
+        watch_term_keyword: String? = nil,
+        fetched_at: String? = nil,
+        source: String?? = nil
+    ) -> FeedItem {
+        FeedItem(
+            id: id ?? self.id,
+            platform: platform ?? self.platform,
+            url: url ?? self.url,
+            title: title ?? self.title,
+            content_text: content_text ?? self.content_text,
+            author: author ?? self.author,
+            thumbnail_url: thumbnail_url ?? self.thumbnail_url,
+            media_type: media_type ?? self.media_type,
+            published_at: published_at ?? self.published_at,
+            watch_term_keyword: watch_term_keyword ?? self.watch_term_keyword,
+            fetched_at: fetched_at ?? self.fetched_at,
+            source: source ?? self.source
+        )
+    }
+}
+
+/// Sorts by published date (newest first), then by id and watch term keyword,
+/// then by URL, so ordering is fully deterministic across refreshes.
+func feedItemSortPrecedes(_ lhs: FeedItem, _ rhs: FeedItem) -> Bool {
+    let lhsDate = parseISO8601Date(lhs.published_at) ?? .distantPast
+    let rhsDate = parseISO8601Date(rhs.published_at) ?? .distantPast
+    if lhsDate != rhsDate { return lhsDate > rhsDate }
+    if lhs.id != rhs.id { return lhs.id < rhs.id }
+    if lhs.watch_term_keyword != rhs.watch_term_keyword { return lhs.watch_term_keyword < rhs.watch_term_keyword }
+    return lhs.url < rhs.url
 }
 
 // MARK: - SavedPage

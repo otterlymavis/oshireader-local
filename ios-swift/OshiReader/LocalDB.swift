@@ -715,17 +715,12 @@ class LocalDB: ObservableObject {
                      existing.title?.contains("...") == true ||
                      (item.title?.count ?? 0) > (existing.title?.count ?? 0) + 8)
 
-                let merged = FeedItem(
-                    id: existing.id,
-                    platform: existing.platform,
-                    url: existing.url,
+                let merged = existing.with(
                     title: shouldReplaceTitle ? item.title : existing.title,
                     content_text: item.content_text ?? existing.content_text,
                     author: item.author ?? existing.author,
                     thumbnail_url: item.thumbnail_url ?? existing.thumbnail_url,
-                    media_type: existing.media_type,
                     published_at: Self.mergedPublishedAt(existing: existing, incoming: item),
-                    watch_term_keyword: existing.watch_term_keyword,
                     fetched_at: item.fetched_at,
                     source: item.source ?? existing.source
                 )
@@ -733,7 +728,7 @@ class LocalDB: ObservableObject {
             }
         }
         
-        let sorted = currentMap.values.sorted(by: Self.feedItemSortPrecedes)
+        let sorted = currentMap.values.sorted(by: feedItemSortPrecedes)
         let preserveAddedItems = !self.feedItems.isEmpty
         let preservedKeys = preserveAddedItems ? Set(addedItems.map(Self.feedItemKey)) : []
         let finalItems = Self.cappedFeedItems(
@@ -786,16 +781,6 @@ class LocalDB: ObservableObject {
         return incomingDate >= existingDate ? incoming.published_at : existing.published_at
     }
 
-    private static func feedItemSortPrecedes(_ lhs: FeedItem, _ rhs: FeedItem) -> Bool {
-        let lhsDate = parseISO8601Date(lhs.published_at) ?? .distantPast
-        let rhsDate = parseISO8601Date(rhs.published_at) ?? .distantPast
-        if lhsDate != rhsDate { return lhsDate > rhsDate }
-
-        let lhsKey = feedItemKey(lhs)
-        let rhsKey = feedItemKey(rhs)
-        if lhsKey != rhsKey { return lhsKey < rhsKey }
-        return lhs.url < rhs.url
-    }
 
     private struct FeedQueryCandidate {
         let item: FeedItem
@@ -944,7 +929,7 @@ class LocalDB: ObservableObject {
             
             return FeedQueryCandidate(item: item, platformKey: platformKey)
         }
-        .sorted { Self.feedItemSortPrecedes($0.item, $1.item) }
+        .sorted { feedItemSortPrecedes($0.item, $1.item) }
 
         if keyword?.isEmpty == false {
             return candidates.map(\.item)
@@ -1264,18 +1249,10 @@ class LocalDB: ObservableObject {
                     normalizedItemURL.flatMap({ customURLImport.entriesByLegacyURL[$0] }) else {
                 return nil
             }
-            return FeedItem(
+            return item.with(
                 id: entry.id,
                 platform: "custom",
                 url: entry.url,
-                title: item.title,
-                content_text: item.content_text,
-                author: item.author,
-                thumbnail_url: item.thumbnail_url,
-                media_type: item.media_type,
-                published_at: item.published_at,
-                watch_term_keyword: item.watch_term_keyword,
-                fetched_at: item.fetched_at,
                 source: item.source ?? "custom_url"
             )
         }
@@ -1563,7 +1540,7 @@ class LocalDB: ObservableObject {
         let normalizedFeedItems = Self.cappedFeedItems(
             importedFeedItems
                 .filter { !FeedItemPolicy.shouldPruneLegacyYouTubeItem($0) }
-                .sorted(by: Self.feedItemSortPrecedes),
+                .sorted(by: feedItemSortPrecedes),
             preserving: [],
             subscribedPlatforms: normalizedSubscribedPlatforms
         )
