@@ -116,6 +116,7 @@ struct ContentView: View {
         }
         .onAppear {
             updateTabBarAppearance(for: theme.mode)
+            db.processPendingShares()
         }
         .onChange(of: theme.mode) { _, newMode in
             updateTabBarAppearance(for: newMode)
@@ -123,6 +124,7 @@ struct ContentView: View {
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
                 UNUserNotificationCenter.current().setBadgeCount(0)
+                db.processPendingShares()
             }
         }
         .onOpenURL { url in

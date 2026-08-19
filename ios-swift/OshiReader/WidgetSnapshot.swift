@@ -1,7 +1,5 @@
 import Foundation
 
-let oshiReaderWidgetAppGroupID = "group.com.otterpia.oshireader"
-
 /// The subset of a `WatchTerm` the widget's configuration picker needs —
 /// keeping this separate from `WatchTerm` means the widget extension never
 /// needs the full watch-term model (source selection, collection mode, etc).
@@ -23,7 +21,7 @@ enum WidgetSnapshotStore {
     private static let fileName = "widget_snapshot.json"
 
     private static var containerURL: URL? {
-        FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: oshiReaderWidgetAppGroupID)
+        FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: oshiReaderAppGroupID)
     }
 
     static func write(_ snapshot: WidgetSnapshot) {

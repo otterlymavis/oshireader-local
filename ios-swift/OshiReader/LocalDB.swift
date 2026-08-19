@@ -1346,7 +1346,31 @@ class LocalDB: ObservableObject {
         saveToFile(name: "custom_urls", value: customUrls)
         return .added
     }
-    
+
+    /// Drains whatever the Share Extension queued (see `PendingShareStore`)
+    /// into `customUrls` via the normal `addCustomUrl` path, then scrapes and
+    /// merges them the same way the in-app "Add custom feed" sheet does.
+    /// Safe to call repeatedly — the queue is empty after the first drain.
+    @discardableResult
+    func processPendingShares() -> Int {
+        dispatchPrecondition(condition: .onQueue(.main))
+        let pending = PendingShareStore.drain()
+        guard !pending.isEmpty else { return 0 }
+        let addedAny = pending.reduce(false) { addedAny, share in
+            addCustomUrl(url: share.url, title: share.title ?? "") == .added || addedAny
+        }
+        guard addedAny else { return pending.count }
+        let sourceRevision = dataRevision
+        Task { @MainActor in
+            let customItems = await NetworkManager.shared.scrapeCustomUrls(self.customUrls)
+            let currentItems = self.currentCustomFeedItems(customItems)
+            if !currentItems.isEmpty {
+                _ = self.mergeItems(newItems: currentItems, sourceRevision: sourceRevision)
+            }
+        }
+        return pending.count
+    }
+
     func removeCustomUrl(id: String) {
         runOnMain {
             let removedUrls = self.customUrls
