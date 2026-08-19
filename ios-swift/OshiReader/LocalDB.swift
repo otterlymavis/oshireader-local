@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import WidgetKit
 
 /// Coalesces rapid mutations of a single JSON-backed store into one
 /// debounced disk write (e.g. hiding several items in a row produces one
@@ -108,6 +109,8 @@ class LocalDB: ObservableObject {
     private let feedItemsSaver = DebouncedFileSaver()
     private let hiddenItemsSaver = DebouncedFileSaver()
     private let termsSaver = DebouncedFileSaver()
+    private let widgetSnapshotSaver = DebouncedFileSaver()
+    private static let widgetItemsPerTerm = 10
     private var contentCacheGenerationValue = 0
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
@@ -131,6 +134,38 @@ class LocalDB: ObservableObject {
         loadAll()
         queryFeedInvalidationSubscription = objectWillChange.sink { [weak self] _ in
             self?.queryFeedGeneration &+= 1
+            self?.scheduleWidgetSnapshotRefresh()
+        }
+    }
+
+    // MARK: - Widget snapshot
+    //
+    // The widget extension can't reach LocalDB's Documents-directory JSON
+    // files, so on every data change we publish a small per-term snapshot
+    // into the shared App Group container instead. Debounced the same way
+    // as `scheduleSave` (`objectWillChange` fires on every `@Published`
+    // mutation, including unrelated ones like an avatar edit — cheap to
+    // over-trigger, and simpler than hand-picking call sites and risking
+    // missing one). The actual `queryFeed` recompute happens once the
+    // debounce settles, on the main queue where `@Published` reads are safe.
+    private func scheduleWidgetSnapshotRefresh() {
+        widgetSnapshotSaver.scheduleSave(on: DispatchQueue.main, delay: .milliseconds(400)) { [weak self] in
+            self?.writeWidgetSnapshotNow()
+        }
+    }
+
+    private func writeWidgetSnapshotNow() {
+        let termOptions = terms.map { WidgetTermOption(id: $0.id, keyword: $0.keyword) }
+        var itemsByTermID: [String: [FeedItem]] = [:]
+        for term in terms {
+            itemsByTermID[term.id] = Array(queryFeed(keyword: term.keyword, days: 0).prefix(Self.widgetItemsPerTerm))
+        }
+        let snapshot = WidgetSnapshot(terms: termOptions, itemsByTermID: itemsByTermID, updatedAt: Date())
+        queue.async {
+            WidgetSnapshotStore.write(snapshot)
+            DispatchQueue.main.async {
+                WidgetCenter.shared.reloadAllTimelines()
+            }
         }
     }
     

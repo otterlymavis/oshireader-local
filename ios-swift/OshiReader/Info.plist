@@ -61,6 +61,17 @@
 	<array>
 		<string>com.otterpia.oshireader.feed-refresh</string>
 	</array>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.otterpia.oshireader</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>oshireader</string>
+			</array>
+		</dict>
+	</array>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>NSPhotoLibraryAddUsageDescription</key>

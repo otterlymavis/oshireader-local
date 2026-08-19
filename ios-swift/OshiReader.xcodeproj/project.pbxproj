@@ -9,21 +9,28 @@
 /* Begin PBXBuildFile section */
 		04ECF722D087530C866ACCCF /* app_icon_preview_black_bg.png in Resources */ = {isa = PBXBuildFile; fileRef = 16AC7000186EF1AE3E971C44 /* app_icon_preview_black_bg.png */; };
 		0AADB4A33250AC604852BABC /* OshiReaderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49BBAB62B30911CFD45062E6 /* OshiReaderTests.swift */; };
+		0D2B6E4DE3D40D56B8112532 /* OshiReaderWidgetBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A7C4776F953189791CA2B96 /* OshiReaderWidgetBundle.swift */; };
 		108FBAFB5E9A79C37621A86B /* app_icon_preview_white_otter_black_bg.png in Resources */ = {isa = PBXBuildFile; fileRef = 7B2255286B25465F174B44E4 /* app_icon_preview_white_otter_black_bg.png */; };
+		10DD81AB5B111BD29BC4C76B /* AppLogger.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02418F20B46B959DA941B54A /* AppLogger.swift */; };
 		1139EA0DCA66701E71B071F7 /* LocalRefreshCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 753E0324E3B4665896516C12 /* LocalRefreshCoordinator.swift */; };
 		15E2283EDF51A13E2895271E /* ReaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 866A42C8B01CDE66550FBC36 /* ReaderView.swift */; };
+		1F5F15211AEF3A6A4335A881 /* PlatformRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 86982AF846CF5F002A8068BE /* PlatformRegistry.swift */; };
 		3AB3254733131B0DD9FF3935 /* KeychainHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B0DBC0B647BE9C319275510 /* KeychainHelper.swift */; };
 		3FA51D07DCDCD47A84902360 /* NotificationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA093C93D4514C0B73101C23 /* NotificationManager.swift */; };
 		41EE0967EF025AA3908FA6E5 /* OshiReaderUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5CC07FF11F19D7FE9B1FAE96 /* OshiReaderUITests.swift */; };
 		45853A8BCEBA615F1B1717A4 /* FeedView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84500A11E3895A0801822A4E /* FeedView.swift */; };
+		49E5880FFE2A6AF00E40CB11 /* OshiReaderWidgetExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 8DF12C3060E778F400352CB9 /* OshiReaderWidgetExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		521B9F54ADF3291B01EE3EAA /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 7757DA33C395BD65387A4309 /* PrivacyInfo.xcprivacy */; };
+		54037E3E06284CCCD79895A0 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14C7E2AD85F46D55CDAD349D /* Models.swift */; };
 		5616A4D24B025D3B258D8EFD /* SearchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5FB07A4A295E6B82E88BBEB7 /* SearchView.swift */; };
 		56ECEE1891E6C7AD085796BB /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = B3C7AB5D135169FD79851DA6 /* Theme.swift */; };
 		5A725005C5C6CE4C2148A38A /* RefreshDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00F89CFA2D8D85DC78AE5134 /* RefreshDiagnostics.swift */; };
+		5BBF8D996271EB7479FC09B0 /* SelectWatchTermIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2B34921879CF965BE3C9A5B /* SelectWatchTermIntent.swift */; };
 		6272FB99110FEDA507C0F5D8 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C607233A1D4F78BDDD5A7C4 /* ContentView.swift */; };
 		67E3E43BCE3FCFD489E89088 /* app_icon_preview_white_line_black_bg.png in Resources */ = {isa = PBXBuildFile; fileRef = C5D040C2B5C75B3256B8C9E2 /* app_icon_preview_white_line_black_bg.png */; };
 		6969C73B8C9DA16AC4C8F726 /* I18n.swift in Sources */ = {isa = PBXBuildFile; fileRef = 75492232667474AE9C22A904 /* I18n.swift */; };
 		6981317FF64555AC90CF5868 /* WallpaperRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F5CB32111D0FB50693DE4BD /* WallpaperRenderer.swift */; };
+		7A25A83CCF90673F8E2BB8A0 /* OshiReaderWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = 767B63640366C3537A66102B /* OshiReaderWidget.swift */; };
 		8295B9798BAB2CD8379BEACD /* IngestionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12A70A437B3A48A6BBA842CF /* IngestionService.swift */; };
 		873A32EA2C39E65224BABDCA /* EncryptedBackup.swift in Sources */ = {isa = PBXBuildFile; fileRef = D664F1A79B84759EDFCFE098 /* EncryptedBackup.swift */; };
 		92793B84417591C6F67CB6B4 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14C7E2AD85F46D55CDAD349D /* Models.swift */; };
@@ -35,7 +42,9 @@
 		BE3D630219B70EABDAEA04BA /* NetworkManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA4656BA51F509A9A84ED250 /* NetworkManager.swift */; };
 		BFBF8762D19D5BF86CF94BE4 /* LocalProfileStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 225E5A2942CCC270A7951737 /* LocalProfileStore.swift */; };
 		C0E99BC97CB881646FF5E073 /* app_icon_preview_inverted_lineart.png in Resources */ = {isa = PBXBuildFile; fileRef = E630D79E478EFD95756C1147 /* app_icon_preview_inverted_lineart.png */; };
+		C5E795ABB99336A873C3E122 /* WidgetSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44856E26AE8119108F4EF73D /* WidgetSnapshot.swift */; };
 		C7723609DB5D7D2D1F9AFEB2 /* AppLogger.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02418F20B46B959DA941B54A /* AppLogger.swift */; };
+		C7868506F2B4BC5F5D81ED34 /* WidgetSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44856E26AE8119108F4EF73D /* WidgetSnapshot.swift */; };
 		C97A019FA31C7241CFFEFCCB /* app_icon_preview_dark_mode_outline.png in Resources */ = {isa = PBXBuildFile; fileRef = 470F1460E896D82E6ED8B5A3 /* app_icon_preview_dark_mode_outline.png */; };
 		CB45E12713243928A5088590 /* LocalDB.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC815F05EA634BBCAB4CCF02 /* LocalDB.swift */; };
 		D52495292898CC66D9765714 /* OshiView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 16205C1ECDAC6AB69095DEDA /* OshiView.swift */; };
@@ -47,6 +56,13 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
+		33CC33DC53AD0859F291EF7E /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 014C1E0D44500F428608C94B /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = F43758922C30979DBB1D4CE9;
+			remoteInfo = OshiReaderWidgetExtension;
+		};
 		5E5949798206C37781D34831 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 014C1E0D44500F428608C94B /* Project object */;
@@ -63,11 +79,27 @@
 		};
 /* End PBXContainerItemProxy section */
 
+/* Begin PBXCopyFilesBuildPhase section */
+		1B4DA3D6E58117D3A06DCD5B /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				49E5880FFE2A6AF00E40CB11 /* OshiReaderWidgetExtension.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
 		00F89CFA2D8D85DC78AE5134 /* RefreshDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RefreshDiagnostics.swift; sourceTree = "<group>"; };
 		02418F20B46B959DA941B54A /* AppLogger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppLogger.swift; sourceTree = "<group>"; };
 		0296C552A004B73654BE7AEC /* RecentTermUsageStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecentTermUsageStore.swift; sourceTree = "<group>"; };
+		0A9137A8E2FB9FF2A5535C19 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		0FB8EFA6D9E090CC83802EFF /* OshiReader.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = OshiReader.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		11A0BBF2126EA8E5A490A668 /* OshiReaderWidget.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = OshiReaderWidget.entitlements; sourceTree = "<group>"; };
 		12A70A437B3A48A6BBA842CF /* IngestionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IngestionService.swift; sourceTree = "<group>"; };
 		14C7E2AD85F46D55CDAD349D /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		16205C1ECDAC6AB69095DEDA /* OshiView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OshiView.swift; sourceTree = "<group>"; };
@@ -76,6 +108,7 @@
 		1DE2FB251822D2F52EAA70E7 /* OshiReaderTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = OshiReaderTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		225E5A2942CCC270A7951737 /* LocalProfileStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalProfileStore.swift; sourceTree = "<group>"; };
 		281B85D31BF641436C65758B /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		44856E26AE8119108F4EF73D /* WidgetSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WidgetSnapshot.swift; sourceTree = "<group>"; };
 		470F1460E896D82E6ED8B5A3 /* app_icon_preview_dark_mode_outline.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = app_icon_preview_dark_mode_outline.png; sourceTree = "<group>"; };
 		49BBAB62B30911CFD45062E6 /* OshiReaderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OshiReaderTests.swift; sourceTree = "<group>"; };
 		56F97FCE5F8F2EFBC98E2310 /* OshiReader.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = OshiReader.entitlements; sourceTree = "<group>"; };
@@ -86,12 +119,15 @@
 		720597F8B0D3B8680AAB2C90 /* NotificationNavigationManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationNavigationManager.swift; sourceTree = "<group>"; };
 		753E0324E3B4665896516C12 /* LocalRefreshCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalRefreshCoordinator.swift; sourceTree = "<group>"; };
 		75492232667474AE9C22A904 /* I18n.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = I18n.swift; sourceTree = "<group>"; };
+		767B63640366C3537A66102B /* OshiReaderWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OshiReaderWidget.swift; sourceTree = "<group>"; };
 		7757DA33C395BD65387A4309 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		7B2255286B25465F174B44E4 /* app_icon_preview_white_otter_black_bg.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = app_icon_preview_white_otter_black_bg.png; sourceTree = "<group>"; };
 		84500A11E3895A0801822A4E /* FeedView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeedView.swift; sourceTree = "<group>"; };
 		866A42C8B01CDE66550FBC36 /* ReaderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderView.swift; sourceTree = "<group>"; };
 		86982AF846CF5F002A8068BE /* PlatformRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlatformRegistry.swift; sourceTree = "<group>"; };
+		8DF12C3060E778F400352CB9 /* OshiReaderWidgetExtension.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = OshiReaderWidgetExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		970DE2739F781561F643F1C3 /* OshiReaderUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = OshiReaderUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		9A7C4776F953189791CA2B96 /* OshiReaderWidgetBundle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OshiReaderWidgetBundle.swift; sourceTree = "<group>"; };
 		9B0DBC0B647BE9C319275510 /* KeychainHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainHelper.swift; sourceTree = "<group>"; };
 		A3A059DFAA25028841278FC4 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		B3C7AB5D135169FD79851DA6 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
@@ -104,6 +140,7 @@
 		D664F1A79B84759EDFCFE098 /* EncryptedBackup.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EncryptedBackup.swift; sourceTree = "<group>"; };
 		E630D79E478EFD95756C1147 /* app_icon_preview_inverted_lineart.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = app_icon_preview_inverted_lineart.png; sourceTree = "<group>"; };
 		EB4698197160905DBD0B1085 /* BackgroundRefreshManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundRefreshManager.swift; sourceTree = "<group>"; };
+		F2B34921879CF965BE3C9A5B /* SelectWatchTermIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelectWatchTermIntent.swift; sourceTree = "<group>"; };
 		F57F75DAE62F1BBB02535FA4 /* OshiReaderApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OshiReaderApp.swift; sourceTree = "<group>"; };
 		FC815F05EA634BBCAB4CCF02 /* LocalDB.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalDB.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -119,6 +156,18 @@
 				7B2255286B25465F174B44E4 /* app_icon_preview_white_otter_black_bg.png */,
 			);
 			path = AppIconPreviews;
+			sourceTree = "<group>";
+		};
+		4C6C34B0ACA0BD9A3FE4DB09 /* OshiReaderWidget */ = {
+			isa = PBXGroup;
+			children = (
+				0A9137A8E2FB9FF2A5535C19 /* Info.plist */,
+				11A0BBF2126EA8E5A490A668 /* OshiReaderWidget.entitlements */,
+				767B63640366C3537A66102B /* OshiReaderWidget.swift */,
+				9A7C4776F953189791CA2B96 /* OshiReaderWidgetBundle.swift */,
+				F2B34921879CF965BE3C9A5B /* SelectWatchTermIntent.swift */,
+			);
+			path = OshiReaderWidget;
 			sourceTree = "<group>";
 		};
 		5B908BEB27B6EB8296577AA6 /* OshiReaderUITests */ = {
@@ -143,6 +192,7 @@
 				0FB8EFA6D9E090CC83802EFF /* OshiReader.app */,
 				1DE2FB251822D2F52EAA70E7 /* OshiReaderTests.xctest */,
 				970DE2739F781561F643F1C3 /* OshiReaderUITests.xctest */,
+				8DF12C3060E778F400352CB9 /* OshiReaderWidgetExtension.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -153,6 +203,7 @@
 				DFC8BCDAC0A7F65623D81E45 /* OshiReader */,
 				6B754EAE625CD9E292F2772E /* OshiReaderTests */,
 				5B908BEB27B6EB8296577AA6 /* OshiReaderUITests */,
+				4C6C34B0ACA0BD9A3FE4DB09 /* OshiReaderWidget */,
 				C732DDAE3AF567A51275D5EC /* Products */,
 			);
 			sourceTree = "<group>";
@@ -199,6 +250,7 @@
 				00F89CFA2D8D85DC78AE5134 /* RefreshDiagnostics.swift */,
 				B3C7AB5D135169FD79851DA6 /* Theme.swift */,
 				5F5CB32111D0FB50693DE4BD /* WallpaperRenderer.swift */,
+				44856E26AE8119108F4EF73D /* WidgetSnapshot.swift */,
 				127A49A5534D6DA16EE6C76A /* AppIconPreviews */,
 				CD701CC0B9C12A54B0C01FBE /* Views */,
 			);
@@ -232,10 +284,12 @@
 			buildPhases = (
 				8BCBCA1FAB00311B63262DF5 /* Sources */,
 				AD64A24A747E4D04927E879A /* Resources */,
+				1B4DA3D6E58117D3A06DCD5B /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				B31E4C4B097BEE1AC2A12936 /* PBXTargetDependency */,
 			);
 			name = OshiReader;
 			packageProductDependencies = (
@@ -262,6 +316,23 @@
 			productReference = 970DE2739F781561F643F1C3 /* OshiReaderUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
 		};
+		F43758922C30979DBB1D4CE9 /* OshiReaderWidgetExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 61B8DF4C9BE79B0581128101 /* Build configuration list for PBXNativeTarget "OshiReaderWidgetExtension" */;
+			buildPhases = (
+				820BBDC339A9F4F278552932 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = OshiReaderWidgetExtension;
+			packageProductDependencies = (
+			);
+			productName = OshiReaderWidgetExtension;
+			productReference = 8DF12C3060E778F400352CB9 /* OshiReaderWidgetExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -284,6 +355,10 @@
 						ProvisioningStyle = Automatic;
 						TestTargetID = C35ABC27BEDEE333AA00BCE2;
 					};
+					F43758922C30979DBB1D4CE9 = {
+						DevelopmentTeam = D8H3TBWH7P;
+						ProvisioningStyle = Automatic;
+					};
 				};
 			};
 			buildConfigurationList = 8D50B7D007BBBC4DA277D487 /* Build configuration list for PBXProject "OshiReader" */;
@@ -303,6 +378,7 @@
 				C35ABC27BEDEE333AA00BCE2 /* OshiReader */,
 				BD40A6A92E5C8727CD18CBD1 /* OshiReaderTests */,
 				D868994E180CE582833E7AA4 /* OshiReaderUITests */,
+				F43758922C30979DBB1D4CE9 /* OshiReaderWidgetExtension */,
 			);
 		};
 /* End PBXProject section */
@@ -341,6 +417,20 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		820BBDC339A9F4F278552932 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				10DD81AB5B111BD29BC4C76B /* AppLogger.swift in Sources */,
+				54037E3E06284CCCD79895A0 /* Models.swift in Sources */,
+				7A25A83CCF90673F8E2BB8A0 /* OshiReaderWidget.swift in Sources */,
+				0D2B6E4DE3D40D56B8112532 /* OshiReaderWidgetBundle.swift in Sources */,
+				1F5F15211AEF3A6A4335A881 /* PlatformRegistry.swift in Sources */,
+				5BBF8D996271EB7479FC09B0 /* SelectWatchTermIntent.swift in Sources */,
+				C5E795ABB99336A873C3E122 /* WidgetSnapshot.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		8BCBCA1FAB00311B63262DF5 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -373,6 +463,7 @@
 				D8BD58B8DC06664C491F0D70 /* SettingsView.swift in Sources */,
 				56ECEE1891E6C7AD085796BB /* Theme.swift in Sources */,
 				6981317FF64555AC90CF5868 /* WallpaperRenderer.swift in Sources */,
+				C7868506F2B4BC5F5D81ED34 /* WidgetSnapshot.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -383,6 +474,11 @@
 			isa = PBXTargetDependency;
 			target = C35ABC27BEDEE333AA00BCE2 /* OshiReader */;
 			targetProxy = F46FDB6E07DD1595E6C4A109 /* PBXContainerItemProxy */;
+		};
+		B31E4C4B097BEE1AC2A12936 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = F43758922C30979DBB1D4CE9 /* OshiReaderWidgetExtension */;
+			targetProxy = 33CC33DC53AD0859F291EF7E /* PBXContainerItemProxy */;
 		};
 		CB0BB1A3AA233B54E6ACE312 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
@@ -497,6 +593,33 @@
 			};
 			name = Debug;
 		};
+		6B37BD8BCD9E89E691EB1F56 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = OshiReaderWidget/OshiReaderWidget.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 4;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = D8H3TBWH7P;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = OshiReaderWidget/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.otterpia.oshireader.widget;
+				PRODUCT_NAME = OshiReaderWidgetExtension;
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 5.9;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
 		9A191B9E14DD6DA3ABD92C5C /* Staging */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -551,6 +674,33 @@
 			};
 			name = Debug;
 		};
+		A7CF8FC1749A411EDE430EA0 /* Staging */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = OshiReaderWidget/OshiReaderWidget.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 4;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = D8H3TBWH7P;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = OshiReaderWidget/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.otterpia.oshireader.widget;
+				PRODUCT_NAME = OshiReaderWidgetExtension;
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 5.9;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Staging;
+		};
 		B7351CD9A5C32BD1288FD5D5 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -577,6 +727,33 @@
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Release;
+		};
+		CCAE12DC6288A0DA0DB92CC6 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = OshiReaderWidget/OshiReaderWidget.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 4;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = D8H3TBWH7P;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = OshiReaderWidget/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.otterpia.oshireader.widget;
+				PRODUCT_NAME = OshiReaderWidgetExtension;
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 5.9;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
 		};
 		DFBB345E1CF71D8AF2033F5A /* Debug */ = {
 			isa = XCBuildConfiguration;
@@ -774,6 +951,16 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		61B8DF4C9BE79B0581128101 /* Build configuration list for PBXNativeTarget "OshiReaderWidgetExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				CCAE12DC6288A0DA0DB92CC6 /* Debug */,
+				6B37BD8BCD9E89E691EB1F56 /* Release */,
+				A7CF8FC1749A411EDE430EA0 /* Staging */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
 		8D50B7D007BBBC4DA277D487 /* Build configuration list for PBXProject "OshiReader" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (

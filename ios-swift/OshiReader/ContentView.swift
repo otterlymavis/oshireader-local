@@ -125,6 +125,15 @@ struct ContentView: View {
                 UNUserNotificationCenter.current().setBadgeCount(0)
             }
         }
+        .onOpenURL { url in
+            guard url.scheme == "oshireader", url.host == "article",
+                  let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return }
+            var userInfo: [String: String] = [:]
+            for item in components.queryItems ?? [] {
+                if let value = item.value { userInfo[item.name] = value }
+            }
+            notificationNavigation.open(userInfo: userInfo)
+        }
         .onReceive(notificationNavigation.$selectedItem) { item in
             if item != nil {
                 selectedTab = .feed

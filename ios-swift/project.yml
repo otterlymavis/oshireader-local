@@ -12,6 +12,9 @@ targets:
     deploymentTarget: "17.0"
     sources:
       - path: OshiReader
+    dependencies:
+      - target: OshiReaderWidgetExtension
+        embed: true
     settings:
       base:
         INFOPLIST_FILE: OshiReader/Info.plist
@@ -29,6 +32,32 @@ targets:
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.utilities
         TARGETED_DEVICE_FAMILY: "1,2"
         # Always emit a dSYM so any archive can be uploaded for crash symbolication.
+        DEBUG_INFORMATION_FORMAT: dwarf-with-dsym
+  OshiReaderWidgetExtension:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: OshiReaderWidget
+      - path: OshiReader/Models.swift
+      - path: OshiReader/PlatformRegistry.swift
+      - path: OshiReader/AppLogger.swift
+      - path: OshiReader/WidgetSnapshot.swift
+    settings:
+      base:
+        INFOPLIST_FILE: OshiReaderWidget/Info.plist
+        PRODUCT_BUNDLE_IDENTIFIER: com.otterpia.oshireader.widget
+        PRODUCT_NAME: OshiReaderWidgetExtension
+        DEVELOPMENT_TEAM: D8H3TBWH7P
+        CODE_SIGN_IDENTITY: "Apple Development"
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_ENTITLEMENTS: OshiReaderWidget/OshiReaderWidget.entitlements
+        MARKETING_VERSION: 1.0.0
+        CURRENT_PROJECT_VERSION: 4
+        SWIFT_VERSION: "5.9"
+        GENERATE_INFOPLIST_FILE: NO
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SKIP_INSTALL: YES
         DEBUG_INFORMATION_FORMAT: dwarf-with-dsym
   OshiReaderTests:
     type: bundle.unit-test
