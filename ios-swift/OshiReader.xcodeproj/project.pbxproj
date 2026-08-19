@@ -16,6 +16,7 @@
 		15E2283EDF51A13E2895271E /* ReaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 866A42C8B01CDE66550FBC36 /* ReaderView.swift */; };
 		1A5517EB824E35E3C7C4A7D6 /* ExtensionStrings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 34D8E3C1B440572DBA2FD128 /* ExtensionStrings.swift */; };
 		1F5F15211AEF3A6A4335A881 /* PlatformRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 86982AF846CF5F002A8068BE /* PlatformRegistry.swift */; };
+		2D631170F7550DEF263CFE8E /* QuietHours.swift in Sources */ = {isa = PBXBuildFile; fileRef = 91138D12C85BFE8A84D02216 /* QuietHours.swift */; };
 		3AB3254733131B0DD9FF3935 /* KeychainHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B0DBC0B647BE9C319275510 /* KeychainHelper.swift */; };
 		3FA51D07DCDCD47A84902360 /* NotificationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA093C93D4514C0B73101C23 /* NotificationManager.swift */; };
 		41EE0967EF025AA3908FA6E5 /* OshiReaderUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5CC07FF11F19D7FE9B1FAE96 /* OshiReaderUITests.swift */; };
@@ -152,6 +153,7 @@
 		866A42C8B01CDE66550FBC36 /* ReaderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderView.swift; sourceTree = "<group>"; };
 		86982AF846CF5F002A8068BE /* PlatformRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlatformRegistry.swift; sourceTree = "<group>"; };
 		8DF12C3060E778F400352CB9 /* OshiReaderWidgetExtension.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = OshiReaderWidgetExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		91138D12C85BFE8A84D02216 /* QuietHours.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuietHours.swift; sourceTree = "<group>"; };
 		970DE2739F781561F643F1C3 /* OshiReaderUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = OshiReaderUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		9A7C4776F953189791CA2B96 /* OshiReaderWidgetBundle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OshiReaderWidgetBundle.swift; sourceTree = "<group>"; };
 		9B0DBC0B647BE9C319275510 /* KeychainHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainHelper.swift; sourceTree = "<group>"; };
@@ -298,6 +300,7 @@
 				CA6698BAA13BEAE4F52D45E7 /* PendingShare.swift */,
 				86982AF846CF5F002A8068BE /* PlatformRegistry.swift */,
 				7757DA33C395BD65387A4309 /* PrivacyInfo.xcprivacy */,
+				91138D12C85BFE8A84D02216 /* QuietHours.swift */,
 				0296C552A004B73654BE7AEC /* RecentTermUsageStore.swift */,
 				00F89CFA2D8D85DC78AE5134 /* RefreshDiagnostics.swift */,
 				B3C7AB5D135169FD79851DA6 /* Theme.swift */,
@@ -550,6 +553,7 @@
 				D52495292898CC66D9765714 /* OshiView.swift in Sources */,
 				7DFACC0D4D12882AE7987817 /* PendingShare.swift in Sources */,
 				9BC9C454E4C9D70354486902 /* PlatformRegistry.swift in Sources */,
+				2D631170F7550DEF263CFE8E /* QuietHours.swift in Sources */,
 				15E2283EDF51A13E2895271E /* ReaderView.swift in Sources */,
 				AEBB3D455715E7303DD821BE /* RecentTermUsageStore.swift in Sources */,
 				5A725005C5C6CE4C2148A38A /* RefreshDiagnostics.swift in Sources */,

@@ -171,6 +171,13 @@ final class NotificationManager: ObservableObject {
             $0.watch_term_keyword
         }
 
+        let quietHours = QuietHoursSettings.current()
+        let now = Date()
+        if quietHours.contains(now) {
+            await scheduleQuietHoursDigest(itemsByKeyword: itemsByKeyword, settings: quietHours, now: now)
+            return
+        }
+
         for (keyword, keywordItems) in itemsByKeyword where !keywordItems.isEmpty {
             guard !Task.isCancelled, generation == localNotificationGeneration else { return }
             guard let term = notifiedTermsByKeyword[keyword] else { continue }
@@ -180,7 +187,7 @@ final class NotificationManager: ObservableObject {
                 (parseISO8601Date($1.published_at) ?? .distantPast)
             }.first
             let content = UNMutableNotificationContent()
-            content.title = "New items for \(keyword)"
+            content.title = I18nManager.shared.tFormat("notificationNewItemsForFmt", keyword)
             content.body = notificationBody(for: representative, count: count)
             content.sound = .default
             content.categoryIdentifier = Self.categoryIdentifier
@@ -223,6 +230,43 @@ final class NotificationManager: ObservableObject {
             } catch {
                 AppLogger.notifications.error("Notification scheduling failed for \(keyword): \(error.localizedDescription)")
             }
+        }
+    }
+
+    private static let quietHoursDigestIdentifier = "oshireader-quiet-hours-digest"
+
+    /// Accumulates this batch's per-keyword counts into today's running
+    /// total and (re)schedules a single trailing digest for the window's
+    /// end time — removing and re-adding the same pending request each call
+    /// so repeated refreshes during quiet hours coalesce into one
+    /// notification instead of stacking up.
+    private func scheduleQuietHoursDigest(itemsByKeyword: [String: [FeedItem]], settings: QuietHoursSettings, now: Date) async {
+        let newCounts = itemsByKeyword.mapValues(\.count)
+        guard newCounts.values.reduce(0, +) > 0 else { return }
+        let state = QuietHoursDigestState.accumulating(newCounts, now: now)
+        state.save()
+
+        let content = UNMutableNotificationContent()
+        content.title = I18nManager.shared.t("notificationDigestTitle")
+        content.body = I18nManager.shared.tFormat("notificationDigestBodyFmt", state.totalCount)
+        content.sound = .default
+        content.categoryIdentifier = Self.categoryIdentifier
+
+        let triggerDate = settings.nextEndDate(after: now)
+        let triggerComponents = Calendar.current.dateComponents(
+            [.year, .month, .day, .hour, .minute, .second],
+            from: triggerDate
+        )
+        let request = UNNotificationRequest(
+            identifier: Self.quietHoursDigestIdentifier,
+            content: content,
+            trigger: UNCalendarNotificationTrigger(dateMatching: triggerComponents, repeats: false)
+        )
+        center.removePendingNotificationRequests(withIdentifiers: [Self.quietHoursDigestIdentifier])
+        do {
+            try await center.add(request)
+        } catch {
+            AppLogger.notifications.error("Quiet-hours digest scheduling failed: \(error.localizedDescription)")
         }
     }
 

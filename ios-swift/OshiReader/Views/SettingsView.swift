@@ -86,6 +86,7 @@ struct SettingsView: View {
     @State private var newAliasText = ""
     // API token lives in the Keychain now that ingestion runs on-device.
     @State private var twitterBearerToken = KeychainHelper.read(.twitterBearerToken) ?? ""
+    @State private var quietHoursSettings = QuietHoursSettings.current()
     @State private var autoTranslateReader = UserDefaults.standard.bool(
         forKey: LocalProfileStore.defaultsKey("auto_translate_reader")
     )
@@ -240,6 +241,31 @@ struct SettingsView: View {
                             .accessibilityIdentifier("settings.openSettingsButton")
                         default:
                             EmptyView()
+                        }
+
+                        Toggle(i18n.t("quietHoursToggle"), isOn: Binding(
+                            get: { quietHoursSettings.enabled },
+                            set: { quietHoursSettings.enabled = $0; quietHoursSettings.save() }
+                        ))
+                        .tint(theme.colors.primary)
+                        .accessibilityIdentifier("settings.quietHoursToggle")
+
+                        if quietHoursSettings.enabled {
+                            DatePicker(i18n.t("quietHoursStart"), selection: Binding(
+                                get: { Self.date(fromMinuteOfDay: quietHoursSettings.startMinuteOfDay) },
+                                set: { quietHoursSettings.startMinuteOfDay = Self.minuteOfDay(from: $0); quietHoursSettings.save() }
+                            ), displayedComponents: .hourAndMinute)
+                            .accessibilityIdentifier("settings.quietHoursStartPicker")
+
+                            DatePicker(i18n.t("quietHoursEnd"), selection: Binding(
+                                get: { Self.date(fromMinuteOfDay: quietHoursSettings.endMinuteOfDay) },
+                                set: { quietHoursSettings.endMinuteOfDay = Self.minuteOfDay(from: $0); quietHoursSettings.save() }
+                            ), displayedComponents: .hourAndMinute)
+                            .accessibilityIdentifier("settings.quietHoursEndPicker")
+
+                            Text(i18n.t("quietHoursFooter"))
+                                .font(.caption)
+                                .foregroundColor(theme.colors.textMuted)
                         }
                     } label: {
                         HStack {
@@ -902,6 +928,18 @@ struct SettingsView: View {
         case .keyDerivationFailed: return i18n.t("encryptedBackupKeyDerivationFailed")
         case .payloadTooLarge: return i18n.t("encryptedBackupPayloadTooLarge")
         }
+    }
+
+    private static func date(fromMinuteOfDay minutes: Int) -> Date {
+        var comps = DateComponents()
+        comps.hour = minutes / 60
+        comps.minute = minutes % 60
+        return Calendar.current.date(from: comps) ?? Date()
+    }
+
+    private static func minuteOfDay(from date: Date) -> Int {
+        let comps = Calendar.current.dateComponents([.hour, .minute], from: date)
+        return (comps.hour ?? 0) * 60 + (comps.minute ?? 0)
     }
 
     private func localizedBackupMessage(_ error: Error) -> String {

@@ -966,6 +966,48 @@ class I18nManager: ObservableObject {
             "zh-TW": "通知關閉",
             "zh-CN": "通知关闭"
         ],
+        "notificationNewItemsForFmt": [
+            "en": "New items for %@",
+            "ja": "%@の新着アイテム",
+            "zh-TW": "%@ 的新項目",
+            "zh-CN": "%@ 的新项目"
+        ],
+        "notificationDigestTitle": [
+            "en": "New Items Overnight",
+            "ja": "夜間に新着アイテム",
+            "zh-TW": "夜間新項目",
+            "zh-CN": "夜间新项目"
+        ],
+        "notificationDigestBodyFmt": [
+            "en": "%d new item(s) while you were in quiet hours.",
+            "ja": "サイレント時間中に%d件の新着アイテムがありました。",
+            "zh-TW": "在安靜時段中有 %d 則新項目。",
+            "zh-CN": "在安静时段中有 %d 条新项目。"
+        ],
+        "quietHoursToggle": [
+            "en": "Quiet Hours",
+            "ja": "サイレント時間",
+            "zh-TW": "安靜時段",
+            "zh-CN": "安静时段"
+        ],
+        "quietHoursFooter": [
+            "en": "During this window, new-item alerts are held and delivered as a single summary when it ends, instead of one per match.",
+            "ja": "この時間帯は新着通知を保留し、終了時に1件のまとめ通知としてお届けします。",
+            "zh-TW": "在此時段內，新項目通知會被保留，並在結束時以單一摘要通知送出，而非逐一發送。",
+            "zh-CN": "在此时段内，新项目通知会被保留，并在结束时以单条摘要通知发送，而非逐一发送。"
+        ],
+        "quietHoursStart": [
+            "en": "Starts",
+            "ja": "開始",
+            "zh-TW": "開始時間",
+            "zh-CN": "开始时间"
+        ],
+        "quietHoursEnd": [
+            "en": "Ends",
+            "ja": "終了",
+            "zh-TW": "結束時間",
+            "zh-CN": "结束时间"
+        ],
         "active": [
             "en": "Active",
             "ja": "有効",
