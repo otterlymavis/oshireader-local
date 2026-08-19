@@ -50,6 +50,15 @@ private struct LocalRestoreManifest: Codable {
     let sourcesOrder: [String]?
 }
 
+/// What `LocalDB.processPendingShares()` did with a drained batch, so the UI
+/// can tell the user when a share silently didn't make it in (duplicate,
+/// invalid, or the custom-URL limit was hit) instead of just going quiet —
+/// the same failures `AddUrlSheet`'s in-app flow already surfaces.
+struct PendingShareDrainSummary: Equatable {
+    let addedCount: Int
+    let failures: [CustomUrlAddResult]
+}
+
 enum FeedItemPolicy {
     static func isLegacyYouTubeGoogleNewsFallback(_ item: FeedItem) -> Bool {
         guard PlatformRegistry.normalizeID(item.platform) == "youtube" else { return false }
@@ -158,7 +167,13 @@ class LocalDB: ObservableObject {
         let termOptions = terms.map { WidgetTermOption(id: $0.id, keyword: $0.keyword) }
         var itemsByTermID: [String: [FeedItem]] = [:]
         for term in terms {
-            itemsByTermID[term.id] = Array(queryFeed(keyword: term.keyword, days: 0).prefix(Self.widgetItemsPerTerm))
+            // Deliberately bypasses `queryFeed`'s single-slot cache: looping
+            // over every term here would thrash that cache (each term's
+            // lookup evicts the last), leaving it cold for the next real
+            // FeedView render right after. This recompute is already
+            // debounced to once per data-change burst, so there's no
+            // caching win to give up.
+            itemsByTermID[term.id] = Array(computeQueryFeed(keyword: term.keyword, days: 0).prefix(Self.widgetItemsPerTerm))
         }
         let snapshot = WidgetSnapshot(terms: termOptions, itemsByTermID: itemsByTermID, updatedAt: Date())
         queue.async {
@@ -1352,14 +1367,21 @@ class LocalDB: ObservableObject {
     /// merges them the same way the in-app "Add custom feed" sheet does.
     /// Safe to call repeatedly — the queue is empty after the first drain.
     @discardableResult
-    func processPendingShares() -> Int {
+    func processPendingShares() -> PendingShareDrainSummary {
         dispatchPrecondition(condition: .onQueue(.main))
         let pending = PendingShareStore.drain()
-        guard !pending.isEmpty else { return 0 }
-        let addedAny = pending.reduce(false) { addedAny, share in
-            addCustomUrl(url: share.url, title: share.title ?? "") == .added || addedAny
+        guard !pending.isEmpty else { return PendingShareDrainSummary(addedCount: 0, failures: []) }
+        var addedCount = 0
+        var failures: [CustomUrlAddResult] = []
+        for share in pending {
+            let result = addCustomUrl(url: share.url, title: share.title ?? "")
+            if result == .added {
+                addedCount += 1
+            } else {
+                failures.append(result)
+            }
         }
-        guard addedAny else { return pending.count }
+        guard addedCount > 0 else { return PendingShareDrainSummary(addedCount: 0, failures: failures) }
         let sourceRevision = dataRevision
         Task { @MainActor in
             let customItems = await NetworkManager.shared.scrapeCustomUrls(self.customUrls)
@@ -1368,7 +1390,7 @@ class LocalDB: ObservableObject {
                 _ = self.mergeItems(newItems: currentItems, sourceRevision: sourceRevision)
             }
         }
-        return pending.count
+        return PendingShareDrainSummary(addedCount: addedCount, failures: failures)
     }
 
     func removeCustomUrl(id: String) {

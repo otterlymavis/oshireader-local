@@ -45,6 +45,7 @@ targets:
       - path: OshiReader/PlatformRegistry.swift
       - path: OshiReader/AppLogger.swift
       - path: OshiReader/AppGroup.swift
+      - path: OshiReader/ExtensionStrings.swift
       - path: OshiReader/WidgetSnapshot.swift
     settings:
       base:
@@ -69,6 +70,7 @@ targets:
     sources:
       - path: OshiReaderShare
       - path: OshiReader/AppGroup.swift
+      - path: OshiReader/ExtensionStrings.swift
       - path: OshiReader/PendingShare.swift
     settings:
       base:

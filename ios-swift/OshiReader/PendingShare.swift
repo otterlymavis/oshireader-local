@@ -37,12 +37,34 @@ enum PendingShareStore {
 
     /// Called from the host app. Returns whatever was queued and clears it —
     /// each share is drained exactly once.
+    ///
+    /// Moves the file aside before reading it, rather than read-then-delete:
+    /// `enqueue()` runs in a separate process and could append a new share
+    /// between a plain read and delete, which the delete would then wipe out
+    /// along with the file. A move is atomic (same-volume rename), so a
+    /// concurrent `enqueue()` either lands in the moved-aside copy (and gets
+    /// drained normally) or recreates the queue file fresh afterward (and
+    /// survives to the next drain) — never both, never neither.
     static func drain() -> [PendingSharedURL] {
         guard let fileURL else { return [] }
-        let pending = readAll()
-        guard !pending.isEmpty else { return [] }
-        try? FileManager.default.removeItem(at: fileURL)
-        return pending
+        let stagingURL = fileURL.appendingPathExtension("draining")
+        // A staging file already existing means a previous drain moved the
+        // queue aside and got interrupted (e.g. app killed) before reading
+        // and cleaning it up — resume from it rather than re-moving (which
+        // would throw) or discarding it (which would lose those shares).
+        // Anything `enqueue()` has written to `fileURL` since is left alone
+        // for the next drain.
+        if !FileManager.default.fileExists(atPath: stagingURL.path) {
+            do {
+                try FileManager.default.moveItem(at: fileURL, to: stagingURL)
+            } catch {
+                return []
+            }
+        }
+        defer { try? FileManager.default.removeItem(at: stagingURL) }
+        guard let data = try? Data(contentsOf: stagingURL),
+              let decoded = try? JSONDecoder().decode([PendingSharedURL].self, from: data) else { return [] }
+        return decoded
     }
 
     private static func readAll() -> [PendingSharedURL] {

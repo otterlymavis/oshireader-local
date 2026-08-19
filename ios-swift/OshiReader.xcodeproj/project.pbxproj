@@ -14,6 +14,7 @@
 		10DD81AB5B111BD29BC4C76B /* AppLogger.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02418F20B46B959DA941B54A /* AppLogger.swift */; };
 		1139EA0DCA66701E71B071F7 /* LocalRefreshCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 753E0324E3B4665896516C12 /* LocalRefreshCoordinator.swift */; };
 		15E2283EDF51A13E2895271E /* ReaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 866A42C8B01CDE66550FBC36 /* ReaderView.swift */; };
+		1A5517EB824E35E3C7C4A7D6 /* ExtensionStrings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 34D8E3C1B440572DBA2FD128 /* ExtensionStrings.swift */; };
 		1F5F15211AEF3A6A4335A881 /* PlatformRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 86982AF846CF5F002A8068BE /* PlatformRegistry.swift */; };
 		3AB3254733131B0DD9FF3935 /* KeychainHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B0DBC0B647BE9C319275510 /* KeychainHelper.swift */; };
 		3FA51D07DCDCD47A84902360 /* NotificationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA093C93D4514C0B73101C23 /* NotificationManager.swift */; };
@@ -27,6 +28,7 @@
 		5A725005C5C6CE4C2148A38A /* RefreshDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00F89CFA2D8D85DC78AE5134 /* RefreshDiagnostics.swift */; };
 		5BBF8D996271EB7479FC09B0 /* SelectWatchTermIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2B34921879CF965BE3C9A5B /* SelectWatchTermIntent.swift */; };
 		5E1BC572A16C669E4394BFF4 /* PendingShare.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA6698BAA13BEAE4F52D45E7 /* PendingShare.swift */; };
+		5FE268AC78158D090A4D06BE /* ExtensionStrings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 34D8E3C1B440572DBA2FD128 /* ExtensionStrings.swift */; };
 		6272FB99110FEDA507C0F5D8 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C607233A1D4F78BDDD5A7C4 /* ContentView.swift */; };
 		67E3E43BCE3FCFD489E89088 /* app_icon_preview_white_line_black_bg.png in Resources */ = {isa = PBXBuildFile; fileRef = C5D040C2B5C75B3256B8C9E2 /* app_icon_preview_white_line_black_bg.png */; };
 		6969C73B8C9DA16AC4C8F726 /* I18n.swift in Sources */ = {isa = PBXBuildFile; fileRef = 75492232667474AE9C22A904 /* I18n.swift */; };
@@ -49,6 +51,7 @@
 		BB6B0B05CAB681EA2070F9FD /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 281B85D31BF641436C65758B /* Assets.xcassets */; };
 		BE3D630219B70EABDAEA04BA /* NetworkManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA4656BA51F509A9A84ED250 /* NetworkManager.swift */; };
 		BFBF8762D19D5BF86CF94BE4 /* LocalProfileStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 225E5A2942CCC270A7951737 /* LocalProfileStore.swift */; };
+		C08A0E2BB11CE80EFE6DB47B /* ExtensionStrings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 34D8E3C1B440572DBA2FD128 /* ExtensionStrings.swift */; };
 		C09EE5A704071475333774E3 /* AppShortcuts.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0B215B1EB3F8C4B93110DEE /* AppShortcuts.swift */; };
 		C0E99BC97CB881646FF5E073 /* app_icon_preview_inverted_lineart.png in Resources */ = {isa = PBXBuildFile; fileRef = E630D79E478EFD95756C1147 /* app_icon_preview_inverted_lineart.png */; };
 		C390F5E971F63FEB201C0124 /* OPMLExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2869A981771391FE1432892 /* OPMLExporter.swift */; };
@@ -128,6 +131,7 @@
 		1DE2FB251822D2F52EAA70E7 /* OshiReaderTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = OshiReaderTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		225E5A2942CCC270A7951737 /* LocalProfileStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalProfileStore.swift; sourceTree = "<group>"; };
 		281B85D31BF641436C65758B /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		34D8E3C1B440572DBA2FD128 /* ExtensionStrings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExtensionStrings.swift; sourceTree = "<group>"; };
 		3CB59FE6D93CC7AD75547E56 /* OshiReaderShareExtension.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = OshiReaderShareExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		44856E26AE8119108F4EF73D /* WidgetSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WidgetSnapshot.swift; sourceTree = "<group>"; };
 		459E75CAD522B9781519DCDF /* AppGroup.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppGroup.swift; sourceTree = "<group>"; };
@@ -276,6 +280,7 @@
 				EB4698197160905DBD0B1085 /* BackgroundRefreshManager.swift */,
 				5C607233A1D4F78BDDD5A7C4 /* ContentView.swift */,
 				D664F1A79B84759EDFCFE098 /* EncryptedBackup.swift */,
+				34D8E3C1B440572DBA2FD128 /* ExtensionStrings.swift */,
 				75492232667474AE9C22A904 /* I18n.swift */,
 				C96792D04C20B7635508EF1E /* Info.plist */,
 				12A70A437B3A48A6BBA842CF /* IngestionService.swift */,
@@ -476,6 +481,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				84E6A3B31ECACD65FB2F003A /* AppGroup.swift in Sources */,
+				C08A0E2BB11CE80EFE6DB47B /* ExtensionStrings.swift in Sources */,
 				5E1BC572A16C669E4394BFF4 /* PendingShare.swift in Sources */,
 				F7E683333A8FBCCFECD77E0A /* ShareConfirmationView.swift in Sources */,
 				B13AB260CF59F16F0ED93B9B /* ShareViewController.swift in Sources */,
@@ -504,6 +510,7 @@
 			files = (
 				A37DCE6CB44196FF8CBB6CA5 /* AppGroup.swift in Sources */,
 				10DD81AB5B111BD29BC4C76B /* AppLogger.swift in Sources */,
+				1A5517EB824E35E3C7C4A7D6 /* ExtensionStrings.swift in Sources */,
 				54037E3E06284CCCD79895A0 /* Models.swift in Sources */,
 				7A25A83CCF90673F8E2BB8A0 /* OshiReaderWidget.swift in Sources */,
 				0D2B6E4DE3D40D56B8112532 /* OshiReaderWidgetBundle.swift in Sources */,
@@ -526,6 +533,7 @@
 				F5552C78BFC7538E35202795 /* BackgroundRefreshManager.swift in Sources */,
 				6272FB99110FEDA507C0F5D8 /* ContentView.swift in Sources */,
 				873A32EA2C39E65224BABDCA /* EncryptedBackup.swift in Sources */,
+				5FE268AC78158D090A4D06BE /* ExtensionStrings.swift in Sources */,
 				45853A8BCEBA615F1B1717A4 /* FeedView.swift in Sources */,
 				6969C73B8C9DA16AC4C8F726 /* I18n.swift in Sources */,
 				8295B9798BAB2CD8379BEACD /* IngestionService.swift in Sources */,

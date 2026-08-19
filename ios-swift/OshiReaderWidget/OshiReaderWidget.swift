@@ -50,7 +50,7 @@ struct OshiReaderWidgetEntryView: View {
             }
             if entry.items.isEmpty {
                 Spacer(minLength: 0)
-                Text(entry.termKeyword == nil ? "Long-press to choose a watch term" : "No recent items")
+                Text(entry.termKeyword == nil ? ExtensionStrings.t("widgetChooseTerm") : ExtensionStrings.t("widgetNoItems"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer(minLength: 0)

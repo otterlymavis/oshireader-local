@@ -9,7 +9,7 @@ struct ShareConfirmationView: View {
     var body: some View {
         NavigationStack {
             VStack(alignment: .leading, spacing: 12) {
-                Text("Add this page to OshiReader?")
+                Text(ExtensionStrings.t("shareConfirmTitle"))
                     .font(.headline)
                 if let title, !title.isEmpty {
                     Text(title)
@@ -22,7 +22,7 @@ struct ShareConfirmationView: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
                 } else {
-                    Text("No shareable link was found on this page.")
+                    Text(ExtensionStrings.t("shareNoLinkFound"))
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -33,10 +33,10 @@ struct ShareConfirmationView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel", action: onCancel)
+                    Button(ExtensionStrings.t("shareCancel"), action: onCancel)
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Add", action: onAdd)
+                    Button(ExtensionStrings.t("shareAdd"), action: onAdd)
                         .disabled(url == nil)
                 }
             }

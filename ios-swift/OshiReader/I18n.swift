@@ -12,17 +12,20 @@ class I18nManager: ObservableObject {
         self.lang = UserDefaults.standard.string(
             forKey: LocalProfileStore.defaultsKey("selected_lang", profileID: activeProfileID)
         ) ?? "ja"
+        SharedAppLanguage.write(lang)
     }
-    
+
     func setLanguage(_ language: String) {
         self.lang = language
         UserDefaults.standard.set(language, forKey: storageKey("selected_lang"))
+        SharedAppLanguage.write(language)
     }
 
     @MainActor
     func configure(profileID: UUID) {
         self.profileID = profileID
         self.lang = UserDefaults.standard.string(forKey: storageKey("selected_lang")) ?? "ja"
+        SharedAppLanguage.write(lang)
     }
 
     private func storageKey(_ key: String) -> String {
@@ -324,6 +327,12 @@ class I18nManager: ObservableObject {
             "ja": "追加できるカスタムURLは200件までです。",
             "zh-TW": "最多可新增200個自訂網址。",
             "zh-CN": "最多可添加200个自定义网址。"
+        ],
+        "shareAddFailedTitle": [
+            "en": "Couldn't Add Shared Link",
+            "ja": "共有したリンクを追加できませんでした",
+            "zh-TW": "無法新增分享的連結",
+            "zh-CN": "无法添加分享的链接"
         ],
         "oshiEmpty": [
             "en": "Add your Oshi!",

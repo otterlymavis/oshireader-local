@@ -18,6 +18,7 @@ struct ContentView: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.scenePhase) private var scenePhase
     @State private var selectedTab: OshiTab = ProcessInfo.processInfo.arguments.contains("--uitesting-start-search") ? .search : .feed
+    @State private var pendingShareFailure: CustomUrlAddResult?
     
     init() {
         // Initial appearance before the theme preference is read from disk.
@@ -117,7 +118,7 @@ struct ContentView: View {
         }
         .onAppear {
             updateTabBarAppearance(for: theme.mode)
-            db.processPendingShares()
+            handlePendingShareDrain(db.processPendingShares())
         }
         .onChange(of: theme.mode) { _, newMode in
             updateTabBarAppearance(for: newMode)
@@ -125,8 +126,19 @@ struct ContentView: View {
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
                 UNUserNotificationCenter.current().setBadgeCount(0)
-                db.processPendingShares()
+                handlePendingShareDrain(db.processPendingShares())
             }
+        }
+        .alert(
+            i18n.t("shareAddFailedTitle"),
+            isPresented: Binding(
+                get: { pendingShareFailure != nil },
+                set: { if !$0 { pendingShareFailure = nil } }
+            )
+        ) {
+            Button(i18n.t("ok"), role: .cancel) {}
+        } message: {
+            Text(pendingShareFailureMessage)
         }
         .onOpenURL { url in
             guard url.scheme == "oshireader", url.host == "article",
@@ -152,6 +164,22 @@ struct ContentView: View {
                 ReaderView(feedItem: item)
             }
             .preferredColorScheme(theme.mode == .dark ? .dark : .light)
+        }
+    }
+
+    /// Surfaces the first failure from a Share Extension drain — mirrors
+    /// FeedView's in-app "Add custom feed" failure alert so a share that
+    /// silently didn't make it in (duplicate, invalid, or over the custom
+    /// URL limit) doesn't just vanish with no explanation.
+    private func handlePendingShareDrain(_ summary: PendingShareDrainSummary) {
+        pendingShareFailure = summary.failures.first
+    }
+
+    private var pendingShareFailureMessage: String {
+        switch pendingShareFailure {
+        case .limitReached: return i18n.t("customUrlLimitReached")
+        case .duplicate: return i18n.t("customUrlDuplicate")
+        case .invalidURL, .added, nil: return i18n.t("invalidUrl")
         }
     }
 
