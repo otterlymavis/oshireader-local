@@ -44,14 +44,26 @@ final class CloudSyncManager: ObservableObject {
     private static let lastSyncedAtKey = "icloud_sync_last_synced_at"
     private static let lastPushedRevisionKey = "icloud_sync_last_pushed_revision"
 
-    private let container: CKContainer
+    // Lazy and untouched until a sync actually runs (always gated behind
+    // `isEnabled` — see `syncNow()`): CKContainer.default() reads the app's
+    // iCloud entitlements and raises an uncatchable NSException if they're
+    // absent or not yet provisioned (e.g. an unsigned/CI build, or a real
+    // device before the one-time Xcode capability setup). Constructing it
+    // eagerly for every user on every launch — rather than only for users
+    // who opted into sync — would crash the whole app in exactly those cases.
+    private var lazyContainer: CKContainer?
+    private var container: CKContainer {
+        if let lazyContainer { return lazyContainer }
+        let container = CKContainer.default()
+        lazyContainer = container
+        return container
+    }
     private var database: CKDatabase { container.privateCloudDatabase }
     private var revisionObservation: AnyCancellable?
     private var pushDebounceTask: Task<Void, Never>?
     private var isSyncing = false
 
-    private init(container: CKContainer = .default()) {
-        self.container = container
+    private init() {
         let defaults = UserDefaults.standard
         self.isEnabled = defaults.bool(forKey: Self.enabledKey)
         if defaults.object(forKey: Self.lastSyncedAtKey) != nil {
@@ -85,6 +97,15 @@ final class CloudSyncManager: ObservableObject {
     @discardableResult
     func syncNow() async -> Bool {
         guard isEnabled, !isSyncing else { return false }
+        // Settings hides the enable toggle once a second local profile
+        // exists, but that alone doesn't stop a sync already left running
+        // from a single-profile session — two profiles pushing/pulling the
+        // same fixed cloud record would silently clobber each other, so
+        // enforce the constraint here too rather than relying on the UI.
+        guard LocalProfileStore.shared.profiles.count <= 1 else {
+            status = .unavailable(Self.multipleProfilesMessage)
+            return false
+        }
         isSyncing = true
         defer { isSyncing = false }
         status = .syncing
@@ -173,6 +194,8 @@ final class CloudSyncManager: ObservableObject {
             _ = try await database.save(latest)
         }
     }
+
+    private static let multipleProfilesMessage = "iCloud Sync only supports a single local profile."
 
     private static func message(for status: CKAccountStatus) -> String {
         switch status {

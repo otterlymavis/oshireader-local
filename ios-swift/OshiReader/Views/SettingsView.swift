@@ -762,7 +762,7 @@ struct SettingsView: View {
                         subscribedPlatforms: db.subscribedPlatforms,
                         customUrls: db.customUrls,
                         amebloBlogs: db.amebloBlogs,
-                        generatedAt: ISO8601DateFormatter().string(from: Date())
+                        generatedAt: Date()
                     ))
                     showingOPMLExporter = true
                 } label: {

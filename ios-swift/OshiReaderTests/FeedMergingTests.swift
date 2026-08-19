@@ -693,10 +693,7 @@ final class FeedMergingTests: XCTestCase {
         await manager.notifyForNewItems(items, terms: [enabledTerm, disabledTerm])
 
         XCTAssertEqual(center.requests.count, 1)
-        XCTAssertEqual(
-            center.requests.first?.content.title,
-            I18nManager.shared.tFormat("notificationNewItemsForFmt", "Enabled Oshi")
-        )
+        XCTAssertEqual(center.requests.first?.content.title, "Enabled Oshi")
         XCTAssertEqual(center.requests.first?.content.body, "Enabled second\n+1 more")
         XCTAssertEqual(center.requests.first?.content.userInfo["source"] as? String, "note_rss")
         XCTAssertNil(center.requests.first?.trigger)

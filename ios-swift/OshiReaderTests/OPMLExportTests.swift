@@ -33,7 +33,7 @@ final class OPMLExportTests: XCTestCase {
             subscribedPlatforms: PlatformRegistry.all.map(\.id),
             customUrls: [],
             amebloBlogs: [],
-            generatedAt: "2026-01-01T00:00:00Z"
+            generatedAt: Date(timeIntervalSince1970: 1_767_225_600)
         )
         XCTAssertTrue(xml.hasPrefix("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"))
         XCTAssertTrue(xml.contains("<opml version=\"2.0\">"))
@@ -55,7 +55,7 @@ final class OPMLExportTests: XCTestCase {
             subscribedPlatforms: PlatformRegistry.all.map(\.id),
             customUrls: [],
             amebloBlogs: [],
-            generatedAt: "2026-01-01T00:00:00Z"
+            generatedAt: Date(timeIntervalSince1970: 1_767_225_600)
         )
         XCTAssertTrue(xml.contains("A&amp;B &quot;Oshi&quot;"))
         XCTAssertFalse(xml.contains("Should Not Appear"))
@@ -69,11 +69,70 @@ final class OPMLExportTests: XCTestCase {
             subscribedPlatforms: [],
             customUrls: [customUrl],
             amebloBlogs: [blog],
-            generatedAt: "2026-01-01T00:00:00Z"
+            generatedAt: Date(timeIntervalSince1970: 1_767_225_600)
         )
         XCTAssertTrue(xml.contains("text=\"Ameblo Blogs\""))
         XCTAssertTrue(xml.contains(blog.rssURL!.absoluteString))
         XCTAssertTrue(xml.contains("text=\"Custom URLs\""))
         XCTAssertTrue(xml.contains("type=\"link\" text=\"My Page\" title=\"My Page\" htmlUrl=\"https://example.com/page\""))
+    }
+
+    func testOPMLExportOmitsDedicatedSourcePlatformsFromPerTermFeeds() throws {
+        // natalie and ameblo both have a real primary source in
+        // IngestionService (a fixed dedicated RSS feed / per-blog RSS) —
+        // Google News is only their fallback, so exporting it unconditionally
+        // would misrepresent what the term's feed actually shows day to day.
+        let term = WatchTerm(keyword: "Oshi", source_mode: .selected, selected_platforms: ["natalie", "ameblo", "yahoonews"])
+        let xml = OPMLExporter.export(
+            terms: [term],
+            subscribedPlatforms: PlatformRegistry.all.map(\.id),
+            customUrls: [],
+            amebloBlogs: [],
+            generatedAt: Date(timeIntervalSince1970: 1_767_225_600)
+        )
+        XCTAssertFalse(xml.contains("site:natalie.mu"))
+        XCTAssertFalse(xml.contains("site:ameblo.jp"))
+        XCTAssertTrue(xml.contains("site:news.yahoo.co.jp"))
+        // No platforms left once natalie/ameblo are excluded and no other
+        // term exists, so the term's own outline must not be emitted empty.
+        let onlyDedicatedTerm = WatchTerm(keyword: "Solo", source_mode: .selected, selected_platforms: ["natalie"])
+        let emptyXml = OPMLExporter.export(
+            terms: [onlyDedicatedTerm],
+            subscribedPlatforms: PlatformRegistry.all.map(\.id),
+            customUrls: [],
+            amebloBlogs: [],
+            generatedAt: Date(timeIntervalSince1970: 1_767_225_600)
+        )
+        XCTAssertFalse(emptyXml.contains("text=\"Solo\""))
+    }
+
+    func testOPMLExportIncludesOneFeedPerAlias() throws {
+        let term = WatchTerm(
+            keyword: "Oshi",
+            source_mode: .selected,
+            selected_platforms: ["yahoonews"],
+            aliases: ["推し"]
+        )
+        let xml = OPMLExporter.export(
+            terms: [term],
+            subscribedPlatforms: PlatformRegistry.all.map(\.id),
+            customUrls: [],
+            amebloBlogs: [],
+            generatedAt: Date(timeIntervalSince1970: 1_767_225_600)
+        )
+        XCTAssertTrue(xml.contains("q=Oshi%20site:news.yahoo.co.jp"))
+        XCTAssertTrue(xml.contains("q=%E6%8E%A8%E3%81%97%20site:news.yahoo.co.jp"))
+        XCTAssertTrue(xml.contains("text=\"YahooNews (推し)\""))
+    }
+
+    func testOPMLExportWritesRFC822DateCreated() throws {
+        let xml = OPMLExporter.export(
+            terms: [],
+            subscribedPlatforms: [],
+            customUrls: [],
+            amebloBlogs: [],
+            generatedAt: Date(timeIntervalSince1970: 1_767_225_600)
+        )
+        XCTAssertTrue(xml.contains("<dateCreated>Thu, 01 Jan 2026 00:00:00 GMT</dateCreated>"))
     }
 }

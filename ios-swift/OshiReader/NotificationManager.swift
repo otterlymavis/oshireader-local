@@ -187,7 +187,7 @@ final class NotificationManager: ObservableObject {
                 (parseISO8601Date($1.published_at) ?? .distantPast)
             }.first
             let content = UNMutableNotificationContent()
-            content.title = I18nManager.shared.tFormat("notificationNewItemsForFmt", keyword)
+            content.title = keyword
             content.body = notificationBody(for: representative, count: count)
             content.sound = .default
             content.categoryIdentifier = Self.categoryIdentifier
@@ -243,7 +243,7 @@ final class NotificationManager: ObservableObject {
     private func scheduleQuietHoursDigest(itemsByKeyword: [String: [FeedItem]], settings: QuietHoursSettings, now: Date) async {
         let newCounts = itemsByKeyword.mapValues(\.count)
         guard newCounts.values.reduce(0, +) > 0 else { return }
-        let state = QuietHoursDigestState.accumulating(newCounts, now: now)
+        let state = QuietHoursDigestState.accumulating(newCounts, settings: settings, now: now)
         state.save()
 
         let content = UNMutableNotificationContent()

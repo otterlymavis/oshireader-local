@@ -80,28 +80,59 @@ final class QuietHoursTests: XCTestCase {
         XCTAssertEqual(settings.nextEndDate(after: earlyMorning, calendar: calendar), expectedSameMorning)
     }
 
-    func testQuietHoursDigestStateAccumulatesAcrossCallsSameDayAndResetsOnNewDay() throws {
+    func testQuietHoursDigestStateAccumulatesAcrossCallsWithinSameWindow() throws {
         let suiteName = "QuietHoursDigestTest-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
 
-        let day1 = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-01-01T20:00:00Z"))
-        let firstState = QuietHoursDigestState.accumulating(["Oshi A": 2], now: day1, defaults: defaults)
+        let settings = QuietHoursSettings(enabled: true, startMinuteOfDay: 22 * 60, endMinuteOfDay: 8 * 60)
+        let calendar = utcCalendar()
+        let firstMoment = utcDate(calendar, 22, 30)
+
+        let firstState = QuietHoursDigestState.accumulating(["Oshi A": 2], settings: settings, now: firstMoment, defaults: defaults)
         firstState.save(defaults: defaults)
         XCTAssertEqual(firstState.totalCount, 2)
 
         let secondState = QuietHoursDigestState.accumulating(
             ["Oshi A": 1, "Oshi B": 3],
-            now: day1.addingTimeInterval(3600),
+            settings: settings,
+            now: firstMoment.addingTimeInterval(3600),
             defaults: defaults
         )
         XCTAssertEqual(secondState.countsByKeyword["Oshi A"], 3)
         XCTAssertEqual(secondState.countsByKeyword["Oshi B"], 3)
         XCTAssertEqual(secondState.totalCount, 6)
+    }
+
+    /// Regression test: an overnight window (22:00–08:00) crosses midnight,
+    /// so the accumulator must key off the window's start moment, not the
+    /// calendar day — otherwise counts from before midnight are silently
+    /// dropped the moment a refresh lands after 00:00, even though it's
+    /// still the same continuous quiet-hours window.
+    func testQuietHoursDigestStateSurvivesMidnightWithinSameWindowAndResetsForNewWindow() throws {
+        let suiteName = "QuietHoursDigestTest-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let settings = QuietHoursSettings(enabled: true, startMinuteOfDay: 22 * 60, endMinuteOfDay: 8 * 60)
+        let calendar = utcCalendar()
+
+        // 23:30 on day 1 — inside the first overnight window.
+        let beforeMidnight = utcDate(calendar, 23, 30)
+        let firstState = QuietHoursDigestState.accumulating(["Oshi A": 2], settings: settings, now: beforeMidnight, defaults: defaults)
+        firstState.save(defaults: defaults)
+
+        // 02:00 on day 2 — still the SAME window (hasn't hit 08:00 yet), so
+        // this must add to the existing total, not reset it.
+        let afterMidnight = utcDate(calendar, 2, 0, day: 2)
+        let secondState = QuietHoursDigestState.accumulating(["Oshi B": 3], settings: settings, now: afterMidnight, defaults: defaults)
+        XCTAssertEqual(secondState.totalCount, 5, "counts from before midnight must survive into the same overnight window")
         secondState.save(defaults: defaults)
 
-        let nextDay = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-01-02T20:00:00Z"))
-        let thirdState = QuietHoursDigestState.accumulating(["Oshi C": 1], now: nextDay, defaults: defaults)
-        XCTAssertEqual(thirdState.totalCount, 1, "a new calendar day should reset the accumulator")
+        // 23:00 on day 2 — the previous window already ended at 08:00, so
+        // this is a genuinely new window and must start fresh.
+        let nextWindow = utcDate(calendar, 23, 0, day: 2)
+        let thirdState = QuietHoursDigestState.accumulating(["Oshi C": 1], settings: settings, now: nextWindow, defaults: defaults)
+        XCTAssertEqual(thirdState.totalCount, 1, "a new quiet-hours window should reset the accumulator")
     }
 }

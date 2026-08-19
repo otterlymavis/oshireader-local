@@ -13,6 +13,11 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         NotificationManager.shared.registerNotificationCategories()
         application.setMinimumBackgroundFetchInterval(BackgroundRefreshManager.minimumInterval)
         BackgroundRefreshManager.shared.register()
+        // Eagerly instantiate so its Combine subscription to LocalDB's
+        // dataRevision starts this launch — otherwise a session that never
+        // opens Settings (the only other place this singleton is touched)
+        // would never auto-push local changes to iCloud.
+        _ = CloudSyncManager.shared
         return true
     }
 

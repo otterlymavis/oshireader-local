@@ -128,6 +128,7 @@ struct ContentView: View {
             if phase == .active {
                 UNUserNotificationCenter.current().setBadgeCount(0)
                 handlePendingShareDrain(db.processPendingShares())
+                Task { await CloudSyncManager.shared.syncNow() }
             }
         }
         .alert(

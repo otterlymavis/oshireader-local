@@ -55,23 +55,35 @@ struct QuietHoursSettings: Equatable {
         }
         return candidate
     }
+
+    /// The most recent moment (today or yesterday) this window's start time
+    /// occurred at or before `now` — an anchor identifying which continuous
+    /// window `now` falls in, stable across the midnight boundary an
+    /// overnight window (e.g. 22:00–08:00) crosses.
+    func currentWindowStart(before now: Date, calendar: Calendar = .current) -> Date {
+        var comps = calendar.dateComponents([.year, .month, .day], from: now)
+        comps.hour = startMinuteOfDay / 60
+        comps.minute = startMinuteOfDay % 60
+        comps.second = 0
+        guard var candidate = calendar.date(from: comps) else { return now }
+        if candidate > now {
+            candidate = calendar.date(byAdding: .day, value: -1, to: candidate) ?? candidate.addingTimeInterval(-86400)
+        }
+        return candidate
+    }
 }
 
 /// Accumulates per-keyword new-item counts across a single quiet-hours
 /// window so repeated refreshes coalesce into one trailing digest instead
-/// of a notification each time. Resets whenever the calendar day changes,
-/// since a quiet-hours window is nightly.
+/// of a notification each time. Keyed by the window's start moment (not
+/// calendar day) so an overnight window — e.g. 22:00–08:00 — keeps
+/// accumulating correctly across the midnight boundary instead of resetting
+/// partway through.
 struct QuietHoursDigestState: Codable, Equatable {
-    var day: String
+    var windowStart: TimeInterval
     var countsByKeyword: [String: Int]
 
     private static var defaultsKey: String { LocalProfileStore.defaultsKey("quiet_hours_digest_state") }
-    private static let dayFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter
-    }()
 
     static func load(defaults: UserDefaults = .standard) -> QuietHoursDigestState? {
         guard let data = defaults.data(forKey: defaultsKey) else { return nil }
@@ -87,16 +99,14 @@ struct QuietHoursDigestState: Codable, Equatable {
         defaults.removeObject(forKey: defaultsKey)
     }
 
-    static func dayString(for date: Date) -> String {
-        dayFormatter.string(from: date)
-    }
-
-    /// Merges `newCounts` into whatever was already accumulated today,
-    /// starting fresh if the stored state is from an earlier day.
-    static func accumulating(_ newCounts: [String: Int], now: Date, defaults: UserDefaults = .standard) -> QuietHoursDigestState {
-        let today = dayString(for: now)
-        var state = load(defaults: defaults).flatMap { $0.day == today ? $0 : nil }
-            ?? QuietHoursDigestState(day: today, countsByKeyword: [:])
+    /// Merges `newCounts` into whatever was already accumulated for the
+    /// window `now` currently falls in, starting fresh if the stored state
+    /// belongs to an earlier window (i.e. a previous night's digest already
+    /// fired and this is the start of a new one).
+    static func accumulating(_ newCounts: [String: Int], settings: QuietHoursSettings, now: Date, defaults: UserDefaults = .standard) -> QuietHoursDigestState {
+        let windowStart = settings.currentWindowStart(before: now).timeIntervalSince1970
+        var state = load(defaults: defaults).flatMap { $0.windowStart == windowStart ? $0 : nil }
+            ?? QuietHoursDigestState(windowStart: windowStart, countsByKeyword: [:])
         for (keyword, count) in newCounts {
             state.countsByKeyword[keyword, default: 0] += count
         }

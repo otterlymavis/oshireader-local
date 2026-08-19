@@ -966,12 +966,6 @@ class I18nManager: ObservableObject {
             "zh-TW": "通知關閉",
             "zh-CN": "通知关闭"
         ],
-        "notificationNewItemsForFmt": [
-            "en": "New items for %@",
-            "ja": "%@の新着アイテム",
-            "zh-TW": "%@ 的新項目",
-            "zh-CN": "%@ 的新项目"
-        ],
         "notificationDigestTitle": [
             "en": "New Items Overnight",
             "ja": "夜間に新着アイテム",
