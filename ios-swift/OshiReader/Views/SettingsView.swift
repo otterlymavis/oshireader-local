@@ -207,81 +207,6 @@ struct SettingsView: View {
                     .accessibilityIdentifier("settings.platformMenu")
                 }
 
-                Section {
-                    DisclosureGroup(isExpanded: $isNotificationsSectionExpanded) {
-                        Label(i18n.t("notificationSetupHint"), systemImage: "info.circle")
-                            .font(.caption)
-                            .foregroundColor(theme.colors.textMuted)
-                            .accessibilityIdentifier("settings.notificationSetupHint")
-
-                        HStack {
-                            Label(i18n.t("localAlertBackgroundRefresh"), systemImage: "arrow.clockwise")
-                            Spacer()
-                            Text(backgroundRefreshStatusText)
-                                .foregroundColor(backgroundRefreshStatusColor)
-                        }
-                        .accessibilityIdentifier("settings.localAlertBackgroundStatus")
-
-                        switch notifications.authorizationStatus {
-                        case .notDetermined:
-                            Button {
-                                Task { _ = await notifications.requestAuthorization() }
-                            } label: {
-                                Label(i18n.t("enableNotifications"), systemImage: "bell.badge.fill")
-                                    .foregroundColor(theme.colors.primary)
-                            }
-                            .accessibilityIdentifier("settings.enableNotificationsButton")
-                        case .denied:
-                            Button {
-                                if let url = URL(string: UIApplication.openSettingsURLString) {
-                                    UIApplication.shared.open(url)
-                                }
-                            } label: {
-                                Label(i18n.t("openIOSSettings"), systemImage: "gear")
-                                    .foregroundColor(theme.colors.primary)
-                            }
-                            .accessibilityIdentifier("settings.openSettingsButton")
-                        default:
-                            EmptyView()
-                        }
-
-                        Toggle(i18n.t("quietHoursToggle"), isOn: Binding(
-                            get: { quietHoursSettings.enabled },
-                            set: { quietHoursSettings.enabled = $0; quietHoursSettings.save() }
-                        ))
-                        .tint(theme.colors.primary)
-                        .accessibilityIdentifier("settings.quietHoursToggle")
-
-                        if quietHoursSettings.enabled {
-                            DatePicker(i18n.t("quietHoursStart"), selection: Binding(
-                                get: { Self.date(fromMinuteOfDay: quietHoursSettings.startMinuteOfDay) },
-                                set: { quietHoursSettings.startMinuteOfDay = Self.minuteOfDay(from: $0); quietHoursSettings.save() }
-                            ), displayedComponents: .hourAndMinute)
-                            .accessibilityIdentifier("settings.quietHoursStartPicker")
-
-                            DatePicker(i18n.t("quietHoursEnd"), selection: Binding(
-                                get: { Self.date(fromMinuteOfDay: quietHoursSettings.endMinuteOfDay) },
-                                set: { quietHoursSettings.endMinuteOfDay = Self.minuteOfDay(from: $0); quietHoursSettings.save() }
-                            ), displayedComponents: .hourAndMinute)
-                            .accessibilityIdentifier("settings.quietHoursEndPicker")
-
-                            Text(i18n.t("quietHoursFooter"))
-                                .font(.caption)
-                                .foregroundColor(theme.colors.textMuted)
-                        }
-                    } label: {
-                        HStack {
-                            Label(i18n.t("notificationsSection"), systemImage: "bell.badge")
-                            Spacer()
-                            Text(notificationStatusText)
-                                .foregroundColor(notifications.canScheduleNotifications ? theme.colors.primary : theme.colors.textMuted)
-                        }
-                        .accessibilityIdentifier("settings.notificationStatus")
-                    }
-                }
-
-                sourceStatusSection
-
                 Section(header: Text(i18n.t("readerSection"))) {
                     Toggle(i18n.t("autoTranslate"), isOn: $autoTranslateReader)
                         .tint(theme.colors.primary)
@@ -368,6 +293,7 @@ struct SettingsView: View {
                 }
 
 
+
                 Section(header: Text(i18n.t("privacySection"))) {
                     NavigationLink(destination: PrivacyPolicyView(theme: theme)) {
                         Label(i18n.t("privacyPolicy"), systemImage: "hand.raised")
@@ -377,6 +303,81 @@ struct SettingsView: View {
 
                 localStorageSection
                 iCloudSyncSection
+
+                Section {
+                    DisclosureGroup(isExpanded: $isNotificationsSectionExpanded) {
+                        Label(i18n.t("notificationSetupHint"), systemImage: "info.circle")
+                            .font(.caption)
+                            .foregroundColor(theme.colors.textMuted)
+                            .accessibilityIdentifier("settings.notificationSetupHint")
+
+                        HStack {
+                            Label(i18n.t("localAlertBackgroundRefresh"), systemImage: "arrow.clockwise")
+                            Spacer()
+                            Text(backgroundRefreshStatusText)
+                                .foregroundColor(backgroundRefreshStatusColor)
+                        }
+                        .accessibilityIdentifier("settings.localAlertBackgroundStatus")
+
+                        switch notifications.authorizationStatus {
+                        case .notDetermined:
+                            Button {
+                                Task { _ = await notifications.requestAuthorization() }
+                            } label: {
+                                Label(i18n.t("enableNotifications"), systemImage: "bell.badge.fill")
+                                    .foregroundColor(theme.colors.primary)
+                            }
+                            .accessibilityIdentifier("settings.enableNotificationsButton")
+                        case .denied:
+                            Button {
+                                if let url = URL(string: UIApplication.openSettingsURLString) {
+                                    UIApplication.shared.open(url)
+                                }
+                            } label: {
+                                Label(i18n.t("openIOSSettings"), systemImage: "gear")
+                                    .foregroundColor(theme.colors.primary)
+                            }
+                            .accessibilityIdentifier("settings.openSettingsButton")
+                        default:
+                            EmptyView()
+                        }
+
+                        Toggle(i18n.t("quietHoursToggle"), isOn: Binding(
+                            get: { quietHoursSettings.enabled },
+                            set: { quietHoursSettings.enabled = $0; quietHoursSettings.save() }
+                        ))
+                        .tint(theme.colors.primary)
+                        .accessibilityIdentifier("settings.quietHoursToggle")
+
+                        if quietHoursSettings.enabled {
+                            DatePicker(i18n.t("quietHoursStart"), selection: Binding(
+                                get: { Self.date(fromMinuteOfDay: quietHoursSettings.startMinuteOfDay) },
+                                set: { quietHoursSettings.startMinuteOfDay = Self.minuteOfDay(from: $0); quietHoursSettings.save() }
+                            ), displayedComponents: .hourAndMinute)
+                            .accessibilityIdentifier("settings.quietHoursStartPicker")
+
+                            DatePicker(i18n.t("quietHoursEnd"), selection: Binding(
+                                get: { Self.date(fromMinuteOfDay: quietHoursSettings.endMinuteOfDay) },
+                                set: { quietHoursSettings.endMinuteOfDay = Self.minuteOfDay(from: $0); quietHoursSettings.save() }
+                            ), displayedComponents: .hourAndMinute)
+                            .accessibilityIdentifier("settings.quietHoursEndPicker")
+
+                            Text(i18n.t("quietHoursFooter"))
+                                .font(.caption)
+                                .foregroundColor(theme.colors.textMuted)
+                        }
+                    } label: {
+                        HStack {
+                            Label(i18n.t("notificationsSection"), systemImage: "bell.badge")
+                            Spacer()
+                            Text(notificationStatusText)
+                                .foregroundColor(notifications.canScheduleNotifications ? theme.colors.primary : theme.colors.textMuted)
+                        }
+                        .accessibilityIdentifier("settings.notificationStatus")
+                    }
+                }
+
+                sourceStatusSection
 
             }
             .font(appearance.font(size: 13))
