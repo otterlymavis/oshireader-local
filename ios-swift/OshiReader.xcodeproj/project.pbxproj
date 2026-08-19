@@ -42,12 +42,14 @@
 		A0AC4C89B94E168EE1AC6027 /* OshiReaderApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = F57F75DAE62F1BBB02535FA4 /* OshiReaderApp.swift */; };
 		A1BAFA9B0D944F9DA97FF1D7 /* AppGroup.swift in Sources */ = {isa = PBXBuildFile; fileRef = 459E75CAD522B9781519DCDF /* AppGroup.swift */; };
 		A37DCE6CB44196FF8CBB6CA5 /* AppGroup.swift in Sources */ = {isa = PBXBuildFile; fileRef = 459E75CAD522B9781519DCDF /* AppGroup.swift */; };
+		A697AAB2A7C7ACB54963DC77 /* AppIntentNavigation.swift in Sources */ = {isa = PBXBuildFile; fileRef = C457E76B82EE6391C9F2F394 /* AppIntentNavigation.swift */; };
 		AEBB3D455715E7303DD821BE /* RecentTermUsageStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0296C552A004B73654BE7AEC /* RecentTermUsageStore.swift */; };
 		B13AB260CF59F16F0ED93B9B /* ShareViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7449B95E462507B33C61B6A /* ShareViewController.swift */; };
 		B55A10C99E20507DE0F3834E /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3A059DFAA25028841278FC4 /* AppDelegate.swift */; };
 		BB6B0B05CAB681EA2070F9FD /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 281B85D31BF641436C65758B /* Assets.xcassets */; };
 		BE3D630219B70EABDAEA04BA /* NetworkManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA4656BA51F509A9A84ED250 /* NetworkManager.swift */; };
 		BFBF8762D19D5BF86CF94BE4 /* LocalProfileStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 225E5A2942CCC270A7951737 /* LocalProfileStore.swift */; };
+		C09EE5A704071475333774E3 /* AppShortcuts.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0B215B1EB3F8C4B93110DEE /* AppShortcuts.swift */; };
 		C0E99BC97CB881646FF5E073 /* app_icon_preview_inverted_lineart.png in Resources */ = {isa = PBXBuildFile; fileRef = E630D79E478EFD95756C1147 /* app_icon_preview_inverted_lineart.png */; };
 		C5E795ABB99336A873C3E122 /* WidgetSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44856E26AE8119108F4EF73D /* WidgetSnapshot.swift */; };
 		C7723609DB5D7D2D1F9AFEB2 /* AppLogger.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02418F20B46B959DA941B54A /* AppLogger.swift */; };
@@ -153,6 +155,7 @@
 		B3C7AB5D135169FD79851DA6 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		BA4656BA51F509A9A84ED250 /* NetworkManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkManager.swift; sourceTree = "<group>"; };
 		BA8B03E51A432B46649B6225 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		C457E76B82EE6391C9F2F394 /* AppIntentNavigation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppIntentNavigation.swift; sourceTree = "<group>"; };
 		C5D040C2B5C75B3256B8C9E2 /* app_icon_preview_white_line_black_bg.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = app_icon_preview_white_line_black_bg.png; sourceTree = "<group>"; };
 		C96792D04C20B7635508EF1E /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		CA093C93D4514C0B73101C23 /* NotificationManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationManager.swift; sourceTree = "<group>"; };
@@ -162,6 +165,7 @@
 		E630D79E478EFD95756C1147 /* app_icon_preview_inverted_lineart.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = app_icon_preview_inverted_lineart.png; sourceTree = "<group>"; };
 		E7449B95E462507B33C61B6A /* ShareViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareViewController.swift; sourceTree = "<group>"; };
 		EB4698197160905DBD0B1085 /* BackgroundRefreshManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundRefreshManager.swift; sourceTree = "<group>"; };
+		F0B215B1EB3F8C4B93110DEE /* AppShortcuts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppShortcuts.swift; sourceTree = "<group>"; };
 		F2B34921879CF965BE3C9A5B /* SelectWatchTermIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelectWatchTermIntent.swift; sourceTree = "<group>"; };
 		F57F75DAE62F1BBB02535FA4 /* OshiReaderApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OshiReaderApp.swift; sourceTree = "<group>"; };
 		F943C5EB021763D7422C04E7 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
@@ -263,7 +267,9 @@
 			children = (
 				A3A059DFAA25028841278FC4 /* AppDelegate.swift */,
 				459E75CAD522B9781519DCDF /* AppGroup.swift */,
+				C457E76B82EE6391C9F2F394 /* AppIntentNavigation.swift */,
 				02418F20B46B959DA941B54A /* AppLogger.swift */,
+				F0B215B1EB3F8C4B93110DEE /* AppShortcuts.swift */,
 				281B85D31BF641436C65758B /* Assets.xcassets */,
 				EB4698197160905DBD0B1085 /* BackgroundRefreshManager.swift */,
 				5C607233A1D4F78BDDD5A7C4 /* ContentView.swift */,
@@ -510,7 +516,9 @@
 			files = (
 				B55A10C99E20507DE0F3834E /* AppDelegate.swift in Sources */,
 				A1BAFA9B0D944F9DA97FF1D7 /* AppGroup.swift in Sources */,
+				A697AAB2A7C7ACB54963DC77 /* AppIntentNavigation.swift in Sources */,
 				C7723609DB5D7D2D1F9AFEB2 /* AppLogger.swift in Sources */,
+				C09EE5A704071475333774E3 /* AppShortcuts.swift in Sources */,
 				F46CEBC6E65E66A628181196 /* AvatarEditorView.swift in Sources */,
 				F5552C78BFC7538E35202795 /* BackgroundRefreshManager.swift in Sources */,
 				6272FB99110FEDA507C0F5D8 /* ContentView.swift in Sources */,

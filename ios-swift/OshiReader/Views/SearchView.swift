@@ -41,6 +41,7 @@ struct SearchView: View {
     @StateObject private var db = LocalDB.shared
     @StateObject private var theme = ThemeManager.shared
     @StateObject private var i18n = I18nManager.shared
+    @StateObject private var intentNavigation = AppIntentNavigationManager.shared
 
     @State private var keyword = ""
     @State private var selectedGroup = ProcessInfo.processInfo.arguments.contains("--uitesting-search-social") ? "Social" : "News"
@@ -127,7 +128,9 @@ struct SearchView: View {
             }
         }
         .onAppear {
-            if keyword.isEmpty, let first = activeTerms.first?.keyword {
+            if let pendingQuery = intentNavigation.pendingSearchQuery {
+                applyPendingSearchQuery(pendingQuery)
+            } else if keyword.isEmpty, let first = activeTerms.first?.keyword {
                 keyword = first
             }
         }
@@ -137,6 +140,18 @@ struct SearchView: View {
                 selectedGroup = "News"
             }
         }
+        .onReceive(intentNavigation.$pendingSearchQuery) { pendingQuery in
+            if let pendingQuery {
+                applyPendingSearchQuery(pendingQuery)
+            }
+        }
+    }
+
+    /// Consumes a search query handed over by `SearchOshiReaderIntent`
+    /// (Shortcuts/Siri) — cleared immediately so it only applies once.
+    private func applyPendingSearchQuery(_ query: String) {
+        keyword = query
+        intentNavigation.pendingSearchQuery = nil
     }
 
     private var mainContentColumn: some View {

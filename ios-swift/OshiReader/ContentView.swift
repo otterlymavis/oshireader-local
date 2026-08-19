@@ -13,6 +13,7 @@ struct ContentView: View {
     @StateObject private var i18n = I18nManager.shared
     @StateObject private var appearance = AppearanceManager.shared
     @StateObject private var notificationNavigation = NotificationNavigationManager.shared
+    @StateObject private var intentNavigation = AppIntentNavigationManager.shared
     
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.scenePhase) private var scenePhase
@@ -139,6 +140,11 @@ struct ContentView: View {
         .onReceive(notificationNavigation.$selectedItem) { item in
             if item != nil {
                 selectedTab = .feed
+            }
+        }
+        .onReceive(intentNavigation.$pendingSearchQuery) { query in
+            if query != nil {
+                selectedTab = .search
             }
         }
         .sheet(item: $notificationNavigation.selectedItem) { item in
