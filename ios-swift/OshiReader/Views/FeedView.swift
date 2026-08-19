@@ -240,7 +240,6 @@ struct FeedView: View {
                     NavigationStack {
                         if let item = selectedItem {
                             ReaderView(feedItem: item, siblingItems: cachedVisibleItems, onNavigate: { selectedItem = $0 })
-                                .id(item.id)
                         } else {
                             VStack(spacing: 16) {
                                 Text("📖")

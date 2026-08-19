@@ -343,6 +343,15 @@ struct ReaderView: View {
         .onChange(of: appearance.fontSizeChoice) {
             fontSize = appearance.readerFontSize
         }
+        .onChange(of: feedItem.id) { _, _ in
+            // A parent that swaps `feedItem` without recreating this view (e.g. a
+            // split-view pane whose selection changed) lands here; route it through
+            // the same soft reset chevron navigation uses so font/theme choices
+            // made mid-session survive instead of being torn down with a fresh view.
+            if feedItem.id != currentItem.id {
+                navigate(to: feedItem)
+            }
+        }
     }
 
     private var readerControlBar: some View {
@@ -531,7 +540,7 @@ struct ReaderView: View {
     }
 
     private func openInExternalBrowser() {
-        guard let url = targetUrl else { return }
+        guard let url = originalPageUrl else { return }
         UIApplication.shared.open(url)
     }
 
