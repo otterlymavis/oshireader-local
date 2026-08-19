@@ -432,6 +432,7 @@ struct FeedView: View {
         Button(action: { showAddUrlSheet.toggle() }) {
             AddFeedButtonLabel(background: theme.colors.primary)
         }
+        .accessibilityLabel(i18n.t("addCustomFeed"))
         .accessibilityIdentifier("feed.addCustomUrlButton")
         .padding(.trailing, 20)
         .padding(.bottom, 24)
@@ -492,6 +493,7 @@ struct FeedView: View {
                 Image(systemName: "arrow.clockwise")
                     .foregroundColor(theme.colors.primary)
             }
+            .accessibilityLabel(i18n.t("refresh"))
             .accessibilityIdentifier("feed.refreshButton")
         }
     }
@@ -528,6 +530,7 @@ struct FeedView: View {
             VStack(spacing: 12) {
                 Text("≽՞•ﻌ•՞≼")
                     .font(.system(size: 40))
+                    .accessibilityHidden(true)
                 Text(isFilteredEmptyState ? i18n.t("feedFilteredEmpty") : i18n.t("feedEmpty"))
                     .font(.headline)
                     .foregroundColor(theme.colors.primary)
@@ -722,6 +725,7 @@ struct FeedView: View {
                 foreground: foreground
             )
         }
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
         .accessibilityIdentifier("feed.platform.all")
     }
 
@@ -747,6 +751,7 @@ struct FeedView: View {
                 foreground: foreground
             )
         }
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
         .accessibilityIdentifier("feed.platform.\(platformId)")
     }
 
@@ -932,7 +937,8 @@ private struct PlatformFilterButtonLabel: View {
                 .foregroundColor(foreground)
                 .lineLimit(1)
         }
-        .frame(width: 58, height: 58)
+        .frame(width: 58)
+        .frame(minHeight: 58)
         .background(background)
         .cornerRadius(10)
     }
@@ -946,7 +952,8 @@ private struct ReorderSourcesButtonLabel: View {
         Text("≡")
             .font(.title3)
             .foregroundColor(color)
-            .frame(width: 44, height: 58)
+            .frame(width: 44)
+            .frame(minHeight: 58)
             .background(background)
             .cornerRadius(10)
             .padding(.trailing, 10)
@@ -972,7 +979,21 @@ struct FeedCard: View {
     let isSaved: Bool
     let theme: ThemeManager
     @StateObject private var appearance = AppearanceManager.shared
-    
+    @StateObject private var i18n = I18nManager.shared
+
+    private var accessibilitySummary: String {
+        let meta = theme.metadata(for: item.platform)
+        let parts: [String?] = [
+            cleanDisplayText(item.title),
+            cleanDisplayText(item.author),
+            item.watch_term_keyword.isEmpty ? nil : item.watch_term_keyword,
+            meta.name,
+            isSaved ? i18n.t("tabSaved") : nil,
+            relativeTime(from: item.published_at)
+        ]
+        return parts.compactMap { $0 }.joined(separator: ", ")
+    }
+
     var body: some View {
         let meta = theme.metadata(for: item.platform)
         let badgeBg = theme.style == .standard ? theme.standardBadgeBg : meta.bg
@@ -1060,6 +1081,8 @@ struct FeedCard: View {
         .background(theme.colors.card)
         .cornerRadius(12)
         .shadow(color: Color.black.opacity(theme.mode == .dark ? 0.2 : 0.04), radius: 5, x: 0, y: 2)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(accessibilitySummary)
         .accessibilityIdentifier("feed.card.\(item.id)")
     }
     

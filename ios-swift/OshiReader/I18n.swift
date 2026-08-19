@@ -1546,6 +1546,60 @@ class I18nManager: ObservableObject {
             "zh-TW": "重新排列來源",
             "zh-CN": "重新排列来源"
         ],
+        "refresh": [
+            "en": "Refresh",
+            "ja": "更新",
+            "zh-TW": "重新整理",
+            "zh-CN": "刷新"
+        ],
+        "close": [
+            "en": "Close",
+            "ja": "閉じる",
+            "zh-TW": "關閉",
+            "zh-CN": "关闭"
+        ],
+        "translate": [
+            "en": "Translate",
+            "ja": "翻訳",
+            "zh-TW": "翻譯",
+            "zh-CN": "翻译"
+        ],
+        "selectImages": [
+            "en": "Select Images",
+            "ja": "画像を選択",
+            "zh-TW": "選取圖片",
+            "zh-CN": "选择图片"
+        ],
+        "back": [
+            "en": "Back",
+            "ja": "戻る",
+            "zh-TW": "返回",
+            "zh-CN": "返回"
+        ],
+        "deleteProfile": [
+            "en": "Delete Profile",
+            "ja": "プロフィールを削除",
+            "zh-TW": "刪除個人檔案",
+            "zh-CN": "删除个人资料"
+        ],
+        "removeAliasFmt": [
+            "en": "Remove alias %@",
+            "ja": "別名「%@」を削除",
+            "zh-TW": "移除別名「%@」",
+            "zh-CN": "移除别名「%@」"
+        ],
+        "notifyOnNewToggle": [
+            "en": "Notify on New Items",
+            "ja": "新着通知",
+            "zh-TW": "新項目通知",
+            "zh-CN": "新项目通知"
+        ],
+        "editAvatarFmt": [
+            "en": "Edit Avatar for %@",
+            "ja": "%@のアバターを編集",
+            "zh-TW": "編輯 %@ 的頭像",
+            "zh-CN": "编辑 %@ 的头像"
+        ],
         "noCustomUrlsAdded": [
             "en": "No custom URLs added yet",
             "ja": "カスタムURLが登録されていません",

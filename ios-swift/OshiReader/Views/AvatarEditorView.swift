@@ -57,6 +57,7 @@ struct AvatarEditorView: View {
                         .font(.title2)
                         .foregroundColor(theme.colors.primary)
                 }
+                .accessibilityLabel(i18n.t("back"))
                 .accessibilityIdentifier("avatar.backButton")
                 Text("✨ \(keyword)")
                     .font(.headline)
@@ -86,6 +87,7 @@ struct AvatarEditorView: View {
                             Text("(˶ᵔ ᵕ ᵔ˶)")
                                 .font(.title3)
                                 .foregroundColor(theme.colors.textMuted)
+                                .accessibilityHidden(true)
                             Text(i18n.t("tapToAddToCanvas"))
                                 .font(.caption2)
                                 .foregroundColor(theme.colors.textMuted)
@@ -199,10 +201,10 @@ struct AvatarEditorView: View {
 
                         Divider().frame(height: 16)
 
-                        toolbarBtn("＋", a11y: "avatar.scaleUpButton", size: 12) { scaleLayer(0.15) }
-                        toolbarBtn("－", a11y: "avatar.scaleDownButton", size: 12) { scaleLayer(-0.15) }
-                        toolbarBtn("⟲", size: 12) { rotateLayer(-15) }
-                        toolbarBtn("⟳", size: 12) { rotateLayer(15) }
+                        toolbarBtn("＋", a11y: "avatar.scaleUpButton", accessibilityLabel: i18n.t("scaleUp"), size: 12) { scaleLayer(0.15) }
+                        toolbarBtn("－", a11y: "avatar.scaleDownButton", accessibilityLabel: i18n.t("scaleDown"), size: 12) { scaleLayer(-0.15) }
+                        toolbarBtn("⟲", accessibilityLabel: i18n.t("rotateLeft"), size: 12) { rotateLayer(-15) }
+                        toolbarBtn("⟳", accessibilityLabel: i18n.t("rotateRight"), size: 12) { rotateLayer(15) }
                         toolbarBtn(i18n.t("layerForward")) { bringForward() }
                         toolbarBtn(i18n.t("layerBack")) { sendBack() }
                         toolbarBtn(i18n.t("delete"), a11y: "avatar.deleteLayerButton", destructive: true) { deleteSelected() }
@@ -299,6 +301,7 @@ struct AvatarEditorView: View {
                                 .foregroundColor(isSelected ? .white : theme.colors.textSub)
                                 .cornerRadius(999)
                         }
+                        .accessibilityAddTraits(isSelected ? .isSelected : [])
                     }
                 }
                 .padding(.horizontal, 12)
@@ -551,6 +554,7 @@ struct AvatarEditorView: View {
     private func toolbarBtn(
         _ label: String,
         a11y: String? = nil,
+        accessibilityLabel: String? = nil,
         size: CGFloat = 11,
         destructive: Bool = false,
         needsSelection: Bool = true,
@@ -567,6 +571,7 @@ struct AvatarEditorView: View {
         }
         .disabled(needsSelection && activeLayer == nil)
         .opacity(needsSelection && activeLayer == nil ? 0.4 : 1.0)
+        .accessibilityLabel(accessibilityLabel ?? label)
         .accessibilityIdentifier(a11y ?? "")
     }
 

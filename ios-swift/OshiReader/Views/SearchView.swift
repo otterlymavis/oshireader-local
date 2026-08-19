@@ -177,6 +177,7 @@ struct SearchView: View {
                 Image(systemName: "magnifyingglass")
                     .font(.system(size: 18, weight: .semibold))
                     .foregroundColor(theme.colors.textMuted)
+                    .accessibilityHidden(true)
 
                 TextField(i18n.t("keyword"), text: $keyword)
                     .foregroundColor(theme.colors.text)
@@ -257,6 +258,7 @@ struct SearchView: View {
                         .clipShape(Capsule())
                     }
                     .buttonStyle(.plain)
+                    .accessibilityAddTraits(active ? .isSelected : [])
                     .accessibilityIdentifier("search.category.\(group)")
                 }
             }
@@ -302,6 +304,7 @@ struct SearchView: View {
             Image(systemName: "keyboard")
                 .font(.system(size: 28, weight: .regular))
                 .foregroundColor(theme.colors.textMuted)
+                .accessibilityHidden(true)
             Text(i18n.t("searchEnterKeyword"))
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundColor(theme.colors.text)
@@ -383,6 +386,8 @@ struct SearchView: View {
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(theme.colors.border, lineWidth: 1))
         .cornerRadius(8)
         .opacity(disabled ? 0.45 : 1)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(link.label), \(link.domain)")
     }
 
     private var emptyReaderPrompt: some View {
@@ -390,6 +395,7 @@ struct SearchView: View {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 58, weight: .light))
                 .foregroundColor(theme.colors.textMuted)
+                .accessibilityHidden(true)
             Text(i18n.t("searchSelectArticle"))
                 .font(.headline)
                 .foregroundColor(theme.colors.textSub)
@@ -429,6 +435,7 @@ private struct SearchChip: View {
                 .clipShape(Capsule())
         }
         .buttonStyle(.plain)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }
 

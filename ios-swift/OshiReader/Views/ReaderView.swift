@@ -246,6 +246,8 @@ struct ReaderView: View {
                         Image(systemName: "translate")
                             .foregroundColor(isTranslated ? theme.colors.primary : theme.colors.textMuted)
                     }
+                    .accessibilityLabel(i18n.t("translate"))
+                    .accessibilityValue(isTranslated ? "on" : "off")
                     .accessibilityIdentifier("reader.translateButton")
                 }
             }
@@ -258,6 +260,8 @@ struct ReaderView: View {
                     Image(systemName: isSaved ? "bookmark.fill" : "bookmark")
                         .foregroundColor(theme.colors.primary)
                 }
+                .accessibilityLabel(i18n.t("tabSaved"))
+                .accessibilityValue(isSaved ? "on" : "off")
                 .accessibilityIdentifier("reader.bookmarkButton")
             }
 
@@ -293,6 +297,7 @@ struct ReaderView: View {
                             Image(systemName: "checklist")
                                 .foregroundColor(theme.colors.primary)
                         }
+                        .accessibilityLabel(i18n.t("selectImages"))
                         .accessibilityIdentifier("reader.selectImagesButton")
                     }
                 }
@@ -420,17 +425,20 @@ struct ReaderView: View {
                     .font(.subheadline)
                     .foregroundColor(theme.colors.textSub)
             }
+            .accessibilityHidden(true)
 
             Text("\(Int(fontSize))")
                 .font(.caption)
                 .foregroundColor(theme.colors.textMuted)
-                .frame(width: 22)
+                .frame(minWidth: 22)
+                .accessibilityHidden(true)
 
             Button(action: { fontSize = min(28.0, fontSize + 2.0) }) {
                 Text("A+")
                     .font(.subheadline)
                     .foregroundColor(theme.colors.textSub)
             }
+            .accessibilityHidden(true)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 5)
@@ -438,13 +446,30 @@ struct ReaderView: View {
         .cornerRadius(8)
         .opacity(readerMode ? 1 : 0.45)
         .disabled(!readerMode)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(i18n.t("fontSize"))
+        .accessibilityValue("\(Int(fontSize))")
+        .accessibilityAdjustableAction { direction in
+            guard readerMode else { return }
+            switch direction {
+            case .increment: fontSize = min(28.0, fontSize + 2.0)
+            case .decrement: fontSize = max(12.0, fontSize - 2.0)
+            @unknown default: break
+            }
+        }
     }
 
     private func themePicker(width: CGFloat) -> some View {
-        Picker("Theme", selection: $readerTheme) {
-            Image(systemName: "sun.max.fill").tag(AppThemeMode.light)
-            Image(systemName: "moon.fill").tag(AppThemeMode.dark)
-            Image(systemName: "doc.text.magnifyingglass").tag(AppThemeMode.sepia)
+        Picker(i18n.t("appTheme"), selection: $readerTheme) {
+            Label(i18n.t("themeLight"), systemImage: "sun.max.fill")
+                .labelStyle(.iconOnly)
+                .tag(AppThemeMode.light)
+            Label(i18n.t("themeDark"), systemImage: "moon.fill")
+                .labelStyle(.iconOnly)
+                .tag(AppThemeMode.dark)
+            Label(i18n.t("themeSepia"), systemImage: "doc.text.magnifyingglass")
+                .labelStyle(.iconOnly)
+                .tag(AppThemeMode.sepia)
         }
         .pickerStyle(.segmented)
         .frame(width: width)
@@ -454,6 +479,7 @@ struct ReaderView: View {
         HStack(spacing: 10) {
             Image(systemName: "lock.fill")
                 .foregroundColor(theme.colors.textSub)
+                .accessibilityHidden(true)
             Text(i18n.t("readerSignInRequired"))
                 .font(.caption)
                 .foregroundColor(theme.colors.textSub)
@@ -473,6 +499,7 @@ struct ReaderView: View {
                 Image(systemName: "xmark.circle.fill")
                     .foregroundColor(theme.colors.textMuted)
             }
+            .accessibilityLabel(i18n.t("close"))
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -486,6 +513,7 @@ struct ReaderView: View {
         HStack(spacing: 10) {
             Image(systemName: "arrow.uturn.backward.circle.fill")
                 .foregroundColor(theme.colors.textSub)
+                .accessibilityHidden(true)
             Text(i18n.t("readerSignInReturnMessage"))
                 .font(.caption)
                 .foregroundColor(theme.colors.textSub)
@@ -511,6 +539,7 @@ struct ReaderView: View {
         HStack(spacing: 10) {
             Image(systemName: "exclamationmark.triangle")
                 .foregroundColor(theme.colors.textSub)
+                .accessibilityHidden(true)
             Text(i18n.t("readerCouldNotDisplay"))
                 .font(.caption)
                 .foregroundColor(theme.colors.textSub)
@@ -530,6 +559,7 @@ struct ReaderView: View {
                 Image(systemName: "xmark.circle.fill")
                     .foregroundColor(theme.colors.textMuted)
             }
+            .accessibilityLabel(i18n.t("close"))
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)

@@ -595,6 +595,7 @@ struct SettingsView: View {
             HStack(spacing: 6) {
                 Image(systemName: refreshDiagnostics.isRefreshing ? "arrow.triangle.2.circlepath" : "clock")
                     .font(.caption2)
+                    .accessibilityHidden(true)
                 Text(refreshDiagnostics.statusText)
                     .font(.caption)
                     .lineLimit(1)
@@ -610,12 +611,14 @@ struct SettingsView: View {
                     HStack(spacing: 6) {
                         Image(systemName: refreshDiagnostics.hasSourceFailures ? "exclamationmark.triangle" : "chart.bar.xaxis")
                             .font(.caption2)
+                            .accessibilityHidden(true)
                         Text(refreshDiagnostics.sourceSummaryText)
                             .font(.caption)
                             .lineLimit(1)
                         Spacer()
                         Image(systemName: "chevron.right")
                             .font(.caption2)
+                            .accessibilityHidden(true)
                     }
                     .foregroundColor(refreshDiagnostics.hasSourceFailures ? .orange : theme.colors.textMuted)
                 }
@@ -663,6 +666,7 @@ struct SettingsView: View {
                         } label: {
                             Image(systemName: "pencil")
                         }
+                        .accessibilityLabel(i18n.t("renameProfile"))
                         .accessibilityIdentifier("settings.profileRename.\(profile.id.uuidString)")
 
                         Button(role: .destructive) {
@@ -674,6 +678,7 @@ struct SettingsView: View {
                         } label: {
                             Image(systemName: "trash")
                         }
+                        .accessibilityLabel(i18n.t("deleteProfile"))
                         .accessibilityIdentifier("settings.profileDelete.\(profile.id.uuidString)")
                     }
                 }
@@ -1076,6 +1081,7 @@ private struct TermRowView: View {
                 }
             }
             .buttonStyle(PlainButtonStyle())
+            .accessibilityLabel(i18n.tFormat("editAvatarFmt", term.keyword))
             .accessibilityIdentifier("settings.keywordAvatar.\(term.keyword)")
 
             VStack(alignment: .leading, spacing: 4) {
@@ -1101,6 +1107,7 @@ private struct TermRowView: View {
                                             .foregroundColor(theme.colors.textMuted)
                                     }
                                     .buttonStyle(.plain)
+                                    .accessibilityLabel(i18n.tFormat("removeAliasFmt", alias))
                                 }
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 3)
@@ -1132,6 +1139,7 @@ private struct TermRowView: View {
                                     .cornerRadius(99)
                             }
                             .buttonStyle(.plain)
+                            .accessibilityLabel(addingAliasForId == term.id ? i18n.t("save") : i18n.t("addAlias"))
                         }
                     }
                 } else {
@@ -1162,6 +1170,7 @@ private struct TermRowView: View {
                     .clipShape(Capsule())
             }
             .buttonStyle(PlainButtonStyle())
+            .accessibilityLabel(term.collection_mode == "media_only" ? i18n.t("mediaOnly") : i18n.t("allInfo"))
             .accessibilityIdentifier("settings.keywordMode.\(term.keyword)")
 
             sourceSelectionIconMenu
@@ -1183,15 +1192,19 @@ private struct TermRowView: View {
             }
             .buttonStyle(PlainButtonStyle())
             .disabled(notificationTermBeingUpdated != nil)
+            .accessibilityLabel(i18n.t("notifyOnNewToggle"))
+            .accessibilityValue(term.notify_on_new ? "on" : "off")
             .accessibilityIdentifier("settings.keywordBell.\(term.keyword)")
 
-            Toggle("", isOn: Binding(
+            Toggle(i18n.t("active"), isOn: Binding(
                 get: { term.is_active },
                 set: { next in
                     db.updateTerm(id: term.id, isActive: next)
                 }
             ))
+            .labelsHidden()
             .tint(theme.colors.primary)
+            .accessibilityLabel(i18n.t("active"))
             .accessibilityIdentifier("settings.keywordToggle.\(term.keyword)")
         }
         .accessibilityIdentifier("settings.keywordRow.\(term.keyword)")
