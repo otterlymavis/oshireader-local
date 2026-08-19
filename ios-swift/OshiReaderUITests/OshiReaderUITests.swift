@@ -66,7 +66,6 @@ final class OshiReaderUITests: XCTestCase {
         tapTab(index: 0, labels: ["Feed"])
 
         XCTAssertTrue(app.buttons["feed.refreshButton"].waitForExistence(timeout: 3))
-        XCTAssertTrue(app.descendants(matching: .any)["feed.refreshStatus"].waitForExistence(timeout: 3))
         app.buttons["feed.refreshButton"].tap()
 
         let filterButton = firstFeedFilterButton()
@@ -76,6 +75,9 @@ final class OshiReaderUITests: XCTestCase {
         let mediaOnlyButton = app.buttons["filter.mediaOnlyButton"]
         XCTAssertTrue(mediaOnlyButton.waitForExistence(timeout: 3))
         mediaOnlyButton.tap()
+
+        tapTab(index: 4, labels: ["Settings"])
+        XCTAssertTrue(app.descendants(matching: .any)["settings.refreshStatus"].waitForExistence(timeout: 3))
     }
 
     func testSourceStatusSummaryShowsHealthSummary() throws {
@@ -84,7 +86,8 @@ final class OshiReaderUITests: XCTestCase {
         XCTAssertTrue(app.buttons["feed.refreshButton"].waitForExistence(timeout: 3))
         app.buttons["feed.refreshButton"].tap()
 
-        let sourceSummary = app.buttons["feed.sourceStatus"]
+        tapTab(index: 4, labels: ["Settings"])
+        let sourceSummary = app.buttons["settings.sourceStatus"]
         XCTAssertTrue(sourceSummary.waitForExistence(timeout: 3))
         let summaryReady = XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "label CONTAINS[c] 'current'"),

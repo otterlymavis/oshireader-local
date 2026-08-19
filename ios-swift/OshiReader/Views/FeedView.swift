@@ -133,7 +133,6 @@ struct FeedView: View {
     @State private var showAddUrlSheet = false
     @State private var customUrlAddFailure: CustomUrlAddResult?
     @State private var showReorderSheet = false
-    @State private var showSourceStatusSheet = false
     @State private var pendingHiddenFeedItem: FeedItem? = nil
     @State private var pendingUnfollowTerm: WatchTerm? = nil
     
@@ -310,9 +309,6 @@ struct FeedView: View {
         .sheet(isPresented: $showReorderSheet) {
             ReorderSourcesSheet(theme: theme, i18n: i18n)
         }
-        .sheet(isPresented: $showSourceStatusSheet) {
-            SourceStatusSheet(summaries: refreshDiagnostics.visibleSourceHealthSummaries, theme: theme)
-        }
         .alert(
             i18n.tFormat("hidePostTitleFmt", pendingHiddenFeedItem?.title ?? pendingHiddenFeedItem?.watch_term_keyword ?? ""),
             isPresented: Binding(
@@ -386,7 +382,6 @@ struct FeedView: View {
         VStack(spacing: 0) {
             filterSummaryBar
             platformStrip
-            refreshStatusRows
             feedMainState
         }
     }
@@ -481,53 +476,6 @@ struct FeedView: View {
             )
         }
         .accessibilityIdentifier("feed.filterButton")
-    }
-
-    private var refreshStatusRows: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 6) {
-                Image(systemName: refreshCoordinator.isRefreshing ? "arrow.triangle.2.circlepath" : "clock")
-                    .font(.caption2)
-                Text(refreshDiagnostics.statusText)
-                    .font(.caption)
-                    .lineLimit(1)
-                Spacer()
-            }
-            .foregroundColor(theme.colors.textMuted)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 6)
-            .background(theme.colors.card)
-            .accessibilityIdentifier("feed.refreshStatus")
-
-            if !refreshDiagnostics.visibleSourceHealthSummaries.isEmpty || !refreshDiagnostics.sourceStatuses.isEmpty {
-                Button {
-                    showSourceStatusSheet = true
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: refreshDiagnostics.hasSourceFailures ? "exclamationmark.triangle" : "chart.bar.xaxis")
-                            .font(.caption2)
-                        Text(refreshDiagnostics.sourceSummaryText)
-                            .font(.caption)
-                            .lineLimit(1)
-                        Spacer()
-                        Image(systemName: "chevron.right")
-                            .font(.caption2)
-                    }
-                    .foregroundColor(refreshDiagnostics.hasSourceFailures ? .orange : theme.colors.textMuted)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 6)
-                    .background(theme.colors.card)
-                }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("feed.sourceStatus")
-            }
-        }
-        .overlay(
-            Rectangle()
-                .frame(height: 0.5)
-                .foregroundColor(theme.colors.divider),
-            alignment: .bottom
-        )
     }
 
     @ViewBuilder
@@ -948,105 +896,6 @@ struct FeedView: View {
 }
 
 // MARK: - Subviews
-
-private struct SourceStatusSheet: View {
-    let summaries: [SourceHealthSummary]
-    let theme: ThemeManager
-    @StateObject private var i18n = I18nManager.shared
-
-    var body: some View {
-        NavigationStack {
-            if summaries.isEmpty {
-                ContentUnavailableView(i18n.t("noSourceHistoryYet"), systemImage: "chart.bar.xaxis")
-            } else {
-                List(summaries) { summary in
-                    SourceStatusRow(summary: summary, theme: theme)
-                }
-                .accessibilityIdentifier("feed.sourceStatusSheet")
-            }
-        }
-        .navigationTitle(i18n.t("sourceStatusTitle"))
-        .navigationBarTitleDisplayMode(.inline)
-        .presentationDetents([.medium, .large])
-        .accessibilityIdentifier("feed.sourceStatusSheet")
-    }
-}
-
-private struct SourceStatusRow: View {
-    let summary: SourceHealthSummary
-    let theme: ThemeManager
-    @StateObject private var i18n = I18nManager.shared
-
-    var body: some View {
-        HStack(spacing: 10) {
-            let metadata = theme.metadata(for: summary.id)
-            Text(metadata.icon)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(metadata.name)
-                    .font(.subheadline.weight(.semibold))
-                    .accessibilityIdentifier("feed.sourceStatus.\(summary.id)")
-                Text(summaryText)
-                    .font(.caption)
-                    .foregroundColor(theme.colors.textMuted)
-            }
-            Spacer()
-            Text("\(summary.currentStatus?.itemCount ?? 0)")
-                .font(.caption.monospacedDigit())
-                .foregroundColor(theme.colors.textMuted)
-        }
-    }
-
-    private var summaryText: String {
-        let current = summary.currentStatus.map(statusText) ?? i18n.t("notChecked")
-        let lastFailure = summary.lastFailure.map {
-            i18n.t("sourceLastFailure").replacingOccurrences(of: "{failure}", with: $0.displayName)
-        } ?? ""
-        let formatter = RelativeDateTimeFormatter()
-        formatter.locale = Locale(identifier: localeIdentifier)
-        formatter.unitsStyle = .short
-        let checked = formatter.localizedString(for: summary.lastCheckedAt, relativeTo: Date())
-        return i18n.t("sourceHistorySummary")
-            .replacingOccurrences(of: "{current}", with: current)
-            .replacingOccurrences(of: "{received}", with: "\(summary.receivedCount)")
-            .replacingOccurrences(of: "{stale}", with: "\(summary.staleCount)")
-            .replacingOccurrences(of: "{empty}", with: "\(summary.emptyCount)")
-            .replacingOccurrences(of: "{failed}", with: "\(summary.failedCount)")
-            .replacingOccurrences(of: "{total}", with: "\(summary.totalItemCount)")
-            .replacingOccurrences(of: "{checked}", with: checked)
-            .replacingOccurrences(of: "{lastFailure}", with: lastFailure)
-    }
-
-    private func statusText(_ status: SourceRefreshStatus) -> String {
-        switch status.outcome {
-        case .received:
-            return i18n.t("sourceItemsQueries")
-                .replacingOccurrences(of: "{items}", with: "\(status.itemCount)")
-                .replacingOccurrences(of: "{queries}", with: "\(status.queryCount)")
-        case .stale:
-            return i18n.t("sourceStaleItemsQueries")
-                .replacingOccurrences(of: "{items}", with: "\(status.itemCount)")
-                .replacingOccurrences(of: "{queries}", with: "\(status.queryCount)")
-        case .noResults:
-            return i18n.t("sourceNoMatchingItemsQueries")
-                .replacingOccurrences(of: "{queries}", with: "\(status.queryCount)")
-        case .failed(let failure):
-            return i18n.t("sourceFailureQueries")
-                .replacingOccurrences(of: "{failure}", with: failure.displayName)
-                .replacingOccurrences(of: "{queries}", with: "\(status.queryCount)")
-        case .cooldown:
-            return i18n.t("sourceCooldown")
-        }
-    }
-
-    private var localeIdentifier: String {
-        switch i18n.lang {
-        case "zh-TW": return "zh_Hant_TW"
-        case "zh-CN": return "zh_Hans_CN"
-        case "ja": return "ja_JP"
-        default: return "en_US"
-        }
-    }
-}
 
 struct PillView: View {
     let text: String
