@@ -115,6 +115,11 @@ final class IngestionService {
     ]
     private static let generalRegexLock = NSLock()
     private static var generalRegexes: [String: NSRegularExpression] = [:]
+    private static let pathComponentAllowedCharacters: CharacterSet = {
+        var set = CharacterSet.urlPathAllowed
+        set.remove(charactersIn: "/?#")
+        return set
+    }()
     private static let youtubeInitialDataObjectRegex = try? NSRegularExpression(
         pattern: #"ytInitialData\s*=\s*(\{.+?\});"#,
         options: [.dotMatchesLineSeparators]
@@ -283,7 +288,7 @@ final class IngestionService {
 
             add("news")        { await self.fetchCuratedNews(keyword: $0, mediaOnly: mediaOnly) }
             add("5ch")         { await self.fetchGoogleNews(keyword: $0, query: "\($0) site:5ch.net", platform: "5ch", mediaType: "text", mediaOnly: mediaOnly) }
-            add("girlschannel") { await self.fetchGoogleNews(keyword: $0, query: "\($0) site:girlschannel.net", platform: "girlschannel", mediaType: "text", mediaOnly: mediaOnly) }
+            add("girlschannel") { await self.fetchGirlsChannel(keyword: $0, mediaOnly: mediaOnly) }
             add("mdpr")        { await self.fetchModelPress(keyword: $0, mediaOnly: mediaOnly) }
             add("oricon")      { await self.fetchGoogleNews(keyword: $0, query: "\($0) site:oricon.co.jp", platform: "oricon", mediaType: "article", mediaOnly: mediaOnly, author: "ORICON NEWS", limit: 20, titlePatterns: [#"\s*[-|]\s*(ORICON NEWS|オリコンニュース|オリコン)\s*$"#]) }
             add("yahoonews")   { await self.fetchYahooNews(keyword: $0, mediaOnly: mediaOnly) }
@@ -675,6 +680,91 @@ final class IngestionService {
         }
         let nextPageToken = "page=\(page + 1)"
         return (items, html.contains(nextPageToken))
+    }
+
+    // MARK: - GirlsChannel (own keyword-topic listing — carries last-comment time)
+
+    private func fetchGirlsChannel(keyword: String, mediaOnly: Bool) async -> [FeedItem] {
+        if mediaOnly { return [] }
+        if let items = await fetchGirlsChannelTopics(keyword: keyword), !items.isEmpty {
+            return items
+        }
+        // Google News RSS only carries the date it indexed the thread (close
+        // to thread-creation time), not the last-reply time — but it's a
+        // reasonable fallback if girlschannel's own page is unreachable or
+        // its markup changes underneath us.
+        return await fetchGoogleNews(keyword: keyword, query: "\(keyword) site:girlschannel.net", platform: "girlschannel", mediaType: "text", mediaOnly: mediaOnly)
+    }
+
+    /// girlschannel.net's own keyword-topic listing shows each topic's
+    /// last-comment time next to it — confirmed against live pages: topics
+    /// are ordered by creation, but the printed timestamp jumps around as
+    /// older threads get bumped by new comments — so it's a real "last
+    /// updated" time, unlike Google News RSS's indexing-date pubDate.
+    private func fetchGirlsChannelTopics(keyword: String) async -> [FeedItem]? {
+        // `.path`'s unencoded setter leaves "/" untouched, so a keyword
+        // containing one would silently splice in extra path segments —
+        // encode it as a single path component via `percentEncodedPath`.
+        guard let encodedKeyword = keyword.addingPercentEncoding(withAllowedCharacters: Self.pathComponentAllowedCharacters) else {
+            return nil
+        }
+        var components = URLComponents()
+        components.scheme = "https"
+        components.host = "girlschannel.net"
+        components.percentEncodedPath = "/topics/keyword/\(encodedKeyword)/"
+        components.queryItems = [URLQueryItem(name: "date", value: "")]
+        guard let url = components.url,
+              case .success(let data, _) = await httpGET(
+                url,
+                headers: ["User-Agent": browserUA, "Accept-Language": "ja,en;q=0.9"]
+              ),
+              let html = String(data: data, encoding: .utf8),
+              let itemRegex = Self.generalRegex(for: #"<li><a href="(/topics/\d+/)">([\s\S]*?)</a></li>"#),
+              let timeRegex = Self.generalRegex(for: #"^(\d{4}/\d{2}/\d{2})\([^)]*\)\s*(\d{2}:\d{2})$"#) else {
+            return nil
+        }
+
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "Asia/Tokyo")
+        formatter.dateFormat = "yyyy/MM/dd HH:mm"
+
+        var items = [FeedItem]()
+        var seen = Set<String>()
+        for match in itemRegex.matches(in: html, range: NSRange(html.startIndex..., in: html)) {
+            guard items.count < 25,
+                  let pathRange = Range(match.range(at: 1), in: html),
+                  let blockRange = Range(match.range(at: 2), in: html) else { continue }
+            let path = String(html[pathRange])
+            let block = String(html[blockRange])
+            guard let rawTitle = regexGroups(block, #"<p class="title">([\s\S]*?)</p>"#)?.first,
+                  let title = cleanDisplayText(rawTitle),
+                  matchesKeyword(title: title, desc: "", kw: keyword),
+                  let rawTime = regexGroups(block, #"<p class="time">([^<]+)</p>"#)?.first?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  let timeMatch = timeRegex.firstMatch(in: rawTime, range: NSRange(rawTime.startIndex..., in: rawTime)),
+                  let dateRange = Range(timeMatch.range(at: 1), in: rawTime),
+                  let clockRange = Range(timeMatch.range(at: 2), in: rawTime),
+                  let publishedDate = formatter.date(from: "\(rawTime[dateRange]) \(rawTime[clockRange])"),
+                  let articleURL = URL(string: path, relativeTo: url)?.absoluteURL else { continue }
+            let absoluteURL = articleURL.absoluteString
+            guard seen.insert(absoluteURL).inserted else { continue }
+            let thumbnail = regexGroups(block, #"data-src="([^"]+)""#)?.first
+            items.append(FeedItem(
+                id: "girlschannel:\(stableId(absoluteURL))",
+                platform: "girlschannel",
+                url: absoluteURL,
+                title: title,
+                content_text: nil,
+                author: nil,
+                thumbnail_url: thumbnail,
+                media_type: "text",
+                published_at: isoString(publishedDate),
+                watch_term_keyword: keyword,
+                fetched_at: nowISO(),
+                source: "girlschannel_keyword"
+            ))
+        }
+        return items
     }
 
     private func fetchGoogleNews(
