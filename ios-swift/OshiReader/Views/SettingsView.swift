@@ -207,32 +207,17 @@ struct SettingsView: View {
                     .accessibilityIdentifier("settings.platformMenu")
                 }
 
+                // Section: Reader
                 Section(header: Text(i18n.t("readerSection"))) {
                     Toggle(i18n.t("autoTranslate"), isOn: $autoTranslateReader)
                         .tint(theme.colors.primary)
                         .accessibilityIdentifier("settings.autoTranslateToggle")
                 }
 
-                Section(
-                    header: Text(i18n.t("credentialsSection")),
-                    footer: Text(i18n.t("credentialsFooter"))
-                ) {
-                    if db.subscribedPlatforms.contains("twitter"),
-                       twitterBearerToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        Label(i18n.t("twitterTokenMissingHint"), systemImage: "exclamationmark.triangle")
-                            .font(.caption)
-                            .foregroundColor(.orange)
-                            .accessibilityIdentifier("settings.twitterTokenMissingHint")
-                    }
-                    SecureField(i18n.t("twitterBearerTokenPlaceholder"), text: $twitterBearerToken)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .onSubmit { KeychainHelper.save(.twitterBearerToken, twitterBearerToken) }
-                        .onDisappear { KeychainHelper.save(.twitterBearerToken, twitterBearerToken) }
-                        .accessibilityIdentifier("settings.twitterBearerTokenField")
-                }
+                // Section: Local Storage & Profiles
+                localStorageSection
 
-                // Section: Customizations
+                // Section: Customizations / Appearance
                 Section {
                     DisclosureGroup(isExpanded: $isAppearanceSectionExpanded) {
                         Picker(i18n.t("appTheme"), selection: $theme.mode) {
@@ -292,18 +277,7 @@ struct SettingsView: View {
                     }
                 }
 
-
-
-                Section(header: Text(i18n.t("privacySection"))) {
-                    NavigationLink(destination: PrivacyPolicyView(theme: theme)) {
-                        Label(i18n.t("privacyPolicy"), systemImage: "hand.raised")
-                    }
-                    .accessibilityIdentifier("settings.privacyPolicyLink")
-                }
-
-                localStorageSection
-                iCloudSyncSection
-
+                // Section: Notifications
                 Section {
                     DisclosureGroup(isExpanded: $isNotificationsSectionExpanded) {
                         Label(i18n.t("notificationSetupHint"), systemImage: "info.circle")
@@ -377,7 +351,39 @@ struct SettingsView: View {
                     }
                 }
 
+                // Section: Source Status (Diagnostics)
                 sourceStatusSection
+
+                // Section: Credentials
+                Section(
+                    header: Text(i18n.t("credentialsSection")),
+                    footer: Text(i18n.t("credentialsFooter"))
+                ) {
+                    if db.subscribedPlatforms.contains("twitter"),
+                       twitterBearerToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Label(i18n.t("twitterTokenMissingHint"), systemImage: "exclamationmark.triangle")
+                            .font(.caption)
+                            .foregroundColor(.orange)
+                            .accessibilityIdentifier("settings.twitterTokenMissingHint")
+                    }
+                    SecureField(i18n.t("twitterBearerTokenPlaceholder"), text: $twitterBearerToken)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .onSubmit { KeychainHelper.save(.twitterBearerToken, twitterBearerToken) }
+                        .onDisappear { KeychainHelper.save(.twitterBearerToken, twitterBearerToken) }
+                        .accessibilityIdentifier("settings.twitterBearerTokenField")
+                }
+
+                // Section: Privacy
+                Section(header: Text(i18n.t("privacySection"))) {
+                    NavigationLink(destination: PrivacyPolicyView(theme: theme)) {
+                        Label(i18n.t("privacyPolicy"), systemImage: "hand.raised")
+                    }
+                    .accessibilityIdentifier("settings.privacyPolicyLink")
+                }
+
+                // Section: iCloud Sync
+                iCloudSyncSection
 
             }
             .font(appearance.font(size: 13))
