@@ -1044,6 +1044,54 @@ class I18nManager: ObservableObject {
             "zh-TW": "資料",
             "zh-CN": "数据"
         ],
+        "iCloudSyncSection": [
+            "en": "iCloud Sync",
+            "ja": "iCloud同期",
+            "zh-TW": "iCloud 同步",
+            "zh-CN": "iCloud 同步"
+        ],
+        "iCloudSyncToggle": [
+            "en": "Sync with iCloud",
+            "ja": "iCloudと同期する",
+            "zh-TW": "與 iCloud 同步",
+            "zh-CN": "与 iCloud 同步"
+        ],
+        "iCloudSyncStatusLabel": [
+            "en": "Status",
+            "ja": "状態",
+            "zh-TW": "狀態",
+            "zh-CN": "状态"
+        ],
+        "iCloudSyncNow": [
+            "en": "Sync Now",
+            "ja": "今すぐ同期",
+            "zh-TW": "立即同步",
+            "zh-CN": "立即同步"
+        ],
+        "iCloudSyncNeverSynced": [
+            "en": "Not synced yet",
+            "ja": "まだ同期していません",
+            "zh-TW": "尚未同步",
+            "zh-CN": "尚未同步"
+        ],
+        "iCloudSyncSyncing": [
+            "en": "Syncing…",
+            "ja": "同期中…",
+            "zh-TW": "同步中…",
+            "zh-CN": "同步中…"
+        ],
+        "iCloudSyncFooter": [
+            "en": "Syncs your terms, saved pages, custom URLs, and settings across your devices via your private iCloud account. Whichever device saves last wins if the same data changes on two devices at once.",
+            "ja": "キーワード、保存したページ、カスタムURL、設定を、あなたのiCloudアカウント経由でデバイス間で同期します。同じデータが2台のデバイスで同時に変更された場合は、最後に保存した方が優先されます。",
+            "zh-TW": "透過你的私人 iCloud 帳號，在裝置之間同步追蹤關鍵字、已儲存頁面、自訂網址與設定。若同一份資料在兩台裝置上同時變更，以最後儲存的為準。",
+            "zh-CN": "通过你的私人 iCloud 账号，在设备之间同步追踪关键字、已保存页面、自定义网址与设置。若同一份数据在两台设备上同时更改，以最后保存的为准。"
+        ],
+        "iCloudSyncMultiProfileUnavailable": [
+            "en": "iCloud Sync is only available with a single local profile — it isn't supported across multiple profiles yet.",
+            "ja": "iCloud同期はローカルプロフィールが1つの場合のみ利用できます。複数プロフィールにはまだ対応していません。",
+            "zh-TW": "iCloud 同步僅適用於單一本機個人檔案，目前尚不支援多個個人檔案。",
+            "zh-CN": "iCloud 同步仅适用于单个本地个人资料，目前尚不支持多个个人资料。"
+        ],
 
         // MARK: - Settings controls
         "appTheme": [

@@ -74,6 +74,7 @@ struct SettingsView: View {
     @StateObject private var notifications = NotificationManager.shared
     @StateObject private var profiles = LocalProfileStore.shared
     @StateObject private var refreshDiagnostics = RefreshDiagnostics.shared
+    @StateObject private var cloudSync = CloudSyncManager.shared
     @Environment(\.scenePhase) private var scenePhase
     
     @State private var showingAddKeywordAlert = false
@@ -120,6 +121,7 @@ struct SettingsView: View {
     @State private var showingAliasLimitMessage = false
     @State private var isProfileSectionExpanded = ProcessInfo.processInfo.arguments.contains("--uitesting")
     @State private var isDataSectionExpanded = ProcessInfo.processInfo.arguments.contains("--uitesting")
+    @State private var isCloudSyncSectionExpanded = ProcessInfo.processInfo.arguments.contains("--uitesting")
     @State private var isAppearanceSectionExpanded = ProcessInfo.processInfo.arguments.contains("--uitesting")
     // Stay expanded whenever there's something actionable (first launch, or
     // permission was denied) so the enable/open-settings button isn't hidden
@@ -374,7 +376,8 @@ struct SettingsView: View {
                 }
 
                 localStorageSection
-                
+                iCloudSyncSection
+
             }
             .font(appearance.font(size: 13))
             .accessibilityIdentifier("settings.screen")
@@ -799,6 +802,71 @@ struct SettingsView: View {
             }
         }
     }
+
+    private var iCloudSyncSection: some View {
+        Section {
+            DisclosureGroup(isExpanded: $isCloudSyncSectionExpanded) {
+                if profiles.profiles.count > 1 {
+                    Text(i18n.t("iCloudSyncMultiProfileUnavailable"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Toggle(i18n.t("iCloudSyncToggle"), isOn: $cloudSync.isEnabled)
+                        .tint(theme.colors.primary)
+                        .accessibilityIdentifier("settings.iCloudSyncToggle")
+
+                    if cloudSync.isEnabled {
+                        HStack {
+                            Text(i18n.t("iCloudSyncStatusLabel"))
+                            Spacer()
+                            Text(cloudSyncStatusText)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                        .accessibilityIdentifier("settings.iCloudSyncStatus")
+
+                        Button {
+                            Task { await cloudSync.syncNow() }
+                        } label: {
+                            Label(i18n.t("iCloudSyncNow"), systemImage: "arrow.triangle.2.circlepath.icloud")
+                        }
+                        .disabled(cloudSync.status == .syncing)
+                        .accessibilityIdentifier("settings.iCloudSyncNowButton")
+                    }
+                }
+
+                Text(i18n.t("iCloudSyncFooter"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } label: {
+                Label(i18n.t("iCloudSyncSection"), systemImage: "icloud")
+            }
+        }
+    }
+
+    private var cloudSyncStatusText: String {
+        switch cloudSync.status {
+        case .idle:
+            if let lastSyncedAt = cloudSync.lastSyncedAt {
+                return Self.relativeDateFormatter.localizedString(for: lastSyncedAt, relativeTo: Date())
+            }
+            return i18n.t("iCloudSyncNeverSynced")
+        case .syncing:
+            return i18n.t("iCloudSyncSyncing")
+        case .succeeded(let date):
+            return Self.relativeDateFormatter.localizedString(for: date, relativeTo: Date())
+        case .failed(let message):
+            return message
+        case .unavailable(let message):
+            return message
+        }
+    }
+
+    private static let relativeDateFormatter: RelativeDateTimeFormatter = {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .abbreviated
+        return formatter
+    }()
 
     private var activeProfileName: String {
         profiles.profiles.first { $0.id == profiles.activeProfileID }?.name ?? i18n.t("active")
