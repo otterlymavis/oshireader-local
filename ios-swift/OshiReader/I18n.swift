@@ -1525,6 +1525,12 @@ class I18nManager: ObservableObject {
             "zh-TW": "匯出診斷資料",
             "zh-CN": "导出诊断数据"
         ],
+        "exportOPML": [
+            "en": "Export as OPML",
+            "ja": "OPMLとして書き出す",
+            "zh-TW": "匯出為 OPML",
+            "zh-CN": "导出为 OPML"
+        ],
         "importBackup": [
             "en": "Import Local Backup",
             "ja": "ローカルバックアップを読み込む",

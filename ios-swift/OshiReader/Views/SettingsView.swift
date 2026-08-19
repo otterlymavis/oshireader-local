@@ -94,6 +94,8 @@ struct SettingsView: View {
     @State private var showingBackupImporter = false
     @State private var diagnosticsDocument = LocalBackupDocument()
     @State private var showingDiagnosticsExporter = false
+    @State private var opmlDocument = OPMLDocument()
+    @State private var showingOPMLExporter = false
     @State private var encryptedBackupDocument = EncryptedBackupDocument()
     @State private var showingEncryptedBackupExporter = false
     @State private var showingEncryptedBackupImporter = false
@@ -399,6 +401,17 @@ struct SettingsView: View {
                     showingBackupMessage = true
                 }
             }
+            .fileExporter(
+                isPresented: $showingOPMLExporter,
+                document: opmlDocument,
+                contentType: .opml,
+                defaultFilename: "oshireader.opml"
+            ) { result in
+                if case .failure(let error) = result {
+                    backupMessage = localizedBackupMessage(error)
+                    showingBackupMessage = true
+                }
+            }
             .fileImporter(isPresented: $showingBackupImporter, allowedContentTypes: [.json]) { result in
                 do {
                     let url = try result.get()
@@ -689,6 +702,20 @@ struct SettingsView: View {
                     Label(i18n.t("exportDiagnostics"), systemImage: "stethoscope")
                 }
                 .accessibilityIdentifier("settings.exportDiagnosticsButton")
+
+                Button {
+                    opmlDocument = OPMLDocument(text: OPMLExporter.export(
+                        terms: db.terms,
+                        subscribedPlatforms: db.subscribedPlatforms,
+                        customUrls: db.customUrls,
+                        amebloBlogs: db.amebloBlogs,
+                        generatedAt: ISO8601DateFormatter().string(from: Date())
+                    ))
+                    showingOPMLExporter = true
+                } label: {
+                    Label(i18n.t("exportOPML"), systemImage: "list.bullet.rectangle")
+                }
+                .accessibilityIdentifier("settings.exportOPMLButton")
 
                 Button {
                     showingBackupImporter = true

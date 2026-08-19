@@ -691,7 +691,7 @@ final class IngestionService {
         if mediaOnly { return [] }
         var recentItems = [FeedItem]()
         if classifyFreshness,
-           let recentURL = googleNewsURL(query, locale: locale, recentDays: Self.googleNewsLookbackDays),
+           let recentURL = Self.googleNewsURL(query, locale: locale, recentDays: Self.googleNewsLookbackDays),
            let recentEntries = await fetchGoogleNewsEntries(recentURL, locale: locale) {
             recentItems = makeGoogleNewsItems(
                 entries: recentEntries,
@@ -707,7 +707,7 @@ final class IngestionService {
         // for the full historical query when it came back close to empty.
         if recentItems.count >= min(limit, 3) { return recentItems }
 
-        guard let url = googleNewsURL(query, locale: locale),
+        guard let url = Self.googleNewsURL(query, locale: locale),
               let entries = await fetchGoogleNewsEntries(url, locale: locale) else { return recentItems }
         let historicalItems = makeGoogleNewsItems(
             entries: entries,
@@ -1690,7 +1690,7 @@ final class IngestionService {
         }
     }
 
-    private func googleNewsURL(
+    static func googleNewsURL(
         _ query: String,
         locale: PlatformDefinition.NewsLocale = .japan,
         recentDays: Int? = nil

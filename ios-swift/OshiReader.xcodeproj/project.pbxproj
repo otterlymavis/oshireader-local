@@ -51,6 +51,7 @@
 		BFBF8762D19D5BF86CF94BE4 /* LocalProfileStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 225E5A2942CCC270A7951737 /* LocalProfileStore.swift */; };
 		C09EE5A704071475333774E3 /* AppShortcuts.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0B215B1EB3F8C4B93110DEE /* AppShortcuts.swift */; };
 		C0E99BC97CB881646FF5E073 /* app_icon_preview_inverted_lineart.png in Resources */ = {isa = PBXBuildFile; fileRef = E630D79E478EFD95756C1147 /* app_icon_preview_inverted_lineart.png */; };
+		C390F5E971F63FEB201C0124 /* OPMLExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2869A981771391FE1432892 /* OPMLExporter.swift */; };
 		C5E795ABB99336A873C3E122 /* WidgetSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44856E26AE8119108F4EF73D /* WidgetSnapshot.swift */; };
 		C7723609DB5D7D2D1F9AFEB2 /* AppLogger.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02418F20B46B959DA941B54A /* AppLogger.swift */; };
 		C7868506F2B4BC5F5D81ED34 /* WidgetSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44856E26AE8119108F4EF73D /* WidgetSnapshot.swift */; };
@@ -155,6 +156,7 @@
 		B3C7AB5D135169FD79851DA6 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		BA4656BA51F509A9A84ED250 /* NetworkManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkManager.swift; sourceTree = "<group>"; };
 		BA8B03E51A432B46649B6225 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		C2869A981771391FE1432892 /* OPMLExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OPMLExporter.swift; sourceTree = "<group>"; };
 		C457E76B82EE6391C9F2F394 /* AppIntentNavigation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppIntentNavigation.swift; sourceTree = "<group>"; };
 		C5D040C2B5C75B3256B8C9E2 /* app_icon_preview_white_line_black_bg.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = app_icon_preview_white_line_black_bg.png; sourceTree = "<group>"; };
 		C96792D04C20B7635508EF1E /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
@@ -285,6 +287,7 @@
 				BA4656BA51F509A9A84ED250 /* NetworkManager.swift */,
 				CA093C93D4514C0B73101C23 /* NotificationManager.swift */,
 				720597F8B0D3B8680AAB2C90 /* NotificationNavigationManager.swift */,
+				C2869A981771391FE1432892 /* OPMLExporter.swift */,
 				56F97FCE5F8F2EFBC98E2310 /* OshiReader.entitlements */,
 				F57F75DAE62F1BBB02535FA4 /* OshiReaderApp.swift */,
 				CA6698BAA13BEAE4F52D45E7 /* PendingShare.swift */,
@@ -534,6 +537,7 @@
 				BE3D630219B70EABDAEA04BA /* NetworkManager.swift in Sources */,
 				3FA51D07DCDCD47A84902360 /* NotificationManager.swift in Sources */,
 				DF209DB68817A4F2F8248D5B /* NotificationNavigationManager.swift in Sources */,
+				C390F5E971F63FEB201C0124 /* OPMLExporter.swift in Sources */,
 				A0AC4C89B94E168EE1AC6027 /* OshiReaderApp.swift in Sources */,
 				D52495292898CC66D9765714 /* OshiView.swift in Sources */,
 				7DFACC0D4D12882AE7987817 /* PendingShare.swift in Sources */,
