@@ -1028,6 +1028,25 @@ final class FeedMergingTests: XCTestCase {
         }
     }
 
+    /// queryFeed's single-slot cache means calling it back-to-back with the
+    /// same arguments would only measure a cache hit. Rotating the keyword
+    /// across a set of terms the feed actually contains forces a cache miss
+    /// (a full computeQueryFeed run) on every call — the shape that
+    /// writeWidgetSnapshotNow() hits once per watch term, uncached, on the
+    /// main actor.
+    @MainActor
+    func testQueryFeedPerformanceForFullFeed() throws {
+        db.feedItems = Self.makeSyntheticRefreshBatch(runID: "query-perf", termCount: 20, itemsPerTerm: 30)
+        XCTAssertEqual(db.feedItems.count, 600)
+
+        var runIndex = 0
+        measure {
+            let keyword = "Oshi \(runIndex % 20)"
+            runIndex += 1
+            _ = db.queryFeed(keyword: keyword, days: 0)
+        }
+    }
+
     @MainActor
     func testCancelledNotificationTaskDoesNotScheduleRequest() async {
         let center = MockNotificationCenter(status: .authorized)

@@ -859,6 +859,7 @@ class LocalDB: ObservableObject {
     private struct FeedQueryCandidate {
         let item: FeedItem
         let platformKey: String
+        let date: Date
     }
 
     private static func cappedFeedItems(
@@ -1013,9 +1014,18 @@ class LocalDB: ObservableObject {
                 return nil
             }
             
-            return FeedQueryCandidate(item: item, platformKey: platformKey)
+            // Parsed once here and reused by the sort below instead of
+            // letting the comparator re-derive it on every comparison.
+            let date = parseISO8601Date(item.published_at) ?? .distantPast
+            return FeedQueryCandidate(item: item, platformKey: platformKey, date: date)
         }
-        .sorted { feedItemSortPrecedes($0.item, $1.item) }
+        .sorted { lhs, rhs in
+            // Tie-break order must stay in sync with feedItemSortPrecedes.
+            if lhs.date != rhs.date { return lhs.date > rhs.date }
+            if lhs.item.id != rhs.item.id { return lhs.item.id < rhs.item.id }
+            if lhs.item.watch_term_keyword != rhs.item.watch_term_keyword { return lhs.item.watch_term_keyword < rhs.item.watch_term_keyword }
+            return lhs.item.url < rhs.item.url
+        }
 
         if keyword?.isEmpty == false {
             return candidates.map(\.item)
