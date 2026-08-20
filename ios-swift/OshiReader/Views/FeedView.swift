@@ -255,6 +255,10 @@ struct FeedView: View {
             } else {
                 NavigationStack {
                     mainContentColumn
+                        .navigationDestination(for: FeedItem.self) { item in
+                            ReaderView(feedItem: item, siblingItems: cachedVisibleItems)
+                                .onAppear { markRecentUse(for: item) }
+                        }
                 }
             }
         }
@@ -790,8 +794,7 @@ struct FeedView: View {
                 hidePostButton(for: item)
             }
         } else {
-            NavigationLink(destination: ReaderView(feedItem: item, siblingItems: cachedVisibleItems)
-                .onAppear { markRecentUse(for: item) }) {
+            NavigationLink(value: item) {
                 FeedCard(item: item, isSaved: savedItemIds.contains(item.id), theme: theme)
             }
             .buttonStyle(PlainButtonStyle())

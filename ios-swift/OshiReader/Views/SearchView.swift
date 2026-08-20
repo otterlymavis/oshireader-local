@@ -124,6 +124,9 @@ struct SearchView: View {
             } else {
                 NavigationStack {
                     mainContentColumn
+                        .navigationDestination(for: FeedItem.self) { item in
+                            ReaderView(feedItem: item, siblingItems: selectedLinks.map(feedItem(for:)))
+                        }
                 }
             }
         }
@@ -325,7 +328,7 @@ struct SearchView: View {
     private func searchLinkNavigationRow(_ link: SearchLink) -> some View {
         let disabled = linkRequiresKeyword(link) && trimmedKeyword.isEmpty
 
-        return NavigationLink(destination: ReaderView(feedItem: feedItem(for: link), siblingItems: selectedLinks.map(feedItem(for:)))) {
+        return NavigationLink(value: feedItem(for: link)) {
             searchLinkRowContent(link)
         }
         .buttonStyle(.plain)

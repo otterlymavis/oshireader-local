@@ -43,6 +43,7 @@ struct ReaderView: View {
     @State private var selectImagesCounter = 0
     @State private var imageSelectionActionCounter = 0
     @State private var imageSelectionAction = ""
+    @State private var saveAllImagesCounter = 0
     @State private var isSelectingImages = false
     @State private var selectedImageCount = 0
     @State private var isSavingSelectedImages = false
@@ -151,6 +152,7 @@ struct ReaderView: View {
                             selectImagesCounter: selectImagesCounter,
                             imageSelectionActionCounter: imageSelectionActionCounter,
                             imageSelectionAction: imageSelectionAction,
+                            saveAllImagesCounter: saveAllImagesCounter,
                             onLoadStateChange: { state in
                                 webLoadState = state
                                 if state == .loading {
@@ -184,6 +186,7 @@ struct ReaderView: View {
                                 }
                             }
                         )
+                        .equatable()
                         .background(bgColor)
                     }
 
@@ -289,16 +292,29 @@ struct ReaderView: View {
                         .disabled(selectedImageCount == 0)
                         .accessibilityIdentifier("reader.saveSelectedImagesButton")
                     } else {
-                        Button {
-                            isSelectingImages = true
-                            selectedImageCount = 0
-                            selectImagesCounter += 1
+                        Menu {
+                            Button {
+                                isSelectingImages = true
+                                selectedImageCount = 0
+                                selectImagesCounter += 1
+                            } label: {
+                                Label(i18n.t("selectImages"), systemImage: "checklist")
+                            }
+                            .accessibilityIdentifier("reader.selectImagesButton")
+
+                            Button {
+                                isSavingSelectedImages = true
+                                saveAllImagesCounter += 1
+                            } label: {
+                                Label(i18n.t("saveAllImages"), systemImage: "square.and.arrow.down.on.square")
+                            }
+                            .accessibilityIdentifier("reader.saveAllImagesButton")
                         } label: {
                             Image(systemName: "checklist")
                                 .foregroundColor(theme.colors.primary)
                         }
                         .accessibilityLabel(i18n.t("selectImages"))
-                        .accessibilityIdentifier("reader.selectImagesButton")
+                        .accessibilityIdentifier("reader.imagesMenuButton")
                     }
                 }
             }
@@ -717,7 +733,7 @@ struct ReaderView: View {
     }
 }
 
-struct WebViewHelper: UIViewRepresentable {
+struct WebViewHelper: UIViewRepresentable, Equatable {
     let url: URL
     let cacheId: String
     let cacheGeneration: Int
@@ -729,6 +745,7 @@ struct WebViewHelper: UIViewRepresentable {
     let selectImagesCounter: Int
     let imageSelectionActionCounter: Int
     let imageSelectionAction: String
+    let saveAllImagesCounter: Int
     let onLoadStateChange: (ReaderWebLoadState) -> Void
     let onImageAction: (ReaderImageAction) -> Void
     let onImageSelectionState: (Int) -> Void
@@ -736,6 +753,25 @@ struct WebViewHelper: UIViewRepresentable {
     let onImageSelectionFailure: () -> Void
     let onSelectedImages: ([URL]) -> Void
     let onContentBlocked: () -> Void
+
+    /// Closures are excluded — they're recreated on every `ReaderView` body
+    /// re-render regardless of content changes, and comparing them would
+    /// defeat the point of `.equatable()`: skipping `updateUIView` (and its
+    /// reader-mode JS rescan) when none of the actual displayed content changed.
+    static func == (lhs: WebViewHelper, rhs: WebViewHelper) -> Bool {
+        lhs.url == rhs.url &&
+            lhs.cacheId == rhs.cacheId &&
+            lhs.cacheGeneration == rhs.cacheGeneration &&
+            lhs.platform == rhs.platform &&
+            lhs.themeMode == rhs.themeMode &&
+            lhs.fontSize == rhs.fontSize &&
+            lhs.fontFamilyCSS == rhs.fontFamilyCSS &&
+            lhs.readerMode == rhs.readerMode &&
+            lhs.selectImagesCounter == rhs.selectImagesCounter &&
+            lhs.imageSelectionActionCounter == rhs.imageSelectionActionCounter &&
+            lhs.imageSelectionAction == rhs.imageSelectionAction &&
+            lhs.saveAllImagesCounter == rhs.saveAllImagesCounter
+    }
 
     private static let uiTestImageFixtureHTML = """
     <!doctype html>
@@ -776,14 +812,44 @@ struct WebViewHelper: UIViewRepresentable {
         if context.coordinator.currentRequestURL != requestURL {
             context.coordinator.currentRequestURL = requestURL
             context.coordinator.beginNewRequest()
+            context.coordinator.lastAppliedFontSize = fontSize
+            context.coordinator.lastAppliedThemeMode = themeMode
+            context.coordinator.lastAppliedReaderMode = readerMode
+            context.coordinator.lastAppliedFontFamilyCSS = fontFamilyCSS
+            context.coordinator.lastAppliedPlatform = platform
             onLoadStateChange(.loading)
             if ProcessInfo.processInfo.arguments.contains("--uitesting-reader-images") {
                 uiView.loadHTMLString(Self.uiTestImageFixtureHTML, baseURL: url)
             } else {
-                uiView.load(URLRequest(url: url))
+                let cacheId = cacheId
+                // Cache-first: paint the last-known-good copy instantly (if any),
+                // then always follow with a live fetch so the cache never wins
+                // over fresh content — it's a placeholder, not a substitute.
+                LocalDB.shared.getContentCache(id: cacheId) { [weak uiView] cachedHTML in
+                    guard let uiView, context.coordinator.currentRequestURL == requestURL else { return }
+                    if let cachedHTML {
+                        context.coordinator.markShowingCachePlaceholder()
+                        uiView.loadHTMLString(cachedHTML, baseURL: url)
+                    }
+                    uiView.load(URLRequest(url: url))
+                }
             }
         } else {
-            uiView.evaluateJavaScript(styleInjectionJS(), completionHandler: nil)
+            let styleRelevantChanged = context.coordinator.lastAppliedThemeMode != themeMode
+                || context.coordinator.lastAppliedReaderMode != readerMode
+                || context.coordinator.lastAppliedFontFamilyCSS != fontFamilyCSS
+                || context.coordinator.lastAppliedPlatform != platform
+            if styleRelevantChanged {
+                context.coordinator.lastAppliedThemeMode = themeMode
+                context.coordinator.lastAppliedReaderMode = readerMode
+                context.coordinator.lastAppliedFontFamilyCSS = fontFamilyCSS
+                context.coordinator.lastAppliedPlatform = platform
+                context.coordinator.lastAppliedFontSize = fontSize
+                uiView.evaluateJavaScript(styleInjectionJS(), completionHandler: nil)
+            } else if context.coordinator.lastAppliedFontSize != fontSize {
+                context.coordinator.lastAppliedFontSize = fontSize
+                uiView.evaluateJavaScript("if (window.__oshiSetFontSize) { window.__oshiSetFontSize(\(fontSize)); }", completionHandler: nil)
+            }
         }
         if selectImagesCounter != context.coordinator.lastSelectImagesCounter {
             context.coordinator.lastSelectImagesCounter = selectImagesCounter
@@ -800,6 +866,15 @@ struct WebViewHelper: UIViewRepresentable {
                 ? "__oshiFinishImageSelection"
                 : "__oshiCancelImageSelection"
             uiView.evaluateJavaScript("(function(){ if(!window.\(functionName)) return false; window.\(functionName)(); return true; })()") { result, _ in
+                guard (result as? Bool) == true else {
+                    DispatchQueue.main.async { onImageSelectionFailure() }
+                    return
+                }
+            }
+        }
+        if saveAllImagesCounter != context.coordinator.lastSaveAllImagesCounter {
+            context.coordinator.lastSaveAllImagesCounter = saveAllImagesCounter
+            uiView.evaluateJavaScript("(function(){ if(!window.__oshiSaveAllImages) return false; window.__oshiSaveAllImages(); return true; })()") { result, _ in
                 guard (result as? Bool) == true else {
                     DispatchQueue.main.async { onImageSelectionFailure() }
                     return
@@ -844,10 +919,13 @@ struct WebViewHelper: UIViewRepresentable {
         let readerCSS: String
         if readerMode {
             readerCSS = """
+            :root {
+                --oshi-reader-font-size: \(fontSize)px;
+            }
             body {
                 background-color: \(bgColorHex) !important;
                 color: \(textColorHex) !important;
-                font-size: \(fontSize)px !important;
+                font-size: var(--oshi-reader-font-size) !important;
                 line-height: 1.75 !important;
                 padding: 16px !important;
                 max-width: 760px !important;
@@ -880,7 +958,7 @@ struct WebViewHelper: UIViewRepresentable {
             [data-oshireader-reader-root="true"] p,
             [data-oshireader-reader-root="true"] li,
             [data-oshireader-reader-root="true"] blockquote {
-                font-size: \(fontSize)px !important;
+                font-size: var(--oshi-reader-font-size) !important;
                 line-height: 1.82 !important;
                 letter-spacing: 0 !important;
             }
@@ -965,9 +1043,23 @@ struct WebViewHelper: UIViewRepresentable {
         var parent: WebViewHelper
         var lastSelectImagesCounter = 0
         var lastImageSelectionActionCounter = 0
+        var lastSaveAllImagesCounter = 0
         var currentRequestURL: String?
+        /// Tracks which style-affecting values are already reflected in the
+        /// page so `updateUIView` can tell a font-size-only change (cheap,
+        /// CSS-variable update) apart from a theme/reader-mode change (needs
+        /// the full reader-mode rescan in `styleInjectionJS()`).
+        var lastAppliedFontSize: CGFloat?
+        var lastAppliedThemeMode: AppThemeMode?
+        var lastAppliedReaderMode: Bool?
+        var lastAppliedFontFamilyCSS: String?
+        var lastAppliedPlatform: String?
         private var hasCommittedPage = false
         private var pendingFailure: DispatchWorkItem?
+        /// True while the web view is showing an on-disk cache placeholder
+        /// (either the fast-paint-on-open path or the offline fallback) —
+        /// its `didFinish` shouldn't re-snapshot content that's already on disk.
+        private var isShowingCachePlaceholder = false
 
         init(_ parent: WebViewHelper) {
             self.parent = parent
@@ -975,7 +1067,12 @@ struct WebViewHelper: UIViewRepresentable {
 
         func beginNewRequest() {
             hasCommittedPage = false
+            isShowingCachePlaceholder = false
             pendingFailure?.cancel()
+        }
+
+        func markShowingCachePlaceholder() {
+            isShowingCachePlaceholder = true
         }
 
         func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
@@ -997,15 +1094,23 @@ struct WebViewHelper: UIViewRepresentable {
             pendingFailure?.cancel()
             DispatchQueue.main.async { self.parent.onLoadStateChange(.loaded) }
             webView.evaluateJavaScript(parent.styleInjectionJS(), completionHandler: nil)
-            let cacheId = parent.cacheId
-            let cacheGeneration = parent.cacheGeneration
-            webView.evaluateJavaScript("document.documentElement.outerHTML") { result, _ in
-                guard let html = result as? String, !html.isEmpty else { return }
-                LocalDB.shared.saveContentCache(
-                    id: cacheId,
-                    html: html,
-                    sourceGeneration: cacheGeneration
-                )
+            if isShowingCachePlaceholder {
+                // This navigation just repainted content already on disk (either
+                // the fast-paint-on-open placeholder or the offline fallback) —
+                // re-snapshotting it would be a same-bytes write. The live fetch
+                // that follows (or a future successful load) captures the fresh copy.
+                isShowingCachePlaceholder = false
+            } else {
+                let cacheId = parent.cacheId
+                let cacheGeneration = parent.cacheGeneration
+                webView.evaluateJavaScript("document.documentElement.outerHTML") { result, _ in
+                    guard let html = result as? String, !html.isEmpty else { return }
+                    LocalDB.shared.saveContentCache(
+                        id: cacheId,
+                        html: html,
+                        sourceGeneration: cacheGeneration
+                    )
+                }
             }
             checkForBlockedContent(in: webView)
         }
@@ -1080,11 +1185,12 @@ struct WebViewHelper: UIViewRepresentable {
                 return
             }
 
-            if !loadCachedPage(in: webView) {
-                if PlatformRegistry.normalizeID(parent.platform) == "twitter" {
+            loadCachedPage(in: webView) { [weak self, weak webView] loaded in
+                guard let self, let webView, !loaded else { return }
+                if PlatformRegistry.normalizeID(self.parent.platform) == "twitter" {
                     DispatchQueue.main.async { self.parent.onContentBlocked() }
                 }
-                pendingFailure?.cancel()
+                self.pendingFailure?.cancel()
                 let failure = DispatchWorkItem { [weak self, weak webView] in
                     guard let self, let webView, !self.hasCommittedPage else { return }
                     webView.evaluateJavaScript("document.readyState") { result, _ in
@@ -1095,7 +1201,7 @@ struct WebViewHelper: UIViewRepresentable {
                         }
                     }
                 }
-                pendingFailure = failure
+                self.pendingFailure = failure
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: failure)
             }
         }
@@ -1111,13 +1217,18 @@ struct WebViewHelper: UIViewRepresentable {
             return false
         }
 
-        private func loadCachedPage(in webView: WKWebView) -> Bool {
-            guard let html = LocalDB.shared.getContentCache(id: parent.cacheId) else { return false }
-            pendingFailure?.cancel()
-            hasCommittedPage = false
-            DispatchQueue.main.async { self.parent.onLoadStateChange(.loading) }
-            webView.loadHTMLString(html, baseURL: parent.url)
-            return true
+        private func loadCachedPage(in webView: WKWebView, completion: @escaping (Bool) -> Void) {
+            let cacheId = parent.cacheId
+            LocalDB.shared.getContentCache(id: cacheId) { [weak self, weak webView] html in
+                guard let self, let webView else { completion(false); return }
+                guard let html, self.parent.cacheId == cacheId else { completion(false); return }
+                self.pendingFailure?.cancel()
+                self.hasCommittedPage = false
+                self.markShowingCachePlaceholder()
+                self.parent.onLoadStateChange(.loading)
+                webView.loadHTMLString(html, baseURL: self.parent.url)
+                completion(true)
+            }
         }
 
         func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
@@ -1408,6 +1519,10 @@ private let readerInjectedJS = """
     return true;
   }
 
+  window.__oshiSetFontSize = function(px) {
+    document.documentElement.style.setProperty('--oshi-reader-font-size', px + 'px');
+  };
+
   window.__oshiBeginImageSelection = function() {
     imageSelectionMode = true;
     selectedImageUrls = new Set();
@@ -1432,6 +1547,19 @@ private let readerInjectedJS = """
     imageSelectionMode = false;
     selectedImageUrls = new Set();
     document.querySelectorAll('img[data-oshireader-selected="true"]').forEach(function(img) { updateSelectionStyle(img, false); });
+    window.webkit.messageHandlers.oshireader.postMessage({ type: 'selected-images', urls: urls });
+  };
+
+  window.__oshiSaveAllImages = function() {
+    var seen = new Set();
+    var urls = [];
+    document.querySelectorAll('img').forEach(function(img) {
+      var url = selectableImageUrl(img);
+      if (url && !seen.has(url)) {
+        seen.add(url);
+        urls.push(url);
+      }
+    });
     window.webkit.messageHandlers.oshireader.postMessage({ type: 'selected-images', urls: urls });
   };
 

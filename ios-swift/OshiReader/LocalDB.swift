@@ -1896,10 +1896,14 @@ class LocalDB: ObservableObject {
         }
     }
     
-    func getContentCache(id: String) -> String? {
+    /// Reads off `queue` (a background queue) so callers on the main thread —
+    /// e.g. a `WKNavigationDelegate` callback — never block on disk I/O.
+    func getContentCache(id: String, completion: @escaping (String?) -> Void) {
         let name = "cache_\(id.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? id)"
-        let result: String? = loadFromFile(name: name, defaultValue: nil)
-        return result
+        queue.async { [weak self] in
+            let result: String? = self?.loadFromFile(name: name, defaultValue: nil)
+            DispatchQueue.main.async { completion(result) }
+        }
     }
     
     func removeContentCache(id: String) {

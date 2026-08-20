@@ -1624,6 +1624,12 @@ class I18nManager: ObservableObject {
             "zh-TW": "選取圖片",
             "zh-CN": "选择图片"
         ],
+        "saveAllImages": [
+            "en": "Save All Images",
+            "ja": "すべての画像を保存",
+            "zh-TW": "儲存所有圖片",
+            "zh-CN": "保存所有图片"
+        ],
         "back": [
             "en": "Back",
             "ja": "戻る",

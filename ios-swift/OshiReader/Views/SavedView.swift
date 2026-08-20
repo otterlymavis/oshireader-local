@@ -26,7 +26,10 @@ struct SavedView: View {
     
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var selectedPage: SavedPage? = nil
-    
+    /// Avoids remapping `db.savedPages` to `FeedItem` on every row/body
+    /// re-evaluation — that map is O(n), so doing it per row was O(n²).
+    @State private var cachedSavedFeedItems: [FeedItem] = LocalDB.shared.savedPages.map { $0.toFeedItem() }
+
     var body: some View {
         ZStack {
             theme.colors.bg.ignoresSafeArea()
@@ -45,7 +48,7 @@ struct SavedView: View {
                         if let page = selectedPage {
                             ReaderView(
                                 feedItem: page.toFeedItem(),
-                                siblingItems: db.savedPages.map { $0.toFeedItem() },
+                                siblingItems: cachedSavedFeedItems,
                                 onNavigate: { item in
                                     selectedPage = db.savedPages.first(where: { $0.id == item.id })
                                 }
@@ -67,8 +70,14 @@ struct SavedView: View {
             } else {
                 NavigationStack {
                     mainContentColumn
+                        .navigationDestination(for: SavedPage.self) { page in
+                            ReaderView(feedItem: page.toFeedItem(), siblingItems: cachedSavedFeedItems)
+                        }
                 }
             }
+        }
+        .onChange(of: db.savedPages) { _, newValue in
+            cachedSavedFeedItems = newValue.map { $0.toFeedItem() }
         }
     }
     
@@ -118,7 +127,7 @@ struct SavedView: View {
                                 }
                             }
                         } else {
-                            NavigationLink(destination: ReaderView(feedItem: page.toFeedItem(), siblingItems: db.savedPages.map { $0.toFeedItem() })) {
+                            NavigationLink(value: page) {
                                 SavedPageCard(page: page, theme: theme)
                             }
                             .buttonStyle(PlainButtonStyle())
