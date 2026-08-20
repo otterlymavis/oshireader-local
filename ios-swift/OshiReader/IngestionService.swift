@@ -139,7 +139,7 @@ final class IngestionService {
 
     init(
         requestExecutor: @escaping RequestExecutor = { request in
-            try await URLSession.shared.data(for: request)
+            try await IngestionNetworking.session.data(for: request)
         },
         retrySleeper: @escaping RetrySleeper = { nanoseconds in
             try? await Task.sleep(nanoseconds: nanoseconds)
@@ -1647,7 +1647,11 @@ final class IngestionService {
     // MARK: - Shared helpers
 
     private func httpGET(_ url: URL, headers: [String: String] = [:], timeout: TimeInterval = 12) async -> TransportResult {
-        var request = URLRequest(url: url, cachePolicy: .useProtocolCachePolicy)
+        // Always revalidate rather than serving a cached body outright: a
+        // stale-but-still-fresh (per Cache-Control) hit would silently mask
+        // genuinely new items on the source. This still lets the origin skip
+        // re-sending the body via a 304 when nothing changed.
+        var request = URLRequest(url: url, cachePolicy: .reloadRevalidatingCacheData)
         request.timeoutInterval = timeout
         for (k, v) in headers { request.setValue(v, forHTTPHeaderField: k) }
         return await execute(request)

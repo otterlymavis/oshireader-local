@@ -53,6 +53,26 @@ struct IrasutoyaImage: Codable, Identifiable, Hashable {
     let title: String
 }
 
+/// Shared session for repeated per-refresh fetches (feed ingestion, custom
+/// URL cards). A dedicated `URLCache` lets `URLSession` revalidate unchanged
+/// responses via ETag/Last-Modified instead of re-downloading in full on
+/// every refresh, and a higher per-host connection cap avoids requests
+/// queuing when multiple watch terms hit the same platform concurrently.
+enum IngestionNetworking {
+    static let session: URLSession = {
+        let cacheDirectory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("IngestionURLCache", isDirectory: true)
+        let configuration = URLSessionConfiguration.default
+        configuration.urlCache = URLCache(memoryCapacity: 8 * 1024 * 1024, diskCapacity: 64 * 1024 * 1024, directory: cacheDirectory)
+        // Revalidate rather than serve straight from cache — this session
+        // exists to skip re-downloading unchanged bodies via a 304, not to
+        // skip the network request itself and risk missing new items.
+        configuration.requestCachePolicy = .reloadRevalidatingCacheData
+        configuration.httpMaximumConnectionsPerHost = 8
+        return URLSession(configuration: configuration)
+    }()
+}
+
 struct CustomURLScrapeReport {
     let items: [FeedItem]
     let failedCount: Int
@@ -245,11 +265,11 @@ class NetworkManager {
         var description: String?
 
         do {
-            var request = URLRequest(url: url)
+            var request = URLRequest(url: url, cachePolicy: .reloadRevalidatingCacheData)
             request.timeoutInterval = requestTimeout
             request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1", forHTTPHeaderField: "User-Agent")
 
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await IngestionNetworking.session.data(for: request)
             guard let httpResponse = response as? HTTPURLResponse,
                   (200...299).contains(httpResponse.statusCode) else {
                 return (nil, false)

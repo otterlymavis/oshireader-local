@@ -37,7 +37,7 @@ enum BackgroundRefreshOutcome: Equatable {
 final class BackgroundRefreshManager {
     static let shared = BackgroundRefreshManager()
     static let taskIdentifier = "com.otterpia.oshireader.feed-refresh"
-    static let minimumInterval: TimeInterval = 30 * 60
+    static let minimumInterval: TimeInterval = 15 * 60
     private static let operationDeadline: TimeInterval = 25
 
     private init() {}
