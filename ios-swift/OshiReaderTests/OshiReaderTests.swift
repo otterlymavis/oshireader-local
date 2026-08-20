@@ -3362,5 +3362,55 @@ final class OshiReaderTests: XCTestCase {
         db.addCustomUrl(url: "https://example.com/revision-feed.xml", title: "Revision Feed")
         XCTAssertNotEqual(db.dataRevision, afterAliasRevision)
     }
-    
+
+    /// Times a full ingestReport fan-out (every subscribed platform, one
+    /// watch term) against a mocked instant transport — isolates parsing/
+    /// dedup CPU cost from real network latency, which measure() can't do
+    /// for these async source fetchers. Most sources route through the
+    /// generic Google News / dedicated RSS parser, so one shared RSS
+    /// fixture (with the watch term's keyword in every item, satisfying
+    /// strict-keyword-matching sources) exercises that shared path across
+    /// all of them concurrently, same as LocalRefreshCoordinator does for
+    /// one term in production. Sources needing JSON/HTML (YouTube, Twitter,
+    /// TVer, niconico) will fail to parse this RSS payload and contribute
+    /// no items — their cost isn't captured here.
+    func testFullTermIngestionPerformanceWithMockedNetwork() async throws {
+        let itemsXML = (0..<20).map { index -> String in
+            """
+            <item>
+            <title>Perf Oshi story \(index) - Yahoo!ニュース</title>
+            <link>https://example.com/perf/\(index)?utm_source=rss</link>
+            <description>Perf Oshi description number \(index) with enough body text to exercise HTML-entity and whitespace cleanup.</description>
+            <pubDate>Sun, 02 Aug 2026 08:0\(index % 6):00 GMT</pubDate>
+            </item>
+            """
+        }.joined()
+        let rss = Data("<rss version=\"2.0\"><channel>\(itemsXML)</channel></rss>".utf8)
+
+        let service = IngestionService(
+            requestExecutor: { request in
+                (rss, try XCTUnwrap(HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)))
+            },
+            retrySleeper: { _ in }
+        )
+        let allPlatformIDs = Set(PlatformRegistry.all.map(\.id)).subtracting(["custom"])
+        let term = WatchTerm(keyword: "Perf Oshi")
+
+        var durationsMs: [Double] = []
+        var itemCounts: [Int] = []
+        for _ in 0..<5 {
+            let start = CFAbsoluteTimeGetCurrent()
+            let report = await service.ingestReport(term: term, platforms: allPlatformIDs)
+            durationsMs.append((CFAbsoluteTimeGetCurrent() - start) * 1000)
+            itemCounts.append(report.items.count)
+        }
+        XCTAssertTrue(itemCounts.allSatisfy { $0 > 0 }, "mocked RSS should have produced items from at least the RSS-routed sources")
+        // Steady-state average (dropping the first, JIT/warmup-affected run)
+        // as a loose regression guard — this call was ~30ms against a real
+        // device baseline; a large multiple of that signals an accidental
+        // O(n^2) regression rather than normal machine variance.
+        let steadyStateAverage = durationsMs.dropFirst().reduce(0, +) / Double(durationsMs.count - 1)
+        XCTAssertLessThan(steadyStateAverage, 500, "full-platform ingestion against a mocked instant transport regressed well past its ~30ms baseline")
+    }
+
 }
