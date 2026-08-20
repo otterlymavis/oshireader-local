@@ -787,7 +787,20 @@ class LocalDB: ObservableObject {
             }
         }
         
-        let sorted = currentMap.values.sorted(by: feedItemSortPrecedes)
+        // Precompute each item's sort date once instead of letting the
+        // comparator re-derive it on every comparison — sorted(by:) makes
+        // O(n log n) comparator calls, each parsing both sides, which was
+        // the dominant cost of a full-refresh merge. Tie-break order below
+        // must stay in sync with feedItemSortPrecedes.
+        let sorted = currentMap.values
+            .map { ($0, parseISO8601Date($0.published_at) ?? .distantPast) }
+            .sorted { lhs, rhs in
+                if lhs.1 != rhs.1 { return lhs.1 > rhs.1 }
+                if lhs.0.id != rhs.0.id { return lhs.0.id < rhs.0.id }
+                if lhs.0.watch_term_keyword != rhs.0.watch_term_keyword { return lhs.0.watch_term_keyword < rhs.0.watch_term_keyword }
+                return lhs.0.url < rhs.0.url
+            }
+            .map(\.0)
         let preserveAddedItems = !self.feedItems.isEmpty
         let preservedKeys = preserveAddedItems ? Set(addedKeys) : []
         let finalItems = Self.cappedFeedItems(

@@ -980,6 +980,8 @@ final class FeedMergingTests: XCTestCase {
 
     /// Simulates the merge step of a real refresh: ~20 watch terms each
     /// returning ~30 items, merged into a feed already at the 600-item cap.
+    private static let perfBatchDateFormatter: ISO8601DateFormatter = ISO8601DateFormatter()
+
     private static func makeSyntheticRefreshBatch(runID: String, termCount: Int = 20, itemsPerTerm: Int = 30) -> [FeedItem] {
         let platforms = ["news", "tver", "youtube", "yahoonews", "custom"]
         let base = Date(timeIntervalSince1970: 1_800_000_000)
@@ -989,7 +991,7 @@ final class FeedMergingTests: XCTestCase {
             let keyword = "Oshi \(termIndex)"
             for itemIndex in 0..<itemsPerTerm {
                 let platform = platforms[itemIndex % platforms.count]
-                let published = ISO8601DateFormatter().string(from: base.addingTimeInterval(Double(termIndex * itemsPerTerm + itemIndex)))
+                let published = Self.perfBatchDateFormatter.string(from: base.addingTimeInterval(Double(termIndex * itemsPerTerm + itemIndex)))
                 items.append(FeedItem(
                     id: "\(platform):\(runID)-\(termIndex)-\(itemIndex)",
                     platform: platform,
@@ -1013,10 +1015,15 @@ final class FeedMergingTests: XCTestCase {
         db.feedItems = Self.makeSyntheticRefreshBatch(runID: "seed", termCount: 20, itemsPerTerm: 30)
         XCTAssertFalse(db.feedItems.isEmpty)
 
+        // Pre-generate batches outside the measured closure — measure()
+        // invokes its block 10 times by default, and building the fixture
+        // data (date formatting, string interpolation) is test overhead,
+        // not part of what we're actually timing.
+        let batches = (0..<10).map { Self.makeSyntheticRefreshBatch(runID: "run\($0)", termCount: 20, itemsPerTerm: 30) }
         var runIndex = 0
         measure {
+            let batch = batches[runIndex % batches.count]
             runIndex += 1
-            let batch = Self.makeSyntheticRefreshBatch(runID: "run\(runIndex)", termCount: 20, itemsPerTerm: 30)
             _ = db.mergeItemsBatchedResult(newItemsBatches: [batch])
         }
     }
