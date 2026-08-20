@@ -738,27 +738,34 @@ class LocalDB: ObservableObject {
         }
         var addedCount = 0
         var addedItems: [FeedItem] = []
-        
-        let filteredNew = newItemsBatches.flatMap { $0 }.filter { item in
+        var addedKeys: [String] = []
+
+        // Compute each incoming item's key once (it's a string interpolation,
+        // not free) instead of recomputing it here and again in the merge
+        // loop below.
+        var newKeyed: [(item: FeedItem, key: String)] = []
+        newKeyed.reserveCapacity(newItemsBatches.reduce(0) { $0 + $1.count })
+        for item in newItemsBatches.lazy.flatMap({ $0 }) {
             let key = Self.feedItemKey(item)
             let isHidden = self.hiddenItems.contains(key)
             let isSearchFallback = Self.isSearchFallbackItem(item)
-            return !isHidden && !isSearchFallback && !FeedItemPolicy.shouldPruneLegacyYouTubeItem(item)
+            guard !isHidden, !isSearchFallback, !FeedItemPolicy.shouldPruneLegacyYouTubeItem(item) else { continue }
+            newKeyed.append((item, key))
         }
-        
+
         var currentMap = [String: FeedItem]()
         for item in self.feedItems {
             if FeedItemPolicy.shouldPruneLegacyYouTubeItem(item) { continue }
             currentMap[Self.feedItemKey(item)] = item
         }
         let wasFirstLoad = currentMap.isEmpty
-        
-        for item in filteredNew {
-            let key = Self.feedItemKey(item)
+
+        for (item, key) in newKeyed {
             if currentMap[key] == nil {
                 currentMap[key] = item
                 addedCount += 1
                 addedItems.append(item)
+                addedKeys.append(key)
             } else {
                 // Merge/update fields if needed (like title length, content, published date)
                 let existing = currentMap[key]!
@@ -782,7 +789,7 @@ class LocalDB: ObservableObject {
         
         let sorted = currentMap.values.sorted(by: feedItemSortPrecedes)
         let preserveAddedItems = !self.feedItems.isEmpty
-        let preservedKeys = preserveAddedItems ? Set(addedItems.map(Self.feedItemKey)) : []
+        let preservedKeys = preserveAddedItems ? Set(addedKeys) : []
         let finalItems = Self.cappedFeedItems(
             sorted,
             preserving: preservedKeys,
@@ -793,7 +800,9 @@ class LocalDB: ObservableObject {
         // that were immediately evicted as too old.
         if !addedItems.isEmpty && !wasFirstLoad {
             let survivedKeys = Set(finalItems.map(Self.feedItemKey))
-            let notifyItems = addedItems.filter { survivedKeys.contains(Self.feedItemKey($0)) }
+            let notifyItems = zip(addedItems, addedKeys)
+                .filter { survivedKeys.contains($0.1) }
+                .map(\.0)
             if !notifyItems.isEmpty {
                 let terms = self.terms
                 if let notificationHandler {
@@ -846,24 +855,36 @@ class LocalDB: ObservableObject {
     ) -> [FeedItem] {
         guard sortedItems.count > maxFeedItems else { return sortedItems }
 
+        // Each item's key and normalized platform are needed repeatedly below
+        // (feedItemKey allocates a string, normalizeID trims+lowercases) —
+        // compute both once per item instead of recomputing them on every
+        // pass, and instead of rescanning the full list once per subscribed
+        // platform.
+        let keys = sortedItems.map(feedItemKey)
+        let normalizedPlatforms = sortedItems.map { PlatformRegistry.normalizeID($0.platform) }
+
         // Each pass below only decides which keys survive the cap; membership
         // is tracked in `selectedKeys` and the result is reassembled with a
         // single filter at the end, preserving `sortedItems`' existing order
         // instead of re-sorting the selection after every pass.
         var selectedKeys = Set<String>()
 
-        preservedPass: for item in sortedItems where preservedKeys.contains(feedItemKey(item)) {
-            guard selectedKeys.insert(feedItemKey(item)).inserted else { continue }
+        preservedPass: for index in sortedItems.indices where preservedKeys.contains(keys[index]) {
+            guard selectedKeys.insert(keys[index]).inserted else { continue }
             if selectedKeys.count >= maxFeedItems { break preservedPass }
         }
 
         if selectedKeys.count < maxFeedItems {
             let subscribed = Set(subscribedPlatforms.filter { $0 != "custom" }.map(PlatformRegistry.normalizeID))
+            var indicesByPlatform: [String: [Int]] = [:]
+            for index in sortedItems.indices where subscribed.contains(normalizedPlatforms[index]) {
+                indicesByPlatform[normalizedPlatforms[index], default: []].append(index)
+            }
             platformPass: for platformId in subscribed.sorted() {
                 var keptForPlatform = 0
                 let targetCount = minRetainedFeedItems(for: platformId)
-                for item in sortedItems where PlatformRegistry.normalizeID(item.platform) == platformId {
-                    guard selectedKeys.insert(feedItemKey(item)).inserted else { continue }
+                for index in indicesByPlatform[platformId] ?? [] {
+                    guard selectedKeys.insert(keys[index]).inserted else { continue }
                     keptForPlatform += 1
                     if selectedKeys.count >= maxFeedItems { break platformPass }
                     if keptForPlatform >= targetCount { break }
@@ -872,13 +893,13 @@ class LocalDB: ObservableObject {
         }
 
         if selectedKeys.count < maxFeedItems {
-            for item in sortedItems {
+            for key in keys {
                 guard selectedKeys.count < maxFeedItems else { break }
-                selectedKeys.insert(feedItemKey(item))
+                selectedKeys.insert(key)
             }
         }
 
-        return sortedItems.filter { selectedKeys.contains(feedItemKey($0)) }
+        return sortedItems.indices.filter { selectedKeys.contains(keys[$0]) }.map { sortedItems[$0] }
     }
 
     private static func minRetainedFeedItems(for platformId: String) -> Int {

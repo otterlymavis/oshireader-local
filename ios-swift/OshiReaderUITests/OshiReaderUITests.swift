@@ -10,6 +10,14 @@ final class OshiReaderUITests: XCTestCase {
         app.launch()
     }
 
+    func testAppLaunchPerformance() throws {
+        measure(metrics: [XCTApplicationLaunchMetric()]) {
+            let freshApp = XCUIApplication()
+            freshApp.launchArguments = ["--uitesting", "--uitesting-source-status"]
+            freshApp.launch()
+        }
+    }
+
     func testAddKeywordFlow() throws {
         tapTab(index: 4, labels: ["Settings"])
 

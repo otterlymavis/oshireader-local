@@ -978,6 +978,49 @@ final class FeedMergingTests: XCTestCase {
         XCTAssertEqual(batch.survivingItems(in: [surviving]).map(\.id), [surviving.id])
     }
 
+    /// Simulates the merge step of a real refresh: ~20 watch terms each
+    /// returning ~30 items, merged into a feed already at the 600-item cap.
+    private static func makeSyntheticRefreshBatch(runID: String, termCount: Int = 20, itemsPerTerm: Int = 30) -> [FeedItem] {
+        let platforms = ["news", "tver", "youtube", "yahoonews", "custom"]
+        let base = Date(timeIntervalSince1970: 1_800_000_000)
+        var items: [FeedItem] = []
+        items.reserveCapacity(termCount * itemsPerTerm)
+        for termIndex in 0..<termCount {
+            let keyword = "Oshi \(termIndex)"
+            for itemIndex in 0..<itemsPerTerm {
+                let platform = platforms[itemIndex % platforms.count]
+                let published = ISO8601DateFormatter().string(from: base.addingTimeInterval(Double(termIndex * itemsPerTerm + itemIndex)))
+                items.append(FeedItem(
+                    id: "\(platform):\(runID)-\(termIndex)-\(itemIndex)",
+                    platform: platform,
+                    url: "https://example.com/\(runID)/\(termIndex)/\(itemIndex)",
+                    title: "Synthetic item \(termIndex)-\(itemIndex)",
+                    content_text: "Body text for perf test item \(termIndex)-\(itemIndex)",
+                    author: nil,
+                    thumbnail_url: itemIndex.isMultiple(of: 2) ? "https://example.com/thumb.jpg" : nil,
+                    media_type: platform == "youtube" ? "video" : "article",
+                    published_at: published,
+                    watch_term_keyword: keyword,
+                    fetched_at: published
+                ))
+            }
+        }
+        return items
+    }
+
+    @MainActor
+    func testMergePerformanceForFullRefreshBatch() throws {
+        db.feedItems = Self.makeSyntheticRefreshBatch(runID: "seed", termCount: 20, itemsPerTerm: 30)
+        XCTAssertFalse(db.feedItems.isEmpty)
+
+        var runIndex = 0
+        measure {
+            runIndex += 1
+            let batch = Self.makeSyntheticRefreshBatch(runID: "run\(runIndex)", termCount: 20, itemsPerTerm: 30)
+            _ = db.mergeItemsBatchedResult(newItemsBatches: [batch])
+        }
+    }
+
     @MainActor
     func testCancelledNotificationTaskDoesNotScheduleRequest() async {
         let center = MockNotificationCenter(status: .authorized)
