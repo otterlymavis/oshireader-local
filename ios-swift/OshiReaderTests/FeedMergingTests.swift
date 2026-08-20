@@ -692,10 +692,11 @@ final class FeedMergingTests: XCTestCase {
 
         await manager.notifyForNewItems(items, terms: [enabledTerm, disabledTerm])
 
-        XCTAssertEqual(center.requests.count, 1)
-        XCTAssertEqual(center.requests.first?.content.title, "Enabled Oshi")
-        XCTAssertEqual(center.requests.first?.content.body, "Enabled second\n+1 more")
+        XCTAssertEqual(center.requests.count, 2)
+        XCTAssertTrue(center.requests.allSatisfy { $0.content.title == "Enabled Oshi" })
+        XCTAssertEqual(center.requests.first?.content.body, "Enabled second")
         XCTAssertEqual(center.requests.first?.content.userInfo["source"] as? String, "note_rss")
+        XCTAssertEqual(center.requests.last?.content.body, "Enabled first")
         XCTAssertNil(center.requests.first?.trigger)
     }
 
@@ -781,7 +782,7 @@ final class FeedMergingTests: XCTestCase {
         await manager.notifyForNewItems([item], terms: [term])
 
         XCTAssertEqual(center.requests.count, 1)
-        XCTAssertEqual(center.requests.first?.identifier, "oshireader-new-term-digest")
+        XCTAssertEqual(center.requests.first?.identifier, "oshireader-new-term-digest-news:digest")
         XCTAssertEqual(center.removedPendingIdentifiers.count, 2)
     }
 
@@ -794,13 +795,13 @@ final class FeedMergingTests: XCTestCase {
         let renamed = WatchTerm(id: original.id, keyword: "Renamed Oshi", notify_on_new: true)
 
         let originalItem = FeedItem(
-            id: "news:original", platform: "news", url: "https://example.com/original",
+            id: "news:same-item", platform: "news", url: "https://example.com/same-item",
             title: "Original", content_text: nil, author: nil, thumbnail_url: nil,
             media_type: "article", published_at: nowString, watch_term_keyword: original.keyword,
             fetched_at: nowString
         )
         let renamedItem = FeedItem(
-            id: "news:renamed", platform: "news", url: "https://example.com/renamed",
+            id: "news:same-item", platform: "news", url: "https://example.com/same-item",
             title: "Renamed", content_text: nil, author: nil, thumbnail_url: nil,
             media_type: "article", published_at: nowString, watch_term_keyword: renamed.keyword,
             fetched_at: nowString
@@ -810,18 +811,42 @@ final class FeedMergingTests: XCTestCase {
         await manager.notifyForNewItems([renamedItem], terms: [renamed])
 
         XCTAssertEqual(center.requests.count, 1)
-        XCTAssertEqual(center.requests.first?.identifier, "oshireader-new-term-stable-term")
+        XCTAssertEqual(center.requests.first?.identifier, "oshireader-new-term-stable-term-news:same-item")
     }
 
     @MainActor
-    func testTermNotificationCanBeClearedByStableID() {
+    func testTermNotificationCanBeClearedByStableID() async {
         let center = MockNotificationCenter(status: .authorized)
         let manager = NotificationManager(center: center)
+        let nowString = ISO8601DateFormatter().string(from: Date())
+        let term = WatchTerm(id: "term-to-clear", keyword: "Clear Oshi", notify_on_new: true)
+        let items = [
+            FeedItem(
+                id: "news:clear-1", platform: "news", url: "https://example.com/clear-1",
+                title: "One", content_text: nil, author: nil, thumbnail_url: nil,
+                media_type: "article", published_at: nowString, watch_term_keyword: term.keyword,
+                fetched_at: nowString
+            ),
+            FeedItem(
+                id: "news:clear-2", platform: "news", url: "https://example.com/clear-2",
+                title: "Two", content_text: nil, author: nil, thumbnail_url: nil,
+                media_type: "article", published_at: nowString, watch_term_keyword: term.keyword,
+                fetched_at: nowString
+            )
+        ]
+        await manager.notifyForNewItems(items, terms: [term])
+        center.deliveredIdentifiers = center.requests.map(\.identifier)
 
-        manager.clearNotification(forTermID: "term-to-clear")
+        await manager.clearNotification(forTermID: "term-to-clear")
 
-        XCTAssertEqual(center.removedPendingIdentifiers, [["oshireader-new-term-term-to-clear"]])
-        XCTAssertEqual(center.removedDeliveredIdentifiers, [["oshireader-new-term-term-to-clear"]])
+        XCTAssertEqual(
+            Set(center.removedPendingIdentifiers.last ?? []),
+            Set(["oshireader-new-term-term-to-clear-news:clear-1", "oshireader-new-term-term-to-clear-news:clear-2"])
+        )
+        XCTAssertEqual(
+            Set(center.removedDeliveredIdentifiers.last ?? []),
+            Set(["oshireader-new-term-term-to-clear-news:clear-1", "oshireader-new-term-term-to-clear-news:clear-2"])
+        )
     }
 
     @MainActor
@@ -1022,5 +1047,16 @@ private final class MockNotificationCenter: NotificationCenterClient {
 
     func removeDeliveredNotifications(withIdentifiers identifiers: [String]) {
         removedDeliveredIdentifiers.append(identifiers)
+        deliveredIdentifiers.removeAll { identifiers.contains($0) }
+    }
+
+    var deliveredIdentifiers: [String] = []
+
+    func pendingNotificationRequests() async -> [UNNotificationRequest] {
+        requests
+    }
+
+    func deliveredNotificationIdentifiers() async -> [String] {
+        deliveredIdentifiers
     }
 }

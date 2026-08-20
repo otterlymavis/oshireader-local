@@ -236,7 +236,9 @@ class LocalDB: ObservableObject {
         guard let data = try? Data(contentsOf: termsURL),
               let terms = try? decoder.decode([WatchTerm].self, from: data) else { return }
         for term in terms {
-            NotificationManager.shared.clearNotification(forTermID: term.id)
+            Task { @MainActor in
+                await NotificationManager.shared.clearNotification(forTermID: term.id)
+            }
         }
     }
     
@@ -639,7 +641,7 @@ class LocalDB: ObservableObject {
                     term.notify_on_new = notifyOnNew
                     if !notifyOnNew {
                         Task { @MainActor in
-                            NotificationManager.shared.clearNotification(forTermID: id)
+                            await NotificationManager.shared.clearNotification(forTermID: id)
                         }
                     }
                 }
@@ -662,7 +664,7 @@ class LocalDB: ObservableObject {
                 self.terms.remove(at: term)
                 Task { @MainActor in
                     RecentTermUsageStore.shared.remove(termID: id)
-                    NotificationManager.shared.clearNotification(forTermID: id)
+                    await NotificationManager.shared.clearNotification(forTermID: id)
                 }
                 self.saveTermsSoon()
                 

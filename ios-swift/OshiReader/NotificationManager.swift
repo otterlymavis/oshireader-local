@@ -10,11 +10,17 @@ protocol NotificationCenterClient {
     func removeAllDeliveredNotifications()
     func removePendingNotificationRequests(withIdentifiers identifiers: [String])
     func removeDeliveredNotifications(withIdentifiers identifiers: [String])
+    func pendingNotificationRequests() async -> [UNNotificationRequest]
+    func deliveredNotificationIdentifiers() async -> [String]
 }
 
 extension UNUserNotificationCenter: NotificationCenterClient {
     func authorizationStatus() async -> UNAuthorizationStatus {
         await notificationSettings().authorizationStatus
+    }
+
+    func deliveredNotificationIdentifiers() async -> [String] {
+        await deliveredNotifications().map { $0.request.identifier }
     }
 }
 
@@ -91,11 +97,20 @@ final class NotificationManager: ObservableObject {
         center.removeAllDeliveredNotifications()
     }
 
-    func clearNotification(forTermID termID: String) {
+    func clearNotification(forTermID termID: String) async {
         localNotificationGeneration &+= 1
-        let identifier = Self.notificationIdentifier(forTermID: termID)
-        center.removePendingNotificationRequests(withIdentifiers: [identifier])
-        center.removeDeliveredNotifications(withIdentifiers: [identifier])
+        let prefix = Self.notificationIdentifierPrefix(forTermID: termID)
+        let pendingIDs = await center.pendingNotificationRequests()
+            .map(\.identifier)
+            .filter { $0.hasPrefix(prefix) }
+        let deliveredIDs = await center.deliveredNotificationIdentifiers()
+            .filter { $0.hasPrefix(prefix) }
+        if !pendingIDs.isEmpty {
+            center.removePendingNotificationRequests(withIdentifiers: pendingIDs)
+        }
+        if !deliveredIDs.isEmpty {
+            center.removeDeliveredNotifications(withIdentifiers: deliveredIDs)
+        }
     }
 
     @discardableResult
@@ -181,54 +196,55 @@ final class NotificationManager: ObservableObject {
         for (keyword, keywordItems) in itemsByKeyword where !keywordItems.isEmpty {
             guard !Task.isCancelled, generation == localNotificationGeneration else { return }
             guard let term = notifiedTermsByKeyword[keyword] else { continue }
-            let count = keywordItems.count
-            let representative = keywordItems.sorted {
+            let sortedItems = keywordItems.sorted {
                 (parseISO8601Date($0.published_at) ?? .distantPast) >
                 (parseISO8601Date($1.published_at) ?? .distantPast)
-            }.first
-            let content = UNMutableNotificationContent()
-            content.title = keyword
-            content.body = notificationBody(for: representative, count: count)
-            content.sound = .default
-            content.categoryIdentifier = Self.categoryIdentifier
-            if includeAttachments,
-               let attachment = await notificationAttachment(for: representative) {
-                content.attachments = [attachment]
-            }
-            if let representative {
-                var userInfo: [String: Any] = [
-                    "feed_item_id": representative.id,
-                    "watch_term_keyword": representative.watch_term_keyword,
-                    "platform": representative.platform,
-                    "url": representative.url,
-                    "media_type": representative.media_type,
-                    "published_at": representative.published_at,
-                    "fetched_at": representative.fetched_at
-                ]
-                if let title = representative.title { userInfo["title"] = title }
-                if let contentText = representative.content_text { userInfo["content_text"] = contentText }
-                if let author = representative.author { userInfo["author"] = author }
-                if let thumbnailURL = representative.thumbnail_url { userInfo["thumbnail_url"] = thumbnailURL }
-                if let source = representative.source { userInfo["source"] = source }
-                content.userInfo = userInfo
             }
 
-            let request = UNNotificationRequest(
-                identifier: Self.notificationIdentifier(forTermID: term.id),
-                content: content,
-                trigger: nil
-            )
-            do {
+            for item in sortedItems {
                 guard !Task.isCancelled, generation == localNotificationGeneration else { return }
-                center.removePendingNotificationRequests(withIdentifiers: [request.identifier])
-                try await center.add(request)
-                guard !Task.isCancelled, generation == localNotificationGeneration else {
-                    center.removePendingNotificationRequests(withIdentifiers: [request.identifier])
-                    center.removeDeliveredNotifications(withIdentifiers: [request.identifier])
-                    return
+                let content = UNMutableNotificationContent()
+                content.title = keyword
+                content.body = notificationBody(for: item, count: 1)
+                content.sound = .default
+                content.categoryIdentifier = Self.categoryIdentifier
+                if includeAttachments,
+                   let attachment = await notificationAttachment(for: item) {
+                    content.attachments = [attachment]
                 }
-            } catch {
-                AppLogger.notifications.error("Notification scheduling failed for \(keyword): \(error.localizedDescription)")
+                var userInfo: [String: Any] = [
+                    "feed_item_id": item.id,
+                    "watch_term_keyword": item.watch_term_keyword,
+                    "platform": item.platform,
+                    "url": item.url,
+                    "media_type": item.media_type,
+                    "published_at": item.published_at,
+                    "fetched_at": item.fetched_at
+                ]
+                if let title = item.title { userInfo["title"] = title }
+                if let contentText = item.content_text { userInfo["content_text"] = contentText }
+                if let author = item.author { userInfo["author"] = author }
+                if let thumbnailURL = item.thumbnail_url { userInfo["thumbnail_url"] = thumbnailURL }
+                if let source = item.source { userInfo["source"] = source }
+                content.userInfo = userInfo
+
+                let request = UNNotificationRequest(
+                    identifier: Self.notificationIdentifier(forTermID: term.id, itemID: item.id),
+                    content: content,
+                    trigger: nil
+                )
+                do {
+                    guard !Task.isCancelled, generation == localNotificationGeneration else { return }
+                    center.removePendingNotificationRequests(withIdentifiers: [request.identifier])
+                    try await center.add(request)
+                    guard !Task.isCancelled, generation == localNotificationGeneration else {
+                        center.removePendingNotificationRequests(withIdentifiers: [request.identifier])
+                        center.removeDeliveredNotifications(withIdentifiers: [request.identifier])
+                        return
+                    }
+                } catch {
+                    AppLogger.notifications.error("Notification scheduling failed for \(keyword): \(error.localizedDescription)")
+                }
             }
         }
     }
@@ -275,9 +291,7 @@ final class NotificationManager: ObservableObject {
             ?? cleanDisplayText(item?.content_text)
             ?? item?.url
             ?? "\(count) new item\(count == 1 ? "" : "s") found."
-        let limitedPreview = preview.count > 140 ? "\(preview.prefix(137))..." : preview
-        guard count > 1 else { return limitedPreview }
-        return "\(limitedPreview)\n+\(count - 1) more"
+        return preview.count > 140 ? "\(preview.prefix(137))..." : preview
     }
 
     private func notificationAttachment(for item: FeedItem?) async -> UNNotificationAttachment? {
@@ -332,7 +346,11 @@ final class NotificationManager: ObservableObject {
         }
     }
 
-    private static func notificationIdentifier(forTermID termID: String) -> String {
-        "oshireader-new-term-\(termID)"
+    private static func notificationIdentifierPrefix(forTermID termID: String) -> String {
+        "oshireader-new-term-\(termID)-"
+    }
+
+    private static func notificationIdentifier(forTermID termID: String, itemID: String) -> String {
+        "\(notificationIdentifierPrefix(forTermID: termID))\(itemID)"
     }
 }
