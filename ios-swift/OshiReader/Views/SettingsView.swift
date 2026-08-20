@@ -78,6 +78,7 @@ struct SettingsView: View {
     @Environment(\.scenePhase) private var scenePhase
     
     @State private var showingAddKeywordAlert = false
+    @State private var showingPlatformSheet = false
     @State private var showingClearAllAlert = false
     @State private var newKeyword = ""
     @State private var newCollectionMode = "all_info"
@@ -178,20 +179,7 @@ struct SettingsView: View {
                 
                 // Section: Subscribed Platforms
                 Section {
-                    Menu {
-                        ForEach(allPlatforms, id: \.0) { key, label in
-                            Toggle(
-                                label,
-                                isOn: Binding(
-                                    get: { db.subscribedPlatforms.contains(key) },
-                                    set: { isSubscribed in
-                                        setPlatformSubscription(key, isSubscribed: isSubscribed)
-                                    }
-                                )
-                            )
-                            .accessibilityIdentifier("settings.platformToggle.\(key)")
-                        }
-                    } label: {
+                    Button(action: { showingPlatformSheet = true }) {
                         HStack {
                             Label(i18n.t("platformSettings"), systemImage: "dot.radiowaves.left.and.right")
                                 .foregroundColor(theme.colors.text)
@@ -199,7 +187,7 @@ struct SettingsView: View {
                             Text("\(db.subscribedPlatforms.count)/\(allPlatforms.count)")
                                 .font(.subheadline)
                                 .foregroundColor(theme.colors.textMuted)
-                            Image(systemName: "chevron.up.chevron.down")
+                            Image(systemName: "chevron.right")
                                 .font(.caption2)
                                 .foregroundColor(theme.colors.textMuted)
                         }
@@ -402,6 +390,15 @@ struct SettingsView: View {
                     collectionMode: $newCollectionMode,
                     sourceMode: $newSourceMode,
                     selectedPlatforms: $newSelectedPlatforms
+                )
+            }
+            .sheet(isPresented: $showingPlatformSheet) {
+                PlatformSubscriptionSheet(
+                    db: db,
+                    theme: theme,
+                    i18n: i18n,
+                    allPlatforms: allPlatforms,
+                    isPresented: $showingPlatformSheet
                 )
             }
             .alert(i18n.t("clearAllDataAlert"), isPresented: $showingClearAllAlert) {
@@ -1054,16 +1051,6 @@ struct SettingsView: View {
         }
     }
 
-    private func setPlatformSubscription(_ key: String, isSubscribed: Bool) {
-        var list = db.subscribedPlatforms
-        if isSubscribed {
-            if !list.contains(key) { list.append(key) }
-        } else {
-            list.removeAll(where: { $0 == key })
-        }
-        db.setSubscribedPlatforms(platforms: list)
-    }
-
     private func displayName(for choice: AppFontChoice) -> String {
         choice.displayName
     }
@@ -1460,6 +1447,71 @@ private struct AddKeywordSheet: View {
         .padding()
         .background(theme.colors.bg)
         .presentationDetents([.medium])
+    }
+}
+
+private struct PlatformSubscriptionSheet: View {
+    @ObservedObject var db: LocalDB
+    @ObservedObject var theme: ThemeManager
+    @ObservedObject var i18n: I18nManager
+    let allPlatforms: [(String, String)]
+    @Binding var isPresented: Bool
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 140), spacing: 10)], spacing: 10) {
+                    ForEach(allPlatforms, id: \.0) { key, label in
+                        Button {
+                            toggle(key)
+                        } label: {
+                            HStack {
+                                Image(systemName: db.subscribedPlatforms.contains(key) ? "checkmark.square.fill" : "square")
+                                    .foregroundColor(db.subscribedPlatforms.contains(key) ? theme.colors.primary : theme.colors.textMuted)
+                                Text(label).lineLimit(1)
+                            }
+                            .font(.subheadline)
+                            .foregroundColor(theme.colors.text)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .accessibilityIdentifier("settings.platformToggle.\(key)")
+                    }
+                }
+                .padding()
+            }
+            .background(theme.colors.bg)
+            .navigationTitle(i18n.t("platformSettings"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button(db.subscribedPlatforms.count == allPlatforms.count ? i18n.t("deselectAll") : i18n.t("selectAll")) {
+                        if db.subscribedPlatforms.count == allPlatforms.count {
+                            db.setSubscribedPlatforms(platforms: [])
+                        } else {
+                            db.setSubscribedPlatforms(platforms: allPlatforms.map { $0.0 })
+                        }
+                    }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(i18n.t("close")) {
+                        isPresented = false
+                    }
+                    .accessibilityIdentifier("settings.platformSheetCloseButton")
+                }
+            }
+        }
+        .accessibilityIdentifier("settings.platformSheet")
+        .presentationDetents([.medium, .large])
+    }
+
+    private func toggle(_ key: String) {
+        var list = db.subscribedPlatforms
+        if list.contains(key) {
+            list.removeAll(where: { $0 == key })
+        } else {
+            list.append(key)
+        }
+        db.setSubscribedPlatforms(platforms: list)
     }
 }
 

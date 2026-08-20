@@ -822,6 +822,18 @@ class I18nManager: ObservableObject {
             "zh-TW": "訂閱平台",
             "zh-CN": "订阅平台"
         ],
+        "selectAll": [
+            "en": "Select All",
+            "ja": "すべて選択",
+            "zh-TW": "全選",
+            "zh-CN": "全选"
+        ],
+        "deselectAll": [
+            "en": "Deselect All",
+            "ja": "選択解除",
+            "zh-TW": "取消全選",
+            "zh-CN": "取消全选"
+        ],
         "notificationsSection": [
             "en": "Notifications",
             "ja": "通知",
