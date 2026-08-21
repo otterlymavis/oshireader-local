@@ -990,6 +990,12 @@ class I18nManager: ObservableObject {
             "zh-TW": "在安靜時段中有 %d 則新項目。",
             "zh-CN": "在安静时段中有 %d 条新项目。"
         ],
+        "manyActiveTermsWarning": [
+            "en": "%d active watch terms — refresh may take longer.",
+            "ja": "アクティブなキーワードが%d件あります。更新に時間がかかる場合があります。",
+            "zh-TW": "已啟用 %d 個追蹤關鍵字，更新可能需要更長時間。",
+            "zh-CN": "已启用 %d 个追踪关键字,更新可能需要更长时间。"
+        ],
         "quietHoursToggle": [
             "en": "Quiet Hours",
             "ja": "サイレント時間",

@@ -139,6 +139,13 @@ struct SettingsView: View {
     static let allPlatforms: [(String, String)] = PlatformRegistry.all.map { ($0.id, "\($0.icon) \($0.name)") }
     private var allPlatforms: [(String, String)] { Self.allPlatforms }
 
+    // Refresh time grows roughly linearly with active term count since
+    // ingestion only runs a few terms concurrently — past this many, a
+    // full refresh is noticeably slower, so nudge the user rather than
+    // hard-blocking additional terms.
+    static let manyActiveTermsThreshold = 15
+    private var activeTermCount: Int { db.terms.lazy.filter(\.is_active).count }
+
     var body: some View {
         NavigationStack {
             Form {
@@ -175,6 +182,13 @@ struct SettingsView: View {
                         .foregroundColor(theme.colors.primary)
                     }
                     .accessibilityIdentifier("settings.addKeywordButton")
+
+                    if activeTermCount > Self.manyActiveTermsThreshold {
+                        Label(i18n.tFormat("manyActiveTermsWarning", activeTermCount), systemImage: "exclamationmark.triangle")
+                            .font(.caption)
+                            .foregroundColor(.orange)
+                            .accessibilityIdentifier("settings.manyActiveTermsWarning")
+                    }
                 }
                 
                 // Section: Subscribed Platforms
