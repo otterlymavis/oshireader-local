@@ -825,7 +825,15 @@ class LocalDB: ObservableObject {
                 .filter { survivedKeys.contains($0.1) }
                 .map(\.0)
                 .filter {
-                    guard let published = parseISO8601Date($0.published_at) else { return false }
+                    // 5ch/girlschannel published_at reflects thread creation, not the
+                    // latest bump, so it's not a useful staleness signal there — same
+                    // exemption computeQueryFeed's cutoff check makes.
+                    if Self.discussionActivityPlatforms.contains(normalizedPlatformKey($0.platform)) {
+                        return true
+                    }
+                    // An unparseable date means we can't tell whether the item is
+                    // stale; fail open rather than silently swallow the notification.
+                    guard let published = parseISO8601Date($0.published_at) else { return true }
                     return now.timeIntervalSince(published) <= Self.maxNotifiableItemAge
                 }
             if !notifyItems.isEmpty {
