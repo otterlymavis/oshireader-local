@@ -688,6 +688,13 @@ class LocalDB: ObservableObject {
         let didMutate: Bool
     }
 
+    // Items older than this never trigger a notification, even when they're
+    // new to local storage — e.g. a freshly created watch term, a newly
+    // enabled platform, or an item that re-surfaces after being evicted by
+    // the feed cap all look "new" to the merge but can carry a publish date
+    // from long before this device ever saw them.
+    private static let maxNotifiableItemAge: TimeInterval = 3 * 24 * 60 * 60
+
     @MainActor
     func mergeItems(
         newItems: [FeedItem],
@@ -813,9 +820,14 @@ class LocalDB: ObservableObject {
         // that were immediately evicted as too old.
         if !addedItems.isEmpty && !wasFirstLoad {
             let survivedKeys = Set(finalItems.map(Self.feedItemKey))
+            let now = Date()
             let notifyItems = zip(addedItems, addedKeys)
                 .filter { survivedKeys.contains($0.1) }
                 .map(\.0)
+                .filter {
+                    guard let published = parseISO8601Date($0.published_at) else { return false }
+                    return now.timeIntervalSince(published) <= Self.maxNotifiableItemAge
+                }
             if !notifyItems.isEmpty {
                 let terms = self.terms
                 if let notificationHandler {
