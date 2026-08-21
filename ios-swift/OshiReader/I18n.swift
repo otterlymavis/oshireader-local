@@ -991,10 +991,10 @@ class I18nManager: ObservableObject {
             "zh-CN": "在安静时段中有 %d 条新项目。"
         ],
         "manyActiveTermsWarning": [
-            "en": "%d active watch terms — refresh may take longer.",
-            "ja": "アクティブなキーワードが%d件あります。更新に時間がかかる場合があります。",
-            "zh-TW": "已啟用 %d 個追蹤關鍵字，更新可能需要更長時間。",
-            "zh-CN": "已启用 %d 个追踪关键字,更新可能需要更长时间。"
+            "en": "%d active watch terms — refresh may take longer. Upgrade to OshiReader+ for faster refresh.",
+            "ja": "アクティブなキーワードが%d件あります。更新に時間がかかる場合があります。OshiReader+にアップグレードすると更新が速くなります。",
+            "zh-TW": "已啟用 %d 個追蹤關鍵字，更新可能需要更長時間。升級至 OshiReader+ 以加快更新速度。",
+            "zh-CN": "已启用 %d 个追踪关键字,更新可能需要更长时间。升级至 OshiReader+ 以加快更新速度。"
         ],
         "quietHoursToggle": [
             "en": "Quiet Hours",
