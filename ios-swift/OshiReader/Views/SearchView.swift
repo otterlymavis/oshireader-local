@@ -329,7 +329,7 @@ struct SearchView: View {
         let disabled = linkRequiresKeyword(link) && trimmedKeyword.isEmpty
 
         return NavigationLink(value: feedItem(for: link)) {
-            searchLinkRowContent(link)
+            searchLinkRowContent(link, disabled: disabled)
         }
         .buttonStyle(.plain)
         .disabled(disabled)
@@ -344,16 +344,15 @@ struct SearchView: View {
             fieldFocused = false
             open(link)
         } label: {
-            searchLinkRowContent(link)
+            searchLinkRowContent(link, disabled: disabled)
         }
         .buttonStyle(.plain)
         .disabled(disabled)
         .accessibilityIdentifier("search.link.\(link.id)")
     }
 
-    private func searchLinkRowContent(_ link: SearchLink) -> some View {
+    private func searchLinkRowContent(_ link: SearchLink, disabled: Bool) -> some View {
         let meta = groupMeta[link.group] ?? groupMeta["News"]!
-        let disabled = linkRequiresKeyword(link) && trimmedKeyword.isEmpty
 
         return HStack(spacing: 12) {
             ZStack {
