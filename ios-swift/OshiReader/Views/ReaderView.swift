@@ -221,21 +221,28 @@ struct ReaderView: View {
         .toolbar {
             ToolbarItemGroup(placement: .navigationBarLeading) {
                 if !siblingItems.isEmpty {
+                    // Read each sibling once — both properties independently
+                    // re-scan siblingItems via currentSiblingIndex, and this
+                    // toolbar previously read each of them twice (once for
+                    // the button action, once for .disabled).
+                    let previous = previousSiblingItem
+                    let next = nextSiblingItem
+
                     Button {
-                        if let previousSiblingItem { navigate(to: previousSiblingItem) }
+                        if let previous { navigate(to: previous) }
                     } label: {
                         Image(systemName: "chevron.up")
                     }
-                    .disabled(previousSiblingItem == nil)
+                    .disabled(previous == nil)
                     .accessibilityLabel(i18n.t("readerPreviousArticle"))
                     .accessibilityIdentifier("reader.previousArticleButton")
 
                     Button {
-                        if let nextSiblingItem { navigate(to: nextSiblingItem) }
+                        if let next { navigate(to: next) }
                     } label: {
                         Image(systemName: "chevron.down")
                     }
-                    .disabled(nextSiblingItem == nil)
+                    .disabled(next == nil)
                     .accessibilityLabel(i18n.t("readerNextArticle"))
                     .accessibilityIdentifier("reader.nextArticleButton")
                 }
@@ -256,15 +263,16 @@ struct ReaderView: View {
             }
 
             ToolbarItem(placement: .navigationBarTrailing) {
+                let saved = isSaved
                 Button {
                     UIImpactFeedbackGenerator(style: .medium).impactOccurred()
                     _ = db.toggleSaved(item: currentItem)
                 } label: {
-                    Image(systemName: isSaved ? "bookmark.fill" : "bookmark")
+                    Image(systemName: saved ? "bookmark.fill" : "bookmark")
                         .foregroundColor(theme.colors.primary)
                 }
                 .accessibilityLabel(i18n.t("tabSaved"))
-                .accessibilityValue(isSaved ? "on" : "off")
+                .accessibilityValue(saved ? "on" : "off")
                 .accessibilityIdentifier("reader.bookmarkButton")
             }
 
