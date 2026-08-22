@@ -233,21 +233,57 @@ final class BackendClient {
 
     func fetchBackendFeed(
         platform: String? = nil,
+        termIDs: [Int] = [],
         limit: Int = 200,
+        offset: Int = 0,
         days: Int = 30,
-        since: String? = nil
+        since: String? = nil,
+        until: String? = nil
     ) async throws -> [FeedItem] {
         var query = [
             URLQueryItem(name: "limit", value: String(limit)),
+            URLQueryItem(name: "offset", value: String(offset)),
         ]
         if let since {
             query.append(URLQueryItem(name: "since", value: since))
         } else {
             query.append(URLQueryItem(name: "days", value: String(days)))
         }
+        if let until { query.append(URLQueryItem(name: "until", value: until)) }
+        if !termIDs.isEmpty {
+            query.append(URLQueryItem(name: "term_ids", value: termIDs.map(String.init).joined(separator: ",")))
+        }
         if let platform { query.append(URLQueryItem(name: "platform", value: platform)) }
         let payloads: [BackendFeedPayload] = try await request("api/feed/", queryItems: query)
         return payloads.map { $0.localItem(keyword: $0.watch_term_keyword) }
+    }
+
+    func fetchAllBackendFeed(
+        platform: String? = nil,
+        termIDs: [Int],
+        pageSize: Int = 200,
+        days: Int = 30,
+        since: String? = nil,
+        until: String
+    ) async throws -> [FeedItem] {
+        guard !termIDs.isEmpty else { return [] }
+        let boundedPageSize = min(200, max(1, pageSize))
+        var offset = 0
+        var allItems: [FeedItem] = []
+        while true {
+            let page = try await fetchBackendFeed(
+                platform: platform,
+                termIDs: termIDs,
+                limit: boundedPageSize,
+                offset: offset,
+                days: days,
+                since: since,
+                until: until
+            )
+            allItems.append(contentsOf: page)
+            guard page.count == boundedPageSize else { return allItems }
+            offset += page.count
+        }
     }
 
     func deletePushTerm(id: Int) async throws {

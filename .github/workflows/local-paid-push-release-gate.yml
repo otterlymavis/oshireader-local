@@ -145,6 +145,8 @@ jobs:
           python3 - <<'PY'
           import json
           import os
+          import uuid
+          import urllib.error
           import urllib.request
 
           base = os.environ["BACKEND_URL"].rstrip("/")
@@ -161,5 +163,42 @@ jobs:
               raise SystemExit("Backend APNs registration lacks bundle_id")
           if "/api/entitlements/apple-notifications" not in openapi.get("paths", {}):
               raise SystemExit("Backend lacks the Apple notification lifecycle endpoint")
-          print("Deployed backend paid-push contract is available")
+          feed_parameters = {
+              parameter.get("name")
+              for parameter in openapi.get("paths", {}).get("/api/feed/", {}).get("get", {}).get("parameters", [])
+          }
+          required_feed_parameters = {"term_ids", "offset", "since", "until"}
+          missing_feed_parameters = required_feed_parameters - feed_parameters
+          if missing_feed_parameters:
+              raise SystemExit(
+                  f"Backend feed snapshot contract is missing {sorted(missing_feed_parameters)}"
+              )
+
+          probe = urllib.request.Request(
+              f"{base}/api/feed/?limit=1",
+              headers={"X-Device-Secret": f"release-gate-unpaid-{uuid.uuid4()}"},
+          )
+          try:
+              urllib.request.urlopen(probe, timeout=30)
+          except urllib.error.HTTPError as error:
+              body = json.load(error)
+              detail = body.get("detail", {})
+              if error.code != 402 or detail.get("code") != "paid_backend_required":
+                  raise SystemExit(
+                      f"Backend unpaid-access probe returned HTTP {error.code}: {detail}"
+                  ) from error
+          else:
+              raise SystemExit("Backend feed accepted an unentitled device")
+
+          try:
+              urllib.request.urlopen(f"{base}/api/feed/matches/1/redirect", timeout=30)
+          except urllib.error.HTTPError as error:
+              if error.code != 403:
+                  raise SystemExit(
+                      f"Unsigned feed redirect returned HTTP {error.code}, expected 403"
+                  ) from error
+          else:
+              raise SystemExit("Backend accepted an unsigned enumerable feed redirect")
+
+          print("Deployed backend paid-push contract and access controls are available")
           PY
