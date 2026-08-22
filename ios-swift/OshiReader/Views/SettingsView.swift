@@ -928,25 +928,19 @@ struct SettingsView: View {
         switch cloudSync.status {
         case .idle:
             if let lastSyncedAt = cloudSync.lastSyncedAt {
-                return Self.relativeDateFormatter.localizedString(for: lastSyncedAt, relativeTo: Date())
+                return relativeTimeString(from: lastSyncedAt)
             }
             return i18n.t("iCloudSyncNeverSynced")
         case .syncing:
             return i18n.t("iCloudSyncSyncing")
         case .succeeded(let date):
-            return Self.relativeDateFormatter.localizedString(for: date, relativeTo: Date())
+            return relativeTimeString(from: date)
         case .failed(let message):
             return message
         case .unavailable(let message):
             return message
         }
     }
-
-    private static let relativeDateFormatter: RelativeDateTimeFormatter = {
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .abbreviated
-        return formatter
-    }()
 
     private var activeProfileName: String {
         profiles.profiles.first { $0.id == profiles.activeProfileID }?.name ?? i18n.t("active")
@@ -1210,6 +1204,7 @@ private struct TermRowView: View {
     let pushTermBeingUpdated: String?
     let onSetPushEnabled: (Bool, WatchTerm) async -> Void
     let onAliasLimitReached: () -> Void
+    @State private var showingSourceSelection = false
 
     var body: some View {
         HStack {
@@ -1320,7 +1315,7 @@ private struct TermRowView: View {
             .accessibilityLabel(term.collection_mode == "media_only" ? i18n.t("mediaOnly") : i18n.t("allInfo"))
             .accessibilityIdentifier("settings.keywordMode.\(term.keyword)")
 
-            sourceSelectionIconMenu
+            sourceSelectionButton
 
             // Push notifications bell button
             Button {
@@ -1394,31 +1389,9 @@ private struct TermRowView: View {
         addingAliasForId = nil
     }
 
-    private var sourceSelectionIconMenu: some View {
-        Menu {
-            Button {
-                db.updateTerm(id: term.id, sourceMode: .all, selectedPlatforms: [])
-            } label: {
-                Label(i18n.t("allSources"), systemImage: term.source_mode == .all ? "checkmark" : "globe")
-            }
-
-            ForEach(allPlatforms, id: \.0) { key, label in
-                Button {
-                    var selected = term.source_mode == .selected ? Set(term.selected_platforms) : []
-                    if term.source_mode == .all {
-                        selected = [key]
-                    } else if selected.contains(key) {
-                        selected.remove(key)
-                    } else {
-                        selected.insert(key)
-                    }
-                    guard !selected.isEmpty else { return }
-                    db.updateTerm(id: term.id, sourceMode: .selected, selectedPlatforms: Array(selected).sorted())
-                } label: {
-                    Label(label, systemImage: term.source_mode == .selected && term.selected_platforms.contains(key) ? "checkmark.square" : "square")
-                }
-                .accessibilityIdentifier("settings.keywordSource.\(term.keyword).\(key)")
-            }
+    private var sourceSelectionButton: some View {
+        Button {
+            showingSourceSelection = true
         } label: {
             Image(systemName: term.source_mode == .all ? "globe" : "line.3.horizontal.decrease.circle")
                 .font(.caption)
@@ -1427,7 +1400,57 @@ private struct TermRowView: View {
                 .background(theme.colors.divider)
                 .clipShape(Capsule())
         }
+        .buttonStyle(.plain)
+        .accessibilityLabel(i18n.t("sourceSelectionMenu"))
         .accessibilityIdentifier("settings.keywordSources.\(term.keyword)")
+        .sheet(isPresented: $showingSourceSelection) {
+            NavigationStack {
+                List {
+                    Button {
+                        db.updateTerm(id: term.id, sourceMode: .all, selectedPlatforms: [])
+                    } label: {
+                        Label(i18n.t("allSources"), systemImage: term.source_mode == .all ? "checkmark.circle.fill" : "globe")
+                    }
+                    .accessibilityIdentifier("settings.keywordSourceAll.\(term.keyword)")
+
+                    ForEach(allPlatforms, id: \.0) { key, label in
+                        Toggle(
+                            label,
+                            isOn: Binding(
+                                get: { term.source_mode == .selected && term.selected_platforms.contains(key) },
+                                set: { isOn in
+                                    var selected = term.source_mode == .selected ? Set(term.selected_platforms) : []
+                                    if term.source_mode == .all {
+                                        selected = isOn ? [key] : []
+                                    } else if isOn {
+                                        selected.insert(key)
+                                    } else {
+                                        selected.remove(key)
+                                    }
+                                    guard !selected.isEmpty else { return }
+                                    db.updateTerm(
+                                        id: term.id,
+                                        sourceMode: .selected,
+                                        selectedPlatforms: Array(selected).sorted()
+                                    )
+                                }
+                            )
+                        )
+                        .accessibilityIdentifier("settings.keywordSource.\(term.keyword).\(key)")
+                    }
+                }
+                .navigationTitle(i18n.t("sourceSelectionMenu"))
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button(i18n.t("close")) { showingSourceSelection = false }
+                            .accessibilityIdentifier("settings.keywordSourcesDone.\(term.keyword)")
+                    }
+                }
+            }
+            .presentationDetents([.medium, .large])
+            .accessibilityIdentifier("settings.keywordSourcesSheet.\(term.keyword)")
+        }
     }
 }
 

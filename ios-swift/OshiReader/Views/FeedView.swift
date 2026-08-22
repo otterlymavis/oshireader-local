@@ -1089,15 +1089,9 @@ struct FeedCard: View {
         .accessibilityIdentifier("feed.card.\(item.id)")
     }
     
-    private static let relativeFormatter: RelativeDateTimeFormatter = {
-        let f = RelativeDateTimeFormatter()
-        f.unitsStyle = .abbreviated
-        return f
-    }()
-
     private func relativeTime(from isoDate: String) -> String {
         guard let date = parseISO8601Date(isoDate) else { return "" }
-        return Self.relativeFormatter.localizedString(for: date, relativeTo: Date())
+        return relativeTimeString(from: date)
     }
 }
 

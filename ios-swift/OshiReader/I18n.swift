@@ -1136,6 +1136,12 @@ class I18nManager: ObservableObject {
             "zh-TW": "來源",
             "zh-CN": "来源"
         ],
+        "sourceSelectionMenu": [
+            "en": "Source Selection",
+            "ja": "ソース選択",
+            "zh-TW": "來源選擇",
+            "zh-CN": "来源选择"
+        ],
         "allSources": [
             "en": "All sources",
             "ja": "すべてのソース",

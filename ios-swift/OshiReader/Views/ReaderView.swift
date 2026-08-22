@@ -178,6 +178,7 @@ struct ReaderView: View {
                                 showingSaveImageStatus = true
                             },
                             onSelectedImages: { urls in saveSelectedImages(urls) },
+                            onAllImages: { urls in saveSelectedImages(urls, emptyMessageKey: "noLargeImagesFound") },
                             onContentBlocked: {
                                 if PlatformRegistry.normalizeID(currentItem.platform) == "twitter" {
                                     if !isSigningIntoX { showSignInBanner = true }
@@ -678,12 +679,12 @@ struct ReaderView: View {
         }
     }
 
-    private func saveSelectedImages(_ urls: [URL]) {
+    private func saveSelectedImages(_ urls: [URL], emptyMessageKey: String = "imageNoSelectedImages") {
         guard !urls.isEmpty else {
             isSelectingImages = false
             isSavingSelectedImages = false
             selectedImageCount = 0
-            saveImageStatus = i18n.t("imageNoSelectedImages")
+            saveImageStatus = i18n.t(emptyMessageKey)
             showingSaveImageStatus = true
             return
         }
@@ -760,6 +761,7 @@ struct WebViewHelper: UIViewRepresentable, Equatable {
     let onImageSelectionUnavailable: () -> Void
     let onImageSelectionFailure: () -> Void
     let onSelectedImages: ([URL]) -> Void
+    let onAllImages: ([URL]) -> Void
     let onContentBlocked: () -> Void
 
     /// Closures are excluded — they're recreated on every `ReaderView` body
@@ -1316,6 +1318,10 @@ struct WebViewHelper: UIViewRepresentable, Equatable {
                       let rawUrls = body["urls"] as? [String] {
                 let urls = rawUrls.compactMap { URL(string: $0) }
                 DispatchQueue.main.async { self.parent.onSelectedImages(urls) }
+            } else if type == "all-images",
+                      let rawUrls = body["urls"] as? [String] {
+                let urls = rawUrls.compactMap { URL(string: $0) }
+                DispatchQueue.main.async { self.parent.onAllImages(urls) }
             }
         }
     }
@@ -1596,7 +1602,7 @@ private let readerInjectedJS = """
         urls.push(url);
       }
     });
-    window.webkit.messageHandlers.oshireader.postMessage({ type: 'selected-images', urls: urls });
+    window.webkit.messageHandlers.oshireader.postMessage({ type: 'all-images', urls: urls });
   };
 
   document.addEventListener('click', function(event) {

@@ -2642,6 +2642,17 @@ final class OshiReaderTests: XCTestCase {
         XCTAssertTrue(mismatches.isEmpty, "Unexpected parse results for \(mismatches)")
     }
 
+    func testSharedRelativeTimeFormatterProducesStableOutput() {
+        let reference = Date(timeIntervalSince1970: 2_000_000)
+        let earlier = reference.addingTimeInterval(-120)
+
+        let first = relativeTimeString(from: earlier, relativeTo: reference)
+        let second = relativeTimeString(from: earlier, relativeTo: reference)
+
+        XCTAssertFalse(first.isEmpty)
+        XCTAssertEqual(first, second)
+    }
+
     func testCleanDisplayTextHTMLEntities() {
         XCTAssertEqual(cleanDisplayText("Fish &amp; Chips"), "Fish & Chips")
         XCTAssertEqual(cleanDisplayText("He said &quot;hello&quot;"), "He said \"hello\"")
