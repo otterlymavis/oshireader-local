@@ -187,6 +187,7 @@ final class NotificationManager: ObservableObject {
         let matchingItems = items.filter {
             notifiedKeywords.contains($0.watch_term_keyword)
                 && $0.source != IngestionService.twitterPublicIndexSource
+                && $0.source != IngestionService.unverifiedDateGoogleNewsSource
         }
         let itemsByKeyword = Dictionary(grouping: matchingItems) {
             $0.watch_term_keyword
