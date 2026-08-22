@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		0147BADA6F83002DDCCEF492 /* PaidPushTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFB93D67FEBB4EF9B7FE304B /* PaidPushTests.swift */; };
 		04ECF722D087530C866ACCCF /* app_icon_preview_black_bg.png in Resources */ = {isa = PBXBuildFile; fileRef = 16AC7000186EF1AE3E971C44 /* app_icon_preview_black_bg.png */; };
 		0A322081F67D3115298CA072 /* FeedQueryingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A605D8E273DCA72E622AEEE3 /* FeedQueryingTests.swift */; };
 		0AADB4A33250AC604852BABC /* OshiReaderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49BBAB62B30911CFD45062E6 /* OshiReaderTests.swift */; };
@@ -41,16 +42,20 @@
 		602879E53145AA342A97899F /* WatchTermsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F3BD3F552894B2E08AD088A2 /* WatchTermsTests.swift */; };
 		615EFC243DAE9ECC7BFB4DCF /* AvatarCompositionsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF44B302F88B980D4CE83D1A /* AvatarCompositionsTests.swift */; };
 		6272FB99110FEDA507C0F5D8 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C607233A1D4F78BDDD5A7C4 /* ContentView.swift */; };
+		641FC40BA65E7095FCD5DE81 /* BackendClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5FAFCC06D9B5C39A50FD1995 /* BackendClient.swift */; };
+		66C1C090CDDA1AFCA8176FD3 /* PushTermRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 80E757C2516D2F21FD7446E0 /* PushTermRegistry.swift */; };
 		67E3E43BCE3FCFD489E89088 /* app_icon_preview_white_line_black_bg.png in Resources */ = {isa = PBXBuildFile; fileRef = C5D040C2B5C75B3256B8C9E2 /* app_icon_preview_white_line_black_bg.png */; };
 		6969C73B8C9DA16AC4C8F726 /* I18n.swift in Sources */ = {isa = PBXBuildFile; fileRef = 75492232667474AE9C22A904 /* I18n.swift */; };
 		6981317FF64555AC90CF5868 /* WallpaperRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F5CB32111D0FB50693DE4BD /* WallpaperRenderer.swift */; };
 		69C38841AFD337A40569AFB4 /* OshiReaderShareExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 3CB59FE6D93CC7AD75547E56 /* OshiReaderShareExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		75F9570478935E8B02FC3AC5 /* OPMLExportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19AB271592D587FC13D28880 /* OPMLExportTests.swift */; };
 		7A25A83CCF90673F8E2BB8A0 /* OshiReaderWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = 767B63640366C3537A66102B /* OshiReaderWidget.swift */; };
+		7DF1A94CE5DC06966EF67058 /* PlusStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFEE73C3EA123E2E45BE416F /* PlusStore.swift */; };
 		7DFACC0D4D12882AE7987817 /* PendingShare.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA6698BAA13BEAE4F52D45E7 /* PendingShare.swift */; };
 		8295B9798BAB2CD8379BEACD /* IngestionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12A70A437B3A48A6BBA842CF /* IngestionService.swift */; };
 		84E6A3B31ECACD65FB2F003A /* AppGroup.swift in Sources */ = {isa = PBXBuildFile; fileRef = 459E75CAD522B9781519DCDF /* AppGroup.swift */; };
 		873A32EA2C39E65224BABDCA /* EncryptedBackup.swift in Sources */ = {isa = PBXBuildFile; fileRef = D664F1A79B84759EDFCFE098 /* EncryptedBackup.swift */; };
+		8966E6CF4A9D8126DC1109E2 /* PushSyncCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 312ECD543B67201EEE7E3B70 /* PushSyncCoordinator.swift */; };
 		92793B84417591C6F67CB6B4 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14C7E2AD85F46D55CDAD349D /* Models.swift */; };
 		9BC9C454E4C9D70354486902 /* PlatformRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 86982AF846CF5F002A8068BE /* PlatformRegistry.swift */; };
 		A0AC4C89B94E168EE1AC6027 /* OshiReaderApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = F57F75DAE62F1BBB02535FA4 /* OshiReaderApp.swift */; };
@@ -145,6 +150,7 @@
 		1DE2FB251822D2F52EAA70E7 /* OshiReaderTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = OshiReaderTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		225E5A2942CCC270A7951737 /* LocalProfileStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalProfileStore.swift; sourceTree = "<group>"; };
 		281B85D31BF641436C65758B /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		312ECD543B67201EEE7E3B70 /* PushSyncCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushSyncCoordinator.swift; sourceTree = "<group>"; };
 		34D8E3C1B440572DBA2FD128 /* ExtensionStrings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExtensionStrings.swift; sourceTree = "<group>"; };
 		3B2EB2292A40CF27516AF61E /* CustomURLsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CustomURLsTests.swift; sourceTree = "<group>"; };
 		3CB59FE6D93CC7AD75547E56 /* OshiReaderShareExtension.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = OshiReaderShareExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -157,6 +163,7 @@
 		5C6C1CB795D1C2C6476413D4 /* SavedBookmarksTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SavedBookmarksTests.swift; sourceTree = "<group>"; };
 		5CC07FF11F19D7FE9B1FAE96 /* OshiReaderUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OshiReaderUITests.swift; sourceTree = "<group>"; };
 		5F5CB32111D0FB50693DE4BD /* WallpaperRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WallpaperRenderer.swift; sourceTree = "<group>"; };
+		5FAFCC06D9B5C39A50FD1995 /* BackendClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackendClient.swift; sourceTree = "<group>"; };
 		5FB07A4A295E6B82E88BBEB7 /* SearchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchView.swift; sourceTree = "<group>"; };
 		711DA15EF5C72099ADC21791 /* I18nTranslationsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = I18nTranslationsTests.swift; sourceTree = "<group>"; };
 		720597F8B0D3B8680AAB2C90 /* NotificationNavigationManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationNavigationManager.swift; sourceTree = "<group>"; };
@@ -165,6 +172,7 @@
 		767B63640366C3537A66102B /* OshiReaderWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OshiReaderWidget.swift; sourceTree = "<group>"; };
 		7757DA33C395BD65387A4309 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		7B2255286B25465F174B44E4 /* app_icon_preview_white_otter_black_bg.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = app_icon_preview_white_otter_black_bg.png; sourceTree = "<group>"; };
+		80E757C2516D2F21FD7446E0 /* PushTermRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushTermRegistry.swift; sourceTree = "<group>"; };
 		84500A11E3895A0801822A4E /* FeedView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeedView.swift; sourceTree = "<group>"; };
 		8653D190D230BFFFC660113A /* ThemeMetadataTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThemeMetadataTests.swift; sourceTree = "<group>"; };
 		866A42C8B01CDE66550FBC36 /* ReaderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderView.swift; sourceTree = "<group>"; };
@@ -190,6 +198,7 @@
 		C96792D04C20B7635508EF1E /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		CA093C93D4514C0B73101C23 /* NotificationManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationManager.swift; sourceTree = "<group>"; };
 		CA6698BAA13BEAE4F52D45E7 /* PendingShare.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PendingShare.swift; sourceTree = "<group>"; };
+		CFB93D67FEBB4EF9B7FE304B /* PaidPushTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaidPushTests.swift; sourceTree = "<group>"; };
 		D22EE2906443FC7711C23B3A /* AvatarEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AvatarEditorView.swift; sourceTree = "<group>"; };
 		D664F1A79B84759EDFCFE098 /* EncryptedBackup.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EncryptedBackup.swift; sourceTree = "<group>"; };
 		DFC4064786481670E5051013 /* CloudSyncManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudSyncManager.swift; sourceTree = "<group>"; };
@@ -202,6 +211,7 @@
 		F57F75DAE62F1BBB02535FA4 /* OshiReaderApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OshiReaderApp.swift; sourceTree = "<group>"; };
 		F943C5EB021763D7422C04E7 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		FC815F05EA634BBCAB4CCF02 /* LocalDB.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalDB.swift; sourceTree = "<group>"; };
+		FFEE73C3EA123E2E45BE416F /* PlusStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlusStore.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -248,6 +258,7 @@
 				99AB7408CEA4F755369E8E83 /* MultiKeywordSourceFetchingTests.swift */,
 				19AB271592D587FC13D28880 /* OPMLExportTests.swift */,
 				49BBAB62B30911CFD45062E6 /* OshiReaderTests.swift */,
+				CFB93D67FEBB4EF9B7FE304B /* PaidPushTests.swift */,
 				B65740337942B3153894F17F /* QuietHoursTests.swift */,
 				5C6C1CB795D1C2C6476413D4 /* SavedBookmarksTests.swift */,
 				8653D190D230BFFFC660113A /* ThemeMetadataTests.swift */,
@@ -314,6 +325,7 @@
 				02418F20B46B959DA941B54A /* AppLogger.swift */,
 				F0B215B1EB3F8C4B93110DEE /* AppShortcuts.swift */,
 				281B85D31BF641436C65758B /* Assets.xcassets */,
+				5FAFCC06D9B5C39A50FD1995 /* BackendClient.swift */,
 				EB4698197160905DBD0B1085 /* BackgroundRefreshManager.swift */,
 				DFC4064786481670E5051013 /* CloudSyncManager.swift */,
 				5C607233A1D4F78BDDD5A7C4 /* ContentView.swift */,
@@ -335,7 +347,10 @@
 				F57F75DAE62F1BBB02535FA4 /* OshiReaderApp.swift */,
 				CA6698BAA13BEAE4F52D45E7 /* PendingShare.swift */,
 				86982AF846CF5F002A8068BE /* PlatformRegistry.swift */,
+				FFEE73C3EA123E2E45BE416F /* PlusStore.swift */,
 				7757DA33C395BD65387A4309 /* PrivacyInfo.xcprivacy */,
+				312ECD543B67201EEE7E3B70 /* PushSyncCoordinator.swift */,
+				80E757C2516D2F21FD7446E0 /* PushTermRegistry.swift */,
 				91138D12C85BFE8A84D02216 /* QuietHours.swift */,
 				0296C552A004B73654BE7AEC /* RecentTermUsageStore.swift */,
 				00F89CFA2D8D85DC78AE5134 /* RefreshDiagnostics.swift */,
@@ -547,6 +562,7 @@
 				4D5B8601900B57538D633AE6 /* MultiKeywordSourceFetchingTests.swift in Sources */,
 				75F9570478935E8B02FC3AC5 /* OPMLExportTests.swift in Sources */,
 				0AADB4A33250AC604852BABC /* OshiReaderTests.swift in Sources */,
+				0147BADA6F83002DDCCEF492 /* PaidPushTests.swift in Sources */,
 				559484C2784624E02C6938D0 /* QuietHoursTests.swift in Sources */,
 				3F56F6C118A8F9790E4B900A /* SavedBookmarksTests.swift in Sources */,
 				BF58F28BD7901E874DB5AEB1 /* ThemeMetadataTests.swift in Sources */,
@@ -580,6 +596,7 @@
 				C7723609DB5D7D2D1F9AFEB2 /* AppLogger.swift in Sources */,
 				C09EE5A704071475333774E3 /* AppShortcuts.swift in Sources */,
 				F46CEBC6E65E66A628181196 /* AvatarEditorView.swift in Sources */,
+				641FC40BA65E7095FCD5DE81 /* BackendClient.swift in Sources */,
 				F5552C78BFC7538E35202795 /* BackgroundRefreshManager.swift in Sources */,
 				1C4CDBFD8F1F4384C3CCA202 /* CloudSyncManager.swift in Sources */,
 				6272FB99110FEDA507C0F5D8 /* ContentView.swift in Sources */,
@@ -601,6 +618,9 @@
 				D52495292898CC66D9765714 /* OshiView.swift in Sources */,
 				7DFACC0D4D12882AE7987817 /* PendingShare.swift in Sources */,
 				9BC9C454E4C9D70354486902 /* PlatformRegistry.swift in Sources */,
+				7DF1A94CE5DC06966EF67058 /* PlusStore.swift in Sources */,
+				8966E6CF4A9D8126DC1109E2 /* PushSyncCoordinator.swift in Sources */,
+				66C1C090CDDA1AFCA8176FD3 /* PushTermRegistry.swift in Sources */,
 				2D631170F7550DEF263CFE8E /* QuietHours.swift in Sources */,
 				15E2283EDF51A13E2895271E /* ReaderView.swift in Sources */,
 				AEBB3D455715E7303DD821BE /* RecentTermUsageStore.swift in Sources */,
@@ -856,6 +876,7 @@
 		9A191B9E14DD6DA3ABD92C5C /* Staging */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				APNS_ENVIRONMENT = production;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = OshiReader/OshiReader.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
@@ -874,6 +895,7 @@
 				MARKETING_VERSION = 1.0.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.otterpia.oshireader;
 				PRODUCT_NAME = OshiReader;
+				PUSH_SUBSCRIPTION_PRODUCT_IDS = "";
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 5.9;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -883,6 +905,7 @@
 		A4FAC9608DEA9BE6590E2B77 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				APNS_ENVIRONMENT = development;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = OshiReader/OshiReader.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
@@ -901,6 +924,7 @@
 				MARKETING_VERSION = 1.0.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.otterpia.oshireader;
 				PRODUCT_NAME = OshiReader;
+				PUSH_SUBSCRIPTION_PRODUCT_IDS = "";
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 5.9;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -937,6 +961,7 @@
 		B7351CD9A5C32BD1288FD5D5 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				APNS_ENVIRONMENT = production;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = OshiReader/OshiReader.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
@@ -955,6 +980,7 @@
 				MARKETING_VERSION = 1.0.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.otterpia.oshireader;
 				PRODUCT_NAME = OshiReader;
+				PUSH_SUBSCRIPTION_PRODUCT_IDS = "";
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 5.9;
 				TARGETED_DEVICE_FAMILY = "1,2";

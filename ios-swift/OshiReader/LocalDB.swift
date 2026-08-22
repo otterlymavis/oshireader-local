@@ -205,6 +205,9 @@ class LocalDB: ObservableObject {
         ThemeManager.shared.configure(profileID: profileID)
         AppearanceManager.shared.configure(profileID: profileID)
         I18nManager.shared.configure(profileID: profileID)
+        if PlusStore.shouldSyncBackend {
+            Task { await PushSyncCoordinator.shared.reconcile() }
+        }
     }
 
     @MainActor
@@ -227,6 +230,7 @@ class LocalDB: ObservableObject {
         } else {
             clearNotificationsForProfile(id)
         }
+        PushSyncCoordinator.shared.scheduleProfileDeletion(profileID: id)
         try profileStore.deleteProfile(id: id)
     }
 
@@ -613,7 +617,7 @@ class LocalDB: ObservableObject {
         return term
     }
     
-    func updateTerm(id: String, isActive: Bool? = nil, collectionMode: String? = nil, sourceMode: SourceMode? = nil, selectedPlatforms: [String]? = nil, notifyOnNew: Bool? = nil, aliases: [String]? = nil) {
+    func updateTerm(id: String, isActive: Bool? = nil, collectionMode: String? = nil, sourceMode: SourceMode? = nil, selectedPlatforms: [String]? = nil, notifyOnNew: Bool? = nil, backendTermID: Int?? = nil, aliases: [String]? = nil) {
         runOnMain {
             if let idx = self.terms.firstIndex(where: { $0.id == id }) {
                 var term = self.terms[idx]
@@ -645,6 +649,7 @@ class LocalDB: ObservableObject {
                         }
                     }
                 }
+                if let backendTermID { term.backendTermID = backendTermID }
                 if let aliases = aliases { term.aliases = aliases }
                 self.terms[idx] = term
                 self.saveTermsSoon()
@@ -660,8 +665,17 @@ class LocalDB: ObservableObject {
         runOnMain {
             if let term = self.terms.firstIndex(where: { $0.id == id }) {
                 let keyword = self.terms[term].keyword
+                let backendTermID = self.terms[term].backendTermID
                 self.advanceDataRevision()
                 self.terms.remove(at: term)
+                let profileID = self.profileStore.activeProfileID
+                Task { @MainActor in
+                    PushSyncCoordinator.shared.removeLocalTerm(
+                        profileID: profileID,
+                        localTermID: id,
+                        backendTermID: backendTermID
+                    )
+                }
                 Task { @MainActor in
                     RecentTermUsageStore.shared.remove(termID: id)
                     await NotificationManager.shared.clearNotification(forTermID: id)

@@ -11,6 +11,7 @@ mobile/tmp_*.json
 # Xcode
 xcuserdata/
 ios-swift/build/
+ios-swift/fastlane/report.xml
 
 # General
 *.pyc

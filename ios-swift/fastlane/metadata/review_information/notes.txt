@@ -1,0 +1,6 @@
+OshiReader is a local-only feed reader for Japanese media topics. It does not require any account, sign-in, or backend server.
+
+To test the app:
+1. Tap '+' to add a watch topic (for example: "乃木坂46" or "Anime").
+2. Pull down on the Feed screen to refresh and fetch matching items.
+3. Tap on any item to open the in-app reader.

@@ -48,4 +48,15 @@ final class WatchTermsTests: XCTestCase {
         db.deleteTerm(id: term.id)
         XCTAssertEqual(db.terms.count, 0)
     }
+
+    func testBackendTermIDPersistsAndCanBeCleared() throws {
+        let term = WatchTerm(keyword: "Push Oshi", backendTermID: 42)
+        let data = try JSONEncoder().encode(term)
+        let decoded = try JSONDecoder().decode(WatchTerm.self, from: data)
+        XCTAssertEqual(decoded.backendTermID, 42)
+
+        db.terms = [decoded]
+        db.updateTerm(id: decoded.id, backendTermID: .some(nil))
+        XCTAssertNil(db.terms.first?.backendTermID)
+    }
 }

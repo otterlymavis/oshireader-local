@@ -18,7 +18,39 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         // opens Settings (the only other place this singleton is touched)
         // would never auto-push local changes to iCloud.
         _ = CloudSyncManager.shared
+        if PlusStore.shouldSyncBackend {
+            _ = PlusStore.shared
+            PushTermRegistry.shared.bootstrapFromProfiles()
+            Task { await PushSyncCoordinator.shared.reconcile() }
+        }
         return true
+    }
+
+    func application(
+        _ application: UIApplication,
+        didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
+    ) {
+        Task {
+            do { try await BackendClient.shared.registerAPNSToken(deviceToken) }
+            catch {
+                PushSyncCoordinator.shared.recordAPNSRegistrationFailure(error)
+                AppLogger.network.warning("APNs registration failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    func application(
+        _ application: UIApplication,
+        didFailToRegisterForRemoteNotificationsWithError error: Error
+    ) {
+        PushSyncCoordinator.shared.recordAPNSRegistrationFailure(error)
+        AppLogger.network.warning("System APNs registration failed: \(error.localizedDescription)")
+    }
+
+    func applicationDidBecomeActive(_ application: UIApplication) {
+        if PlusStore.shouldSyncBackend {
+            Task { await PushSyncCoordinator.shared.reconcile() }
+        }
     }
 
     func applicationDidEnterBackground(_ application: UIApplication) {

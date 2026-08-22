@@ -10,6 +10,9 @@ enum KeychainHelper {
 
     enum Key: String {
         case twitterBearerToken = "twitter_bearer_token"
+        case apnsDeviceSecret = "apns_device_secret"
+        case apnsDeviceToken = "apns_device_token"
+        case apnsDeviceEnvironment = "apns_device_environment"
     }
 
     private static var isRunningTests: Bool {
@@ -100,6 +103,7 @@ enum KeychainHelper {
         if !succeeded, let previousData {
             var restore = base
             restore[kSecValueData as String] = previousData
+            restore[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
             _ = SecItemAdd(restore as CFDictionary, nil)
         }
         if succeeded || isRunningTests {
