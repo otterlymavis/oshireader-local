@@ -163,9 +163,10 @@ jobs:
               raise SystemExit("Backend APNs registration lacks bundle_id")
           if "/api/entitlements/apple-notifications" not in openapi.get("paths", {}):
               raise SystemExit("Backend lacks the Apple notification lifecycle endpoint")
+          feed_operation = openapi.get("paths", {}).get("/api/feed/", {}).get("get", {})
           feed_parameters = {
               parameter.get("name")
-              for parameter in openapi.get("paths", {}).get("/api/feed/", {}).get("get", {}).get("parameters", [])
+              for parameter in feed_operation.get("parameters", [])
           }
           required_feed_parameters = {
               "term_ids",
@@ -179,6 +180,20 @@ jobs:
           if missing_feed_parameters:
               raise SystemExit(
                   f"Backend feed snapshot contract is missing {sorted(missing_feed_parameters)}"
+              )
+          feed_response_headers = (
+              feed_operation.get("responses", {})
+              .get("200", {})
+              .get("headers", {})
+          )
+          required_feed_headers = {
+              "X-OshiReader-Next-Published-At",
+              "X-OshiReader-Next-Match-ID",
+          }
+          missing_feed_headers = required_feed_headers - feed_response_headers.keys()
+          if missing_feed_headers:
+              raise SystemExit(
+                  f"Backend feed continuation contract is missing {sorted(missing_feed_headers)}"
               )
 
           probe = urllib.request.Request(

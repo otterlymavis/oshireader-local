@@ -288,10 +288,7 @@ final class BackendClient {
         var cursor: BackendFeedScanCursor?
         var seenCursors = Set<BackendFeedScanCursor>()
         var allItems: [FeedItem] = []
-        var pageCount = 0
         while true {
-            pageCount += 1
-            guard pageCount <= 100 else { throw BackendClientError.invalidResponse }
             let (page, nextCursor) = try await fetchBackendFeedScanPage(
                 platform: platform,
                 termIDs: termIDs,
@@ -303,6 +300,11 @@ final class BackendClient {
             )
             allItems.append(contentsOf: page)
             guard let nextCursor else { return allItems }
+            if let cursor {
+                guard nextCursor.matchID < cursor.matchID else {
+                    throw BackendClientError.invalidResponse
+                }
+            }
             guard nextCursor != cursor, seenCursors.insert(nextCursor).inserted else {
                 throw BackendClientError.invalidResponse
             }

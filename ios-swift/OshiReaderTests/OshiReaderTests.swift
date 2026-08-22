@@ -262,6 +262,65 @@ final class OshiReaderTests: XCTestCase {
         XCTAssertEqual(cursorIDs[2], "21")
     }
 
+    func testBackendFeedClientDrainsMoreThanOneHundredContinuationPages() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let client = BackendClient(session: session)
+        let lock = NSLock()
+        var requestIndex = 0
+        MockURLProtocol.handler = { request in
+            lock.lock()
+            let index = requestIndex
+            requestIndex += 1
+            lock.unlock()
+            let headers: [String: String]? = index < 101 ? [
+                "X-OshiReader-Next-Published-At": "2026-08-22T12:00:00Z",
+                "X-OshiReader-Next-Match-ID": String(1_000 - index),
+            ] : nil
+            let data = Data("""
+            [{
+              "watch_term_keyword": "Aiko",
+              "matched_at": "2026-08-22T12:01:00Z",
+              "item": {
+                "id": "news:\(index)",
+                "platform": "news",
+                "url": "https://example.com/\(index)",
+                "title": "Aiko \(index)",
+                "content_text": null,
+                "author": null,
+                "thumbnail_url": null,
+                "media_type": "article",
+                "published_at": "2026-08-22T12:00:00Z",
+                "source": "news"
+              }
+            }]
+            """.utf8)
+            return (
+                data,
+                try XCTUnwrap(HTTPURLResponse(
+                    url: try XCTUnwrap(request.url),
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: headers
+                ))
+            )
+        }
+        defer {
+            MockURLProtocol.handler = nil
+            session.invalidateAndCancel()
+        }
+
+        let items = try await client.fetchAllBackendFeed(
+            termIDs: [11],
+            pageSize: 1,
+            until: "2026-08-22T13:00:00Z"
+        )
+
+        XCTAssertEqual(items.count, 102)
+        XCTAssertEqual(requestIndex, 102)
+    }
+
     func testBackendFeedClientSurfacesPaidAccessError() async throws {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [MockURLProtocol.self]
