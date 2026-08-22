@@ -1,4 +1,4 @@
-name: OshiReader Local paid-push release gate
+name: OshiReader Local paid-backend release gate
 
 on:
   workflow_dispatch:
@@ -15,7 +15,7 @@ on:
         required: false
         type: string
       physical_push_test:
-        description: "Sandbox purchase and terminated-app push acceptance"
+        description: "Sandbox purchase, hosted-feed, and terminated-app push acceptance"
         required: true
         type: choice
         options:
@@ -50,6 +50,7 @@ jobs:
           content_info = Path("ios-swift/OshiReaderNotificationContent/Info.plist").read_text(encoding="utf-8")
           app_delegate = Path("ios-swift/OshiReader/AppDelegate.swift").read_text(encoding="utf-8")
           backend_client = Path("ios-swift/OshiReader/BackendClient.swift").read_text(encoding="utf-8")
+          paid_backend = Path("ios-swift/OshiReader/PaidBackendFeedCoordinator.swift").read_text(encoding="utf-8")
           plus_store = Path("ios-swift/OshiReader/PlusStore.swift").read_text(encoding="utf-8")
           fastfile = Path("ios-swift/fastlane/Fastfile").read_text(encoding="utf-8")
           checks = {
@@ -63,22 +64,23 @@ jobs:
                   "com.otterpia.oshireader.NotificationService",
                   "com.otterpia.oshireader.NotificationContent",
               )),
-              "paid-push notification category": "OSHI_RESULT_PREVIEW" in content_info,
+              "paid-backend notification category": "OSHI_RESULT_PREVIEW" in content_info,
               "APNs device identifier privacy declaration": "NSPrivacyCollectedDataTypeDeviceID" in privacy,
               "export compliance declaration": "ITSAppUsesNonExemptEncryption" in info,
               "Local Fastlane target": 'app_identifier: "com.otterpia.oshireader"' in fastfile,
               "environment-provided App Store credentials": "APP_STORE_CONNECT_KEY_ID" in fastfile,
               "paid backend startup guard": "if PlusStore.shouldSyncBackend" in app_delegate,
               "empty catalog disables backend sync": "isPaidPushConfigured &&" in plus_store,
-              "backend client excludes feed synchronization": all(value not in backend_client for value in (
-                  "func fetchFeed(",
-                  '"api/feed',
-                  "func triggerPoll(",
+              "paid backend feed client": "func fetchBackendFeed(" in backend_client,
+              "backend feed entitlement guard": all(value in paid_backend for value in (
+                  "PlusStore.shouldSyncBackend",
+                  "hasActiveEntitlement",
               )),
+              "no client-triggered global poll": "func triggerPoll(" not in backend_client,
           }
           failed = [name for name, passed in checks.items() if not passed]
           if failed:
-              raise SystemExit("Local paid-push configuration failed: " + ", ".join(failed))
+              raise SystemExit("Local paid-backend configuration failed: " + ", ".join(failed))
 
           catalog_mode = os.environ["CATALOG_MODE"]
           product_ids = [value.strip() for value in os.environ.get("PRODUCT_IDS", "").split(",") if value.strip()]
@@ -92,7 +94,7 @@ jobs:
               if not product_ids:
                   raise SystemExit("product_ids are required when the paid catalog is enabled")
               if physical != "passed":
-                  raise SystemExit("sandbox purchase and terminated-app push acceptance must pass")
+                  raise SystemExit("sandbox purchase, hosted-feed, and terminated-app push acceptance must pass")
           print(f"Validated {catalog_mode} catalog candidate")
           PY
 

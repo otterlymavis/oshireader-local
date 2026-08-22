@@ -30,9 +30,9 @@ enum BackgroundRefreshOutcome: Equatable {
     case failed
 }
 
-/// Keeps the local-only feed useful when the app has not been opened recently.
-/// iOS decides the exact execution time; this is a best-effort refresh, not a
-/// replacement for a server scheduler.
+/// Keeps the local-first feed useful when the app has not been opened recently.
+/// iOS decides the exact timing of the free on-device work; an entitled hosted
+/// refresh can supplement it but never replaces it.
 @MainActor
 final class BackgroundRefreshManager {
     static let shared = BackgroundRefreshManager()

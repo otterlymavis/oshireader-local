@@ -44,6 +44,7 @@
 		5E1BC572A16C669E4394BFF4 /* PendingShare.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA6698BAA13BEAE4F52D45E7 /* PendingShare.swift */; };
 		5FE268AC78158D090A4D06BE /* ExtensionStrings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 34D8E3C1B440572DBA2FD128 /* ExtensionStrings.swift */; };
 		602879E53145AA342A97899F /* WatchTermsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F3BD3F552894B2E08AD088A2 /* WatchTermsTests.swift */; };
+		60A839A5BD94ED446A9496B3 /* PaidBackendFeedCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7657F45262B9CF0C0CC45DC6 /* PaidBackendFeedCoordinator.swift */; };
 		615EFC243DAE9ECC7BFB4DCF /* AvatarCompositionsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF44B302F88B980D4CE83D1A /* AvatarCompositionsTests.swift */; };
 		6272FB99110FEDA507C0F5D8 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C607233A1D4F78BDDD5A7C4 /* ContentView.swift */; };
 		641FC40BA65E7095FCD5DE81 /* BackendClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5FAFCC06D9B5C39A50FD1995 /* BackendClient.swift */; };
@@ -200,6 +201,7 @@
 		720597F8B0D3B8680AAB2C90 /* NotificationNavigationManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationNavigationManager.swift; sourceTree = "<group>"; };
 		753E0324E3B4665896516C12 /* LocalRefreshCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalRefreshCoordinator.swift; sourceTree = "<group>"; };
 		75492232667474AE9C22A904 /* I18n.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = I18n.swift; sourceTree = "<group>"; };
+		7657F45262B9CF0C0CC45DC6 /* PaidBackendFeedCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaidBackendFeedCoordinator.swift; sourceTree = "<group>"; };
 		767B63640366C3537A66102B /* OshiReaderWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OshiReaderWidget.swift; sourceTree = "<group>"; };
 		7757DA33C395BD65387A4309 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		7B2255286B25465F174B44E4 /* app_icon_preview_white_otter_black_bg.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = app_icon_preview_white_otter_black_bg.png; sourceTree = "<group>"; };
@@ -434,6 +436,7 @@
 				C2869A981771391FE1432892 /* OPMLExporter.swift */,
 				56F97FCE5F8F2EFBC98E2310 /* OshiReader.entitlements */,
 				F57F75DAE62F1BBB02535FA4 /* OshiReaderApp.swift */,
+				7657F45262B9CF0C0CC45DC6 /* PaidBackendFeedCoordinator.swift */,
 				CA6698BAA13BEAE4F52D45E7 /* PendingShare.swift */,
 				86982AF846CF5F002A8068BE /* PlatformRegistry.swift */,
 				FFEE73C3EA123E2E45BE416F /* PlusStore.swift */,
@@ -771,6 +774,7 @@
 				C390F5E971F63FEB201C0124 /* OPMLExporter.swift in Sources */,
 				A0AC4C89B94E168EE1AC6027 /* OshiReaderApp.swift in Sources */,
 				D52495292898CC66D9765714 /* OshiView.swift in Sources */,
+				60A839A5BD94ED446A9496B3 /* PaidBackendFeedCoordinator.swift in Sources */,
 				7DFACC0D4D12882AE7987817 /* PendingShare.swift in Sources */,
 				9BC9C454E4C9D70354486902 /* PlatformRegistry.swift in Sources */,
 				7DF1A94CE5DC06966EF67058 /* PlusStore.swift in Sources */,

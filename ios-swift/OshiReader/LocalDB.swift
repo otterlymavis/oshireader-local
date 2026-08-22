@@ -613,6 +613,9 @@ class LocalDB: ObservableObject {
             self.advanceDataRevision()
             self.terms.insert(term, at: 0)
             self.saveTermsSoon()
+            Task { @MainActor in
+                PaidBackendFeedCoordinator.shared.scheduleSynchronization()
+            }
         }
         return term
     }
@@ -653,6 +656,9 @@ class LocalDB: ObservableObject {
                 if let aliases = aliases { term.aliases = aliases }
                 self.terms[idx] = term
                 self.saveTermsSoon()
+                Task { @MainActor in
+                    PaidBackendFeedCoordinator.shared.scheduleSynchronization()
+                }
             }
         }
     }
@@ -692,6 +698,9 @@ class LocalDB: ObservableObject {
                 }
                 self.saveHiddenItemsSoon()
                 self.saveFeedItemsSoon()
+                Task { @MainActor in
+                    PaidBackendFeedCoordinator.shared.scheduleSynchronization()
+                }
             }
         }
     }

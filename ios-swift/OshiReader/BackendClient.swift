@@ -40,7 +40,44 @@ struct BackendWatchTerm: Decodable {
     let selected_platforms: [String]
     let is_active: Bool
     let notify_on_new: Bool
+    let refresh_tier: String?
     let created_at: String
+}
+
+private struct BackendFeedSourceItem: Decodable {
+    let id: String
+    let platform: String
+    let url: String
+    let title: String?
+    let content_text: String?
+    let author: String?
+    let thumbnail_url: String?
+    let media_type: String?
+    let published_at: String
+    let source: String?
+}
+
+private struct BackendFeedPayload: Decodable {
+    let watch_term_keyword: String
+    let item: BackendFeedSourceItem
+    let matched_at: String
+
+    func localItem(keyword: String) -> FeedItem {
+        FeedItem(
+            id: item.id,
+            platform: item.platform,
+            url: item.url,
+            title: item.title,
+            content_text: item.content_text,
+            author: item.author,
+            thumbnail_url: item.thumbnail_url,
+            media_type: item.media_type ?? "article",
+            published_at: item.published_at,
+            watch_term_keyword: keyword,
+            fetched_at: matched_at,
+            source: item.source
+        )
+    }
 }
 
 struct APNSRegistrationResponse: Decodable {
@@ -56,9 +93,9 @@ enum BackendClientError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .invalidResponse:
-            return "The push service returned an invalid response."
+            return "The OshiReader service returned an invalid response."
         case .httpStatus(_, _, let message):
-            return message ?? "The push service request failed."
+            return message ?? "The OshiReader service request failed."
         }
     }
 }
@@ -103,9 +140,12 @@ final class BackendClient {
         _ path: String,
         method: String = "GET",
         json: [String: Any]? = nil,
+        queryItems: [URLQueryItem] = [],
         accepted: ClosedRange<Int> = 200...299
     ) async throws -> T {
-        var request = URLRequest(url: baseURL.appendingPathComponent(path))
+        var components = URLComponents(url: baseURL.appendingPathComponent(path), resolvingAgainstBaseURL: false)!
+        if !queryItems.isEmpty { components.queryItems = queryItems }
+        var request = URLRequest(url: components.url!)
         request.httpMethod = method
         request.timeoutInterval = 30
         request.setValue(deviceSecret, forHTTPHeaderField: "X-Device-Secret")
@@ -148,6 +188,17 @@ final class BackendClient {
     }
 
     func createPushTerm(_ term: WatchTerm) async throws -> BackendWatchTerm {
+        let backendTerms = try await fetchPushTerms()
+        let existing = backendTerms.first {
+            $0.keyword.caseInsensitiveCompare(term.keyword) == .orderedSame
+        }
+        if let existing {
+            return try await updateBackendTerm(id: existing.id, term: term, notifyOnNew: true)
+        }
+        return try await createBackendTerm(term, notifyOnNew: true)
+    }
+
+    func createBackendTerm(_ term: WatchTerm, notifyOnNew: Bool) async throws -> BackendWatchTerm {
         try await request(
             "api/watch-terms/",
             method: "POST",
@@ -158,9 +209,45 @@ final class BackendClient {
                 "source_mode": term.source_mode.rawValue,
                 "selected_platforms": term.selected_platforms,
                 "is_active": term.is_active,
-                "notify_on_new": true,
+                "notify_on_new": notifyOnNew,
+                "refresh_tier": "standard",
             ]
         )
+    }
+
+    func updateBackendTerm(id: Int, term: WatchTerm, notifyOnNew: Bool) async throws -> BackendWatchTerm {
+        try await request(
+            "api/watch-terms/\(id)",
+            method: "PATCH",
+            json: [
+                "aliases": term.aliases,
+                "collection_mode": term.collection_mode,
+                "source_mode": term.source_mode.rawValue,
+                "selected_platforms": term.selected_platforms,
+                "is_active": term.is_active,
+                "notify_on_new": notifyOnNew,
+                "refresh_tier": "standard",
+            ]
+        )
+    }
+
+    func fetchBackendFeed(
+        platform: String? = nil,
+        limit: Int = 200,
+        days: Int = 30,
+        since: String? = nil
+    ) async throws -> [FeedItem] {
+        var query = [
+            URLQueryItem(name: "limit", value: String(limit)),
+        ]
+        if let since {
+            query.append(URLQueryItem(name: "since", value: since))
+        } else {
+            query.append(URLQueryItem(name: "days", value: String(days)))
+        }
+        if let platform { query.append(URLQueryItem(name: "platform", value: platform)) }
+        let payloads: [BackendFeedPayload] = try await request("api/feed/", queryItems: query)
+        return payloads.map { $0.localItem(keyword: $0.watch_term_keyword) }
     }
 
     func deletePushTerm(id: Int) async throws {

@@ -7,8 +7,8 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
-        // Fully local app: the notification center delegate lets new-item
-        // alerts show while the app is open.
+        // Local alerts remain the free/default path; the optional paid hosted
+        // lane is initialized separately below when a catalog is configured.
         UNUserNotificationCenter.current().delegate = self
         NotificationManager.shared.registerNotificationCategories()
         application.setMinimumBackgroundFetchInterval(BackgroundRefreshManager.minimumInterval)
@@ -21,7 +21,10 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         if PlusStore.shouldSyncBackend {
             _ = PlusStore.shared
             PushTermRegistry.shared.bootstrapFromProfiles()
-            Task { await PushSyncCoordinator.shared.reconcile() }
+            Task {
+                await PushSyncCoordinator.shared.reconcile()
+                await PaidBackendFeedCoordinator.shared.synchronizeTerms()
+            }
         }
         return true
     }
@@ -49,7 +52,10 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
 
     func applicationDidBecomeActive(_ application: UIApplication) {
         if PlusStore.shouldSyncBackend {
-            Task { await PushSyncCoordinator.shared.reconcile() }
+            Task {
+                await PushSyncCoordinator.shared.reconcile()
+                await PaidBackendFeedCoordinator.shared.synchronizeTerms()
+            }
         }
     }
 
