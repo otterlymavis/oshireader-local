@@ -2,6 +2,10 @@ import XCTest
 @testable import OshiReader
 
 final class PaidPushTests: XCTestCase {
+    func testPaidPushNotificationCategoryMatchesBackendContract() {
+        XCTAssertEqual(NotificationManager.categoryIdentifier, "OSHI_RESULT_PREVIEW")
+    }
+
     @MainActor
     func testPaidPushCatalogAvailabilityUsesNonemptyConfiguredIDs() {
         XCTAssertTrue(PlusStore.parseProductIDs("  ").isEmpty)

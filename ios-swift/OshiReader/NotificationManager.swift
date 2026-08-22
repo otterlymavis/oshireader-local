@@ -27,7 +27,9 @@ extension UNUserNotificationCenter: NotificationCenterClient {
 @MainActor
 final class NotificationManager: ObservableObject {
     static let shared = NotificationManager()
-    static let categoryIdentifier = "oshireader.new-items"
+    // Must match the category emitted by the paid-push backend and the
+    // notification content extension's UNNotificationExtensionCategory.
+    static let categoryIdentifier = "OSHI_RESULT_PREVIEW"
     static let openActionIdentifier = "oshireader.notification.open"
     static let saveActionIdentifier = "oshireader.notification.save"
 
