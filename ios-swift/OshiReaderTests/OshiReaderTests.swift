@@ -113,6 +113,110 @@ final class OshiReaderTests: XCTestCase {
         try super.tearDownWithError()
     }
 
+    func testBackendFeedClientDecodesHostedItemsAndQuery() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let client = BackendClient(session: session)
+        MockURLProtocol.handler = { request in
+            let components = try XCTUnwrap(URLComponents(url: try XCTUnwrap(request.url), resolvingAgainstBaseURL: false))
+            XCTAssertEqual(components.path, "/api/feed/")
+            XCTAssertEqual(components.queryItems?.first(where: { $0.name == "platform" })?.value, "youtube")
+            XCTAssertEqual(components.queryItems?.first(where: { $0.name == "limit" })?.value, "25")
+            XCTAssertEqual(components.queryItems?.first(where: { $0.name == "days" })?.value, "7")
+            XCTAssertNotNil(request.value(forHTTPHeaderField: "X-Device-Secret"))
+            let data = Data("""
+            [{
+              "watch_term_keyword": "Aiko",
+              "matched_at": "2026-08-22T12:01:00Z",
+              "item": {
+                "id": "youtube:1",
+                "platform": "youtube",
+                "url": "https://example.com/1",
+                "title": "Aiko update",
+                "content_text": null,
+                "author": "Channel",
+                "thumbnail_url": null,
+                "media_type": "video",
+                "published_at": "2026-08-22T12:00:00Z",
+                "source": "youtube"
+              }
+            }]
+            """.utf8)
+            return (
+                data,
+                try XCTUnwrap(HTTPURLResponse(url: try XCTUnwrap(request.url), statusCode: 200, httpVersion: nil, headerFields: nil))
+            )
+        }
+        defer {
+            MockURLProtocol.handler = nil
+            session.invalidateAndCancel()
+        }
+
+        let items = try await client.fetchBackendFeed(platform: "youtube", limit: 25, days: 7)
+
+        XCTAssertEqual(items.count, 1)
+        XCTAssertEqual(items.first?.id, "youtube:1")
+        XCTAssertEqual(items.first?.watch_term_keyword, "Aiko")
+        XCTAssertEqual(items.first?.fetched_at, "2026-08-22T12:01:00Z")
+    }
+
+    func testBackendFeedClientSurfacesPaidAccessError() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let client = BackendClient(session: session)
+        MockURLProtocol.handler = { request in
+            let data = Data("""
+            {"detail":{"code":"paid_backend_required","message":"An active purchase is required for backend feed access"}}
+            """.utf8)
+            return (
+                data,
+                try XCTUnwrap(HTTPURLResponse(url: try XCTUnwrap(request.url), statusCode: 402, httpVersion: nil, headerFields: nil))
+            )
+        }
+        defer {
+            MockURLProtocol.handler = nil
+            session.invalidateAndCancel()
+        }
+
+        do {
+            _ = try await client.fetchBackendFeed()
+            XCTFail("Expected paid backend access to be rejected")
+        } catch let BackendClientError.httpStatus(status, code, message) {
+            XCTAssertEqual(status, 402)
+            XCTAssertEqual(code, "paid_backend_required")
+            XCTAssertEqual(message, "An active purchase is required for backend feed access")
+        }
+    }
+
+    func testBackendFeedClientUsesIncrementalCursorInsteadOfDateWindow() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let client = BackendClient(session: session)
+        MockURLProtocol.handler = { request in
+            let components = try XCTUnwrap(URLComponents(url: try XCTUnwrap(request.url), resolvingAgainstBaseURL: false))
+            XCTAssertEqual(
+                components.queryItems?.first(where: { $0.name == "since" })?.value,
+                "2026-08-22T12:00:00Z"
+            )
+            XCTAssertNil(components.queryItems?.first(where: { $0.name == "days" }))
+            return (
+                Data("[]".utf8),
+                try XCTUnwrap(HTTPURLResponse(url: try XCTUnwrap(request.url), statusCode: 200, httpVersion: nil, headerFields: nil))
+            )
+        }
+        defer {
+            MockURLProtocol.handler = nil
+            session.invalidateAndCancel()
+        }
+
+        let items = try await client.fetchBackendFeed(since: "2026-08-22T12:00:00Z")
+
+        XCTAssertTrue(items.isEmpty)
+    }
+
     func testFeedThumbnailLoaderDownsamplesLargeImages() throws {
         let renderer = UIGraphicsImageRenderer(size: CGSize(width: 800, height: 400))
         let data = renderer.pngData { context in

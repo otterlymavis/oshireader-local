@@ -53,6 +53,7 @@ final class PushSyncCoordinator: ObservableObject {
             } else if let binding = registry.binding(profileID: profileID, localTermID: term.id) {
                 registry.enqueueDelete(binding)
                 await retryPendingOperations()
+                PaidBackendFeedCoordinator.shared.scheduleSynchronization()
             } else if let backendID = term.backendTermID {
                 registry.enqueueDelete(backendTermID: backendID)
                 LocalDB.shared.updateTerm(id: term.id, backendTermID: .some(nil))
@@ -104,13 +105,15 @@ final class PushSyncCoordinator: ObservableObject {
             let enabledBackendIDs = Set(backendTerms.filter(\.notify_on_new).map(\.id))
             for binding in registry.bindings where !enabledBackendIDs.contains(binding.backendTermID) {
                 if allBackendIDs.contains(binding.backendTermID) {
-                    registry.enqueueDelete(binding)
+                    // A hosted-feed term may remain silently active after
+                    // guaranteed push was disabled. Clear only the push binding.
+                    registry.clearMissingBackendBinding(binding)
                 } else {
                     registry.clearMissingBackendBinding(binding)
                 }
             }
             let registeredIDs = Set(registry.bindings.map(\.backendTermID))
-            for orphanedID in allBackendIDs.subtracting(registeredIDs) {
+            for orphanedID in enabledBackendIDs.subtracting(registeredIDs) {
                 registry.enqueueDelete(backendTermID: orphanedID)
             }
             await retryPendingOperations()

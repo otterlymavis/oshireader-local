@@ -32,6 +32,7 @@ final class PlusStore: ObservableObject {
     @Published private(set) var pushTermLimit = 0
     @Published private(set) var pushTermCount = 0
     @Published private(set) var pushDeliveryState: PushDeliveryState = .inactive
+    @Published private(set) var hasActiveEntitlement = false
     @Published private(set) var currentProductID: String?
     @Published private(set) var expiresAt: Date?
     @Published private(set) var isLoadingProducts = false
@@ -137,6 +138,7 @@ final class PlusStore: ObservableObject {
     }
 
     private func apply(_ status: EntitlementStatus) {
+        hasActiveEntitlement = status.is_active
         pushTermLimit = status.is_active ? status.push_term_limit : 0
         pushTermCount = status.push_term_count
         pushDeliveryState = status.push_delivery_state

@@ -221,10 +221,24 @@ final class LocalRefreshCoordinator: ObservableObject {
             guard let self else {
                 return LocalRefreshResult(completion: .failed, addedCount: 0, sourceStatuses: [], customRefreshCompleted: false)
             }
-            let result = await self.perform(
+            let sourceRevision = LocalDB.shared.dataRevision
+            async let paidBackendResult = PaidBackendFeedCoordinator.shared.refresh(
+                request,
+                sourceRevision: sourceRevision,
+                profileID: profileID
+            )
+            let localResult = await self.perform(
                 request,
                 generation: refreshGeneration,
                 profileID: profileID
+            )
+            let paidResult = await paidBackendResult
+            let result = LocalRefreshResult(
+                completion: localResult.completion,
+                addedCount: localResult.addedCount + paidResult.addedCount,
+                sourceStatuses: localResult.sourceStatuses,
+                customRefreshCompleted: localResult.customRefreshCompleted,
+                cappedWorkCount: localResult.cappedWorkCount
             )
             let isCurrent = self.isCurrent(generation: refreshGeneration, profileID: profileID)
             let isSameProfile = LocalDB.shared.activeProfile.id == profileID

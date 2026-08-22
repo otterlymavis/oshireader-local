@@ -48,6 +48,20 @@ final class PaidPushTests: XCTestCase {
     }
 
     @MainActor
+    func testBackendSyncRetainsInactivePushBindingButDropsOrdinaryInactiveTerm() {
+        let active = WatchTerm(id: "active", keyword: "Active", is_active: true)
+        let inactivePush = WatchTerm(id: "push", keyword: "Push", is_active: false)
+        let inactiveLocal = WatchTerm(id: "local", keyword: "Local", is_active: false)
+
+        let selected = PaidBackendFeedCoordinator.termsForBackendSync(
+            [active, inactivePush, inactiveLocal],
+            pushBoundLocalIDs: [inactivePush.id]
+        )
+
+        XCTAssertEqual(selected.map(\.id), [active.id, inactivePush.id])
+    }
+
+    @MainActor
     func testRegistryCountsBindingsAcrossProfilesAndRejectsDuplicateKeyword() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)

@@ -292,6 +292,7 @@ final class OshiReaderUITests: XCTestCase {
     func testPaidPushControlsFollowCatalogConfiguration() throws {
         tapTab(index: 4, labels: ["Settings"])
         XCTAssertFalse(app.descendants(matching: .any)["settings.guaranteedPushSection"].exists)
+        XCTAssertFalse(app.staticTexts["Hosted feed refresh"].exists)
         XCTAssertNil(waitForAnyButton(exactly: ["Guaranteed push"], timeout: 1))
 
         app.terminate()
@@ -303,6 +304,7 @@ final class OshiReaderUITests: XCTestCase {
         XCTAssertTrue(
             waitForElement(identifier: "settings.guaranteedPushSection", timeout: 3, swipes: 3).exists
         )
+        XCTAssertTrue(app.staticTexts["Hosted feed refresh"].waitForExistence(timeout: 3))
         XCTAssertNotNil(waitForAnyButton(exactly: ["Guaranteed push"], timeout: 3, swipes: 2))
     }
 

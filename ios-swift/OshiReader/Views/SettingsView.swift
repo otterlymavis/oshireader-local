@@ -78,6 +78,7 @@ struct SettingsView: View {
     @StateObject private var plusStore = PlusStore.shared
     @StateObject private var pushSync = PushSyncCoordinator.shared
     @StateObject private var pushRegistry = PushTermRegistry.shared
+    @StateObject private var paidBackend = PaidBackendFeedCoordinator.shared
     @Environment(\.scenePhase) private var scenePhase
     
     @State private var showingAddKeywordAlert = false
@@ -188,7 +189,17 @@ struct SettingsView: View {
                 }
 
                 if PlusStore.isPaidPushConfigured {
-                    Section(header: Text("Guaranteed Push")) {
+                    Section(header: Text("Paid Backend")) {
+                    HStack {
+                        Label("Hosted feed refresh", systemImage: "server.rack")
+                        Spacer()
+                        Text(plusStore.hasActiveEntitlement ? "Active" : "Inactive")
+                            .foregroundColor(plusStore.hasActiveEntitlement ? .green : theme.colors.textMuted)
+                    }
+                    .accessibilityIdentifier("settings.paidBackendRefreshStatus")
+                    Text("All reading, storage, on-device refresh, and local alerts remain free. A purchase adds hosted polling and guaranteed push.")
+                        .font(.caption)
+                        .foregroundColor(theme.colors.textMuted)
                     HStack {
                         Label("Real-time push terms", systemImage: "antenna.radiowaves.left.and.right")
                         Spacer()
@@ -247,6 +258,9 @@ struct SettingsView: View {
                     }
                     if let message = plusStore.errorMessage ?? pushSync.errorMessage {
                         Text(message).font(.caption).foregroundColor(.red)
+                    }
+                    if let message = paidBackend.errorMessage {
+                        Text(message).font(.caption).foregroundColor(.orange)
                     }
                 }
                 .accessibilityIdentifier("settings.guaranteedPushSection")
