@@ -22,6 +22,26 @@ on:
           - not-required
           - pending
           - passed
+      receipt_reporting_test:
+        description: "Physical-device notification-service receipt reporting acceptance"
+        required: true
+        type: choice
+        options:
+          - not-required
+          - pending
+          - passed
+      sandbox_billing_matrix:
+        description: "Sandbox purchase, restore, downgrade, refund, and lifetime acceptance"
+        required: true
+        type: choice
+        options:
+          - not-required
+          - pending
+          - passed
+      acceptance_evidence:
+        description: "TestFlight build and dated device/sandbox acceptance record; required when enabled"
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -38,6 +58,9 @@ jobs:
           CATALOG_MODE: ${{ inputs.catalog_mode }}
           PRODUCT_IDS: ${{ inputs.product_ids }}
           PHYSICAL_PUSH_TEST: ${{ inputs.physical_push_test }}
+          RECEIPT_REPORTING_TEST: ${{ inputs.receipt_reporting_test }}
+          SANDBOX_BILLING_MATRIX: ${{ inputs.sandbox_billing_matrix }}
+          ACCEPTANCE_EVIDENCE: ${{ inputs.acceptance_evidence }}
         run: |
           python3 - <<'PY'
           import os
@@ -85,16 +108,31 @@ jobs:
           catalog_mode = os.environ["CATALOG_MODE"]
           product_ids = [value.strip() for value in os.environ.get("PRODUCT_IDS", "").split(",") if value.strip()]
           physical = os.environ["PHYSICAL_PUSH_TEST"]
+          receipt_reporting = os.environ["RECEIPT_REPORTING_TEST"]
+          billing_matrix = os.environ["SANDBOX_BILLING_MATRIX"]
+          acceptance_evidence = os.environ.get("ACCEPTANCE_EVIDENCE", "").strip()
           if catalog_mode == "disabled":
               if product_ids:
                   raise SystemExit("product_ids must stay empty while the production catalog is disabled")
               if physical != "not-required":
                   raise SystemExit("physical_push_test must be not-required for a free-only candidate")
+              if receipt_reporting != "not-required":
+                  raise SystemExit("receipt_reporting_test must be not-required for a free-only candidate")
+              if billing_matrix != "not-required":
+                  raise SystemExit("sandbox_billing_matrix must be not-required for a free-only candidate")
+              if acceptance_evidence:
+                  raise SystemExit("acceptance_evidence must stay empty for a free-only candidate")
           else:
               if not product_ids:
                   raise SystemExit("product_ids are required when the paid catalog is enabled")
               if physical != "passed":
                   raise SystemExit("sandbox purchase, hosted-feed, and terminated-app push acceptance must pass")
+              if receipt_reporting != "passed":
+                  raise SystemExit("physical-device receipt reporting acceptance must pass")
+              if billing_matrix != "passed":
+                  raise SystemExit("purchase, restore, downgrade, refund, and lifetime acceptance must pass")
+              if not acceptance_evidence:
+                  raise SystemExit("a TestFlight build and dated acceptance evidence reference is required")
           print(f"Validated {catalog_mode} catalog candidate")
           PY
 
