@@ -75,6 +75,9 @@ struct SettingsView: View {
     @StateObject private var profiles = LocalProfileStore.shared
     @StateObject private var refreshDiagnostics = RefreshDiagnostics.shared
     @StateObject private var cloudSync = CloudSyncManager.shared
+    @StateObject private var plusStore = PlusStore.shared
+    @StateObject private var pushSync = PushSyncCoordinator.shared
+    @StateObject private var pushRegistry = PushTermRegistry.shared
     @Environment(\.scenePhase) private var scenePhase
     
     @State private var showingAddKeywordAlert = false
@@ -156,6 +159,13 @@ struct SettingsView: View {
                             newAliasText: $newAliasText,
                             notificationTermBeingUpdated: $notificationTermBeingUpdated,
                             onSetNotificationEnabled: setNotificationEnabled,
+                            showsGuaranteedPush: PlusStore.isPaidPushConfigured,
+                            pushTermLimit: plusStore.pushTermLimit,
+                            pushTermCount: plusStore.activePushTermCount,
+                            pushTermBeingUpdated: pushSync.termBeingUpdated,
+                            onSetPushEnabled: { enabled, term in
+                                await pushSync.setPushEnabled(enabled, for: term)
+                            },
                             onAliasLimitReached: { showingAliasLimitMessage = true }
                         )
                     }
@@ -175,6 +185,72 @@ struct SettingsView: View {
                         .foregroundColor(theme.colors.primary)
                     }
                     .accessibilityIdentifier("settings.addKeywordButton")
+                }
+
+                if PlusStore.isPaidPushConfigured {
+                    Section(header: Text("Guaranteed Push")) {
+                    HStack {
+                        Label("Real-time push terms", systemImage: "antenna.radiowaves.left.and.right")
+                        Spacer()
+                        Text("\(plusStore.activePushTermCount)/\(plusStore.pushTermLimit)")
+                            .foregroundColor(theme.colors.textMuted)
+                    }
+                    Text("The bell controls free best-effort local alerts. The antenna controls paid guaranteed push.")
+                        .font(.caption)
+                        .foregroundColor(theme.colors.textMuted)
+
+                    ForEach(plusStore.products, id: \.id) { product in
+                        Button {
+                            Task { await plusStore.purchase(product) }
+                        } label: {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(product.displayName)
+                                    Text(plusStore.billingLabel(for: product))
+                                        .font(.caption2)
+                                        .foregroundColor(theme.colors.textMuted)
+                                }
+                                Spacer()
+                                if plusStore.currentProductID == product.id {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .foregroundColor(theme.colors.primary)
+                                }
+                                Text(product.displayPrice)
+                            }
+                        }
+                        .disabled(plusStore.isPurchasing || plusStore.currentProductID == product.id)
+                    }
+                    Button("Restore Purchases") { Task { await plusStore.restorePurchases() } }
+
+                    if plusStore.pushDeliveryState == .selectionRequired {
+                        Text("Guaranteed push is paused. Disable terms until usage is within your current limit.")
+                            .font(.caption)
+                            .foregroundColor(.orange)
+                        ForEach(pushRegistry.bindings) { binding in
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(binding.keyword)
+                                    Text(profileName(for: binding.profileID))
+                                        .font(.caption2)
+                                        .foregroundColor(theme.colors.textMuted)
+                                }
+                                Spacer()
+                                Button("Disable", role: .destructive) {
+                                    Task { await pushSync.disable(binding) }
+                                }
+                            }
+                        }
+                    } else if plusStore.pushDeliveryState == .inactive && !pushRegistry.bindings.isEmpty {
+                        Text("Guaranteed push is paused because there is no active purchase. Free local alerts remain available.")
+                            .font(.caption)
+                            .foregroundColor(.orange)
+                    }
+                    if let message = plusStore.errorMessage ?? pushSync.errorMessage {
+                        Text(message).font(.caption).foregroundColor(.red)
+                    }
+                }
+                .accessibilityIdentifier("settings.guaranteedPushSection")
+                .task { await plusStore.loadProductsIfNeeded() }
                 }
                 
                 // Section: Subscribed Platforms
@@ -1051,6 +1127,10 @@ struct SettingsView: View {
         }
     }
 
+    private func profileName(for profileID: UUID) -> String {
+        profiles.profiles.first(where: { $0.id == profileID })?.name ?? "Unknown profile"
+    }
+
     private func displayName(for choice: AppFontChoice) -> String {
         choice.displayName
     }
@@ -1124,6 +1204,11 @@ private struct TermRowView: View {
     @Binding var newAliasText: String
     @Binding var notificationTermBeingUpdated: String?
     let onSetNotificationEnabled: (Bool, WatchTerm) async -> Void
+    let showsGuaranteedPush: Bool
+    let pushTermLimit: Int
+    let pushTermCount: Int
+    let pushTermBeingUpdated: String?
+    let onSetPushEnabled: (Bool, WatchTerm) async -> Void
     let onAliasLimitReached: () -> Void
 
     var body: some View {
@@ -1254,9 +1339,25 @@ private struct TermRowView: View {
             }
             .buttonStyle(PlainButtonStyle())
             .disabled(notificationTermBeingUpdated != nil)
-            .accessibilityLabel(i18n.t("notifyOnNewToggle"))
+            .accessibilityLabel("Local alerts")
             .accessibilityValue(term.notify_on_new ? "on" : "off")
             .accessibilityIdentifier("settings.keywordBell.\(term.keyword)")
+
+            if showsGuaranteedPush {
+                Button {
+                    Task { await onSetPushEnabled(term.backendTermID == nil, term) }
+                } label: {
+                    Image(systemName: term.backendTermID == nil ? "antenna.radiowaves.left.and.right.slash" : "antenna.radiowaves.left.and.right")
+                        .foregroundColor(term.backendTermID == nil ? theme.colors.textMuted : theme.colors.primary)
+                        .font(.body)
+                        .padding(.horizontal, 6)
+                }
+                .buttonStyle(PlainButtonStyle())
+                .disabled(pushTermBeingUpdated != nil || (term.backendTermID == nil && (pushTermLimit == 0 || pushTermCount >= pushTermLimit)))
+                .accessibilityLabel("Guaranteed push")
+                .accessibilityValue(term.backendTermID == nil ? "off" : "on")
+                .accessibilityIdentifier("settings.keywordPush.\(term.keyword)")
+            }
 
             Toggle(i18n.t("active"), isOn: Binding(
                 get: { term.is_active },

@@ -31,21 +31,25 @@ final class I18nTranslationsTests: XCTestCase {
         
         i18n.setLanguage("ja")
         XCTAssertEqual(i18n.lang, "ja")
+        XCTAssertEqual(i18n.t("appTitle"), "推しリーダー")
         XCTAssertEqual(i18n.t("tabFeed"), "フィード")
         XCTAssertEqual(i18n.t("tabSaved"), "ブックマーク")
         
         i18n.setLanguage("en")
         XCTAssertEqual(i18n.lang, "en")
+        XCTAssertEqual(i18n.t("appTitle"), "oshireader")
         XCTAssertEqual(i18n.t("tabFeed"), "Feed")
         XCTAssertEqual(i18n.t("tabSaved"), "Saved")
         
         i18n.setLanguage("zh-TW")
         XCTAssertEqual(i18n.lang, "zh-TW")
+        XCTAssertEqual(i18n.t("appTitle"), "oshireader")
         XCTAssertEqual(i18n.t("tabFeed"), "動態")
         XCTAssertEqual(i18n.t("tabSaved"), "已儲存")
         
         i18n.setLanguage("zh-CN")
         XCTAssertEqual(i18n.lang, "zh-CN")
+        XCTAssertEqual(i18n.t("appTitle"), "oshireader")
         XCTAssertEqual(i18n.t("tabFeed"), "动态")
         XCTAssertEqual(i18n.t("tabSaved"), "已保存")
     }

@@ -85,24 +85,38 @@ final class NotificationNavigationManager: ObservableObject {
     }
 
     private func notificationPayload(from userInfo: [AnyHashable: Any]) -> NotificationPayload? {
-        guard let id = stringValue(userInfo["feed_item_id"]),
-              let url = stringValue(userInfo["url"]) else { return nil }
+        let previewItem = dictionaryValue(userInfo["preview_item"])
+        guard let id = stringValue(userInfo["item_id"])
+                ?? stringValue(previewItem?["id"])
+                ?? stringValue(userInfo["feed_item_id"]),
+              let url = stringValue(userInfo["item_url"])
+                ?? stringValue(previewItem?["url"])
+                ?? stringValue(userInfo["url"]) else { return nil }
         let now = _notificationNavigationISO8601.string(from: Date())
         let platform = Self.normalizedNotificationPlatform(
-            stringValue(userInfo["platform"]) ?? Self.inferredPlatform(itemID: id, itemURL: url)
+            stringValue(userInfo["item_platform"])
+                ?? stringValue(previewItem?["platform"])
+                ?? stringValue(userInfo["platform"])
+                ?? Self.inferredPlatform(itemID: id, itemURL: url)
         )
-        let mediaType = stringValue(userInfo["media_type"])
-        let publishedAt = stringValue(userInfo["published_at"])
+        let mediaType = stringValue(userInfo["item_media_type"])
+            ?? stringValue(previewItem?["media_type"])
+            ?? stringValue(userInfo["media_type"])
+        let publishedAt = stringValue(userInfo["item_published_at"])
+            ?? stringValue(previewItem?["published_at"])
+            ?? stringValue(userInfo["published_at"])
         let watchTermKeyword = stringValue(userInfo["watch_term_keyword"])
-        let source = stringValue(userInfo["source"])
+        let source = stringValue(userInfo["item_source"])
+            ?? stringValue(previewItem?["source"])
+            ?? stringValue(userInfo["source"])
         let item = FeedItem(
             id: id,
             platform: platform ?? "web",
             url: url,
-            title: stringValue(userInfo["title"]),
-            content_text: stringValue(userInfo["content_text"]),
-            author: stringValue(userInfo["author"]),
-            thumbnail_url: stringValue(userInfo["thumbnail_url"]),
+            title: stringValue(userInfo["item_title"]) ?? stringValue(previewItem?["title"]) ?? stringValue(userInfo["title"]),
+            content_text: stringValue(userInfo["item_content_text"]) ?? stringValue(previewItem?["content_text"]) ?? stringValue(userInfo["content_text"]),
+            author: stringValue(userInfo["item_author"]) ?? stringValue(previewItem?["author"]) ?? stringValue(userInfo["author"]),
+            thumbnail_url: stringValue(userInfo["thumbnail_url"]) ?? stringValue(previewItem?["thumbnail_url"]),
             media_type: mediaType ?? "article",
             published_at: publishedAt ?? now,
             watch_term_keyword: watchTermKeyword ?? "",
@@ -116,6 +130,17 @@ final class NotificationNavigationManager: ObservableObject {
             hasPublishedAt: publishedAt != nil,
             hasWatchTermKeyword: watchTermKeyword != nil
         )
+    }
+
+    private func dictionaryValue(_ value: Any?) -> [String: Any]? {
+        if let dictionary = value as? [String: Any] { return dictionary }
+        if let dictionary = value as? [AnyHashable: Any] {
+            return Dictionary(uniqueKeysWithValues: dictionary.compactMap { key, value in
+                guard let key = key as? String else { return nil }
+                return (key, value)
+            })
+        }
+        return nil
     }
 
     private static func normalizedNotificationPlatform(_ platform: String?) -> String? {

@@ -103,14 +103,15 @@ struct WatchTerm: Identifiable, Codable, Hashable {
     var selected_platforms: [String]
     var is_active: Bool
     var notify_on_new: Bool
+    var backendTermID: Int?
     var aliases: [String]
     let created_at: String
 
     enum CodingKeys: String, CodingKey {
-        case id, keyword, collection_mode, source_mode, selected_platforms, is_active, notify_on_new, aliases, created_at
+        case id, keyword, collection_mode, source_mode, selected_platforms, is_active, notify_on_new, backendTermID, aliases, created_at
     }
 
-    init(id: String = UUID().uuidString, keyword: String, collection_mode: String = Self.allInfoCollectionMode, source_mode: SourceMode = .all, selected_platforms: [String] = [], is_active: Bool = true, notify_on_new: Bool = false, aliases: [String] = [], created_at: String = _ISO8601Cache.withoutFractional.string(from: Date())) {
+    init(id: String = UUID().uuidString, keyword: String, collection_mode: String = Self.allInfoCollectionMode, source_mode: SourceMode = .all, selected_platforms: [String] = [], is_active: Bool = true, notify_on_new: Bool = false, backendTermID: Int? = nil, aliases: [String] = [], created_at: String = _ISO8601Cache.withoutFractional.string(from: Date())) {
         self.id = id
         self.keyword = keyword
         self.collection_mode = Self.normalizedCollectionMode(collection_mode)
@@ -118,6 +119,7 @@ struct WatchTerm: Identifiable, Codable, Hashable {
         self.selected_platforms = source_mode == .selected ? selected_platforms : []
         self.is_active = is_active
         self.notify_on_new = notify_on_new
+        self.backendTermID = backendTermID
         self.aliases = aliases
         self.created_at = created_at
     }
@@ -142,6 +144,7 @@ struct WatchTerm: Identifiable, Codable, Hashable {
         self.selected_platforms = decodedMode == .selected ? decodedPlatforms : []
         self.is_active = try container.decodeIfPresent(Bool.self, forKey: .is_active) ?? true
         self.notify_on_new = try container.decodeIfPresent(Bool.self, forKey: .notify_on_new) ?? false
+        self.backendTermID = try container.decodeIfPresent(Int.self, forKey: .backendTermID)
         self.aliases = try container.decodeIfPresent([String].self, forKey: .aliases) ?? []
         self.created_at = try container.decodeIfPresent(String.self, forKey: .created_at) ?? _ISO8601Cache.withoutFractional.string(from: Date())
     }

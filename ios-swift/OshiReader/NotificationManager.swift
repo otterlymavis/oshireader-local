@@ -169,10 +169,14 @@ final class NotificationManager: ObservableObject {
         guard !Task.isCancelled, generation == localNotificationGeneration else { return }
         guard canScheduleNotifications else { return }
 
-        let notifiedKeywords = Set(terms.filter(\.notify_on_new).map(\.keyword))
+        let backendDeliveryIsActive = PlusStore.shared.pushDeliveryState == .active
+        let locallyNotifiedTerms = terms.filter {
+            $0.notify_on_new && ($0.backendTermID == nil || !backendDeliveryIsActive)
+        }
+        let notifiedKeywords = Set(locallyNotifiedTerms.map(\.keyword))
         guard !notifiedKeywords.isEmpty else { return }
         var notifiedTermsByKeyword: [String: WatchTerm] = [:]
-        for term in terms where term.notify_on_new {
+        for term in locallyNotifiedTerms {
             // Preserve the existing one-digest-per-keyword behavior for
             // legacy data that may contain duplicate keywords.
             notifiedTermsByKeyword[term.keyword] = notifiedTermsByKeyword[term.keyword] ?? term

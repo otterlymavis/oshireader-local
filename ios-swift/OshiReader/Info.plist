@@ -79,7 +79,10 @@
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>fetch</string>
+		<string>remote-notification</string>
 	</array>
+	<key>PushSubscriptionProductIDs</key>
+	<string>$(PUSH_SUBSCRIPTION_PRODUCT_IDS)</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

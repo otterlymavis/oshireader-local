@@ -701,6 +701,56 @@ final class FeedMergingTests: XCTestCase {
     }
 
     @MainActor
+    func testBackendPushTermDoesNotAlsoScheduleLocalNotification() async {
+        PlusStore.shared.setPushDeliveryStateForTesting(.active)
+        defer { PlusStore.shared.setPushDeliveryStateForTesting(.inactive) }
+        let center = MockNotificationCenter(status: .authorized)
+        let manager = NotificationManager(center: center)
+        let term = WatchTerm(
+            id: "backend-push",
+            keyword: "Push Oshi",
+            notify_on_new: true,
+            backendTermID: 42
+        )
+        let now = ISO8601DateFormatter().string(from: Date())
+        let item = FeedItem(
+            id: "news:push", platform: "news", url: "https://example.com/push",
+            title: "Push Oshi update", content_text: nil, author: nil, thumbnail_url: nil,
+            media_type: "article", published_at: now, watch_term_keyword: term.keyword,
+            fetched_at: now
+        )
+
+        await manager.notifyForNewItems([item], terms: [term])
+
+        XCTAssertTrue(center.requests.isEmpty)
+    }
+
+    @MainActor
+    func testPausedBackendPushTermFallsBackToLocalNotification() async {
+        PlusStore.shared.setPushDeliveryStateForTesting(.selectionRequired)
+        defer { PlusStore.shared.setPushDeliveryStateForTesting(.inactive) }
+        let center = MockNotificationCenter(status: .authorized)
+        let manager = NotificationManager(center: center)
+        let term = WatchTerm(
+            id: "paused-backend-push",
+            keyword: "Fallback Oshi",
+            notify_on_new: true,
+            backendTermID: 43
+        )
+        let now = ISO8601DateFormatter().string(from: Date())
+        let item = FeedItem(
+            id: "news:fallback", platform: "news", url: "https://example.com/fallback",
+            title: "Fallback Oshi update", content_text: nil, author: nil, thumbnail_url: nil,
+            media_type: "article", published_at: now, watch_term_keyword: term.keyword,
+            fetched_at: now
+        )
+
+        await manager.notifyForNewItems([item], terms: [term])
+
+        XCTAssertEqual(center.requests.count, 1)
+    }
+
+    @MainActor
     func testTwitterPublicIndexItemsStayFeedOnly() async {
         let center = MockNotificationCenter(status: .authorized)
         let manager = NotificationManager(center: center)

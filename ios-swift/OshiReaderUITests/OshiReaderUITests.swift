@@ -237,6 +237,23 @@ final class OshiReaderUITests: XCTestCase {
         XCTAssertTrue(waitForElement(identifier: "settings.localAlertBackgroundStatus", timeout: 2, swipes: 1).exists)
     }
 
+    func testPaidPushControlsFollowCatalogConfiguration() throws {
+        tapTab(index: 4, labels: ["Settings"])
+        XCTAssertFalse(app.descendants(matching: .any)["settings.guaranteedPushSection"].exists)
+        XCTAssertNil(waitForAnyButton(exactly: ["Guaranteed push"], timeout: 1))
+
+        app.terminate()
+        app = XCUIApplication()
+        app.launchArguments = ["--uitesting", "--uitesting-source-status", "--uitesting-paid-push"]
+        app.launch()
+        tapTab(index: 4, labels: ["Settings"])
+
+        XCTAssertTrue(
+            waitForElement(identifier: "settings.guaranteedPushSection", timeout: 3, swipes: 3).exists
+        )
+        XCTAssertNotNil(waitForAnyButton(exactly: ["Guaranteed push"], timeout: 3, swipes: 2))
+    }
+
     func testEncryptedBackupPromptCanBeCancelled() throws {
         tapTab(index: 4, labels: ["Settings"])
         let exportButton = waitForElement(identifier: "settings.exportEncryptedBackupButton", timeout: 3, swipes: 6)

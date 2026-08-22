@@ -1,0 +1,142 @@
+name: OshiReader Local paid-push release gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      catalog_mode:
+        description: "Whether paid products are enabled for this candidate"
+        required: true
+        type: choice
+        options:
+          - disabled
+          - enabled
+      product_ids:
+        description: "Comma-separated StoreKit IDs; required only when catalog_mode is enabled"
+        required: false
+        type: string
+      physical_push_test:
+        description: "Sandbox purchase and terminated-app push acceptance"
+        required: true
+        type: choice
+        options:
+          - not-required
+          - pending
+          - passed
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: macos-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate catalog decision and Local configuration
+        env:
+          CATALOG_MODE: ${{ inputs.catalog_mode }}
+          PRODUCT_IDS: ${{ inputs.product_ids }}
+          PHYSICAL_PUSH_TEST: ${{ inputs.physical_push_test }}
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          project = Path("ios-swift/project.yml").read_text(encoding="utf-8")
+          info = Path("ios-swift/OshiReader/Info.plist").read_text(encoding="utf-8")
+          entitlements = Path("ios-swift/OshiReader/OshiReader.entitlements").read_text(encoding="utf-8")
+          fastfile = Path("ios-swift/fastlane/Fastfile").read_text(encoding="utf-8")
+          checks = {
+              "Local bundle identifier": "PRODUCT_BUNDLE_IDENTIFIER: com.otterpia.oshireader" in project,
+              "catalog build setting": 'PUSH_SUBSCRIPTION_PRODUCT_IDS: ""' in project,
+              "catalog Info.plist binding": "$(PUSH_SUBSCRIPTION_PRODUCT_IDS)" in info,
+              "APNs entitlement": "$(APNS_ENVIRONMENT)" in entitlements,
+              "Local Fastlane target": 'app_identifier: "com.otterpia.oshireader"' in fastfile,
+              "environment-provided App Store credentials": "APP_STORE_CONNECT_KEY_ID" in fastfile,
+          }
+          failed = [name for name, passed in checks.items() if not passed]
+          if failed:
+              raise SystemExit("Local paid-push configuration failed: " + ", ".join(failed))
+
+          catalog_mode = os.environ["CATALOG_MODE"]
+          product_ids = [value.strip() for value in os.environ.get("PRODUCT_IDS", "").split(",") if value.strip()]
+          physical = os.environ["PHYSICAL_PUSH_TEST"]
+          if catalog_mode == "disabled":
+              if product_ids:
+                  raise SystemExit("product_ids must stay empty while the production catalog is disabled")
+              if physical != "not-required":
+                  raise SystemExit("physical_push_test must be not-required for a free-only candidate")
+          else:
+              if not product_ids:
+                  raise SystemExit("product_ids are required when the paid catalog is enabled")
+              if physical != "passed":
+                  raise SystemExit("sandbox purchase and terminated-app push acceptance must pass")
+          print(f"Validated {catalog_mode} catalog candidate")
+          PY
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Verify generated project consistency
+        run: |
+          xcodegen generate --spec ios-swift/project.yml
+          git diff --exit-code -- ios-swift/OshiReader.xcodeproj/project.pbxproj ios-swift/OshiReader/Info.plist
+
+      - name: Resolve simulator destination
+        id: sim
+        run: |
+          UDID=$(xcrun simctl list devices available -j | jq -r '
+            .devices
+            | to_entries
+            | map(select(.key | test("com\\.apple\\.CoreSimulator\\.SimRuntime\\.iOS")))
+            | map(. + {ver: (.key | capture("iOS-(?<maj>[0-9]+)-(?<min>[0-9]+)") | (.maj|tonumber)*100 + (.min|tonumber))})
+            | sort_by(.ver) | reverse
+            | map(.value[] | select(.name | test("^iPhone")))
+            | .[0].udid
+          ')
+          test -n "$UDID" && test "$UDID" != "null"
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+
+      - name: Build and test Local
+        env:
+          PRODUCT_IDS: ${{ inputs.product_ids }}
+        run: |
+          xcodebuild build \
+            -project ios-swift/OshiReader.xcodeproj \
+            -scheme "OshiReader Local" \
+            -destination "platform=iOS Simulator,id=${{ steps.sim.outputs.udid }}" \
+            CODE_SIGNING_ALLOWED=NO \
+            PUSH_SUBSCRIPTION_PRODUCT_IDS="$PRODUCT_IDS"
+          xcodebuild test \
+            -project ios-swift/OshiReader.xcodeproj \
+            -scheme "OshiReader Unit Tests" \
+            -destination "platform=iOS Simulator,id=${{ steps.sim.outputs.udid }}" \
+            CODE_SIGNING_ALLOWED=NO \
+            PUSH_SUBSCRIPTION_PRODUCT_IDS="$PRODUCT_IDS"
+
+      - name: Verify deployed backend paid-push contract
+        env:
+          BACKEND_URL: https://oshireader.onrender.com
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          base = os.environ["BACKEND_URL"].rstrip("/")
+          with urllib.request.urlopen(f"{base}/openapi.json", timeout=30) as response:
+              openapi = json.load(response)
+          schemas = openapi.get("components", {}).get("schemas", {})
+          entitlement = schemas.get("EntitlementStatusOut", {}).get("properties", {})
+          registration = schemas.get("APNSDeviceTokenUpsert", {}).get("properties", {})
+          required_entitlement = {"push_term_limit", "push_term_count", "push_delivery_state"}
+          missing = required_entitlement - entitlement.keys()
+          if missing:
+              raise SystemExit(f"Backend entitlement contract is missing {sorted(missing)}")
+          if "bundle_id" not in registration:
+              raise SystemExit("Backend APNs registration lacks bundle_id")
+          if "/api/entitlements/apple-notifications" not in openapi.get("paths", {}):
+              raise SystemExit("Backend lacks the Apple notification lifecycle endpoint")
+          print("Deployed backend paid-push contract is available")
+          PY
