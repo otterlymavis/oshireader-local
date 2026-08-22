@@ -17,6 +17,10 @@ targets:
         embed: true
       - target: OshiReaderShareExtension
         embed: true
+      - target: OshiReaderNotificationService
+        embed: true
+      - target: OshiReaderNotificationContent
+        embed: true
     settings:
       base:
         INFOPLIST_FILE: OshiReader/Info.plist
@@ -92,6 +96,57 @@ targets:
         CURRENT_PROJECT_VERSION: 6
         SWIFT_VERSION: "5.9"
         GENERATE_INFOPLIST_FILE: NO
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SKIP_INSTALL: YES
+        DEBUG_INFORMATION_FORMAT: dwarf-with-dsym
+  OshiReaderNotificationService:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: OshiReaderNotificationService
+    dependencies:
+      - sdk: UserNotifications.framework
+    settings:
+      base:
+        INFOPLIST_FILE: OshiReaderNotificationService/Info.plist
+        PRODUCT_BUNDLE_IDENTIFIER: com.otterpia.oshireader.NotificationService
+        PRODUCT_NAME: OshiReaderNotificationService
+        APPLICATION_EXTENSION_API_ONLY: YES
+        ENABLE_DEBUG_DYLIB: NO
+        DEVELOPMENT_TEAM: D8H3TBWH7P
+        CODE_SIGN_IDENTITY: "Apple Development"
+        CODE_SIGN_STYLE: Automatic
+        SWIFT_VERSION: "5.9"
+        GENERATE_INFOPLIST_FILE: NO
+        MARKETING_VERSION: 1.0.0
+        CURRENT_PROJECT_VERSION: 6
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SKIP_INSTALL: YES
+        DEBUG_INFORMATION_FORMAT: dwarf-with-dsym
+  OshiReaderNotificationContent:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: OshiReaderNotificationContent
+    dependencies:
+      - sdk: UserNotifications.framework
+      - sdk: UserNotificationsUI.framework
+    settings:
+      base:
+        INFOPLIST_FILE: OshiReaderNotificationContent/Info.plist
+        PRODUCT_BUNDLE_IDENTIFIER: com.otterpia.oshireader.NotificationContent
+        PRODUCT_NAME: OshiReaderNotificationContent
+        APPLICATION_EXTENSION_API_ONLY: YES
+        ENABLE_DEBUG_DYLIB: NO
+        DEVELOPMENT_TEAM: D8H3TBWH7P
+        CODE_SIGN_IDENTITY: "Apple Development"
+        CODE_SIGN_STYLE: Automatic
+        SWIFT_VERSION: "5.9"
+        GENERATE_INFOPLIST_FILE: NO
+        MARKETING_VERSION: 1.0.0
+        CURRENT_PROJECT_VERSION: 6
         TARGETED_DEVICE_FAMILY: "1,2"
         SKIP_INSTALL: YES
         DEBUG_INFORMATION_FORMAT: dwarf-with-dsym

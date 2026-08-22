@@ -128,6 +128,36 @@ final class OshiReaderUITests: XCTestCase {
         readerModeButton?.tap()
     }
 
+    func testLinkedReaderImageNavigatesNormally() throws {
+        app.terminate()
+        app.launchArguments = ["--uitesting", "--uitesting-source-status", "--uitesting-reader-images"]
+        app.launch()
+        tapTab(index: 0, labels: ["Feed"])
+
+        let headline = app.staticTexts["UITest Oshi headline"]
+        XCTAssertTrue(headline.waitForExistence(timeout: 3))
+        let feedCard = app.buttons["feed.card.ui-feed-reader"]
+        if feedCard.waitForExistence(timeout: 2) {
+            feedCard.tap()
+        } else {
+            (firstExistingButton(containing: "UITest Oshi headline") ?? headline).tap()
+        }
+
+        XCTAssertNotNil(waitForButton(identifier: "reader.modeToggleButton", timeout: 5))
+        let linkedImage = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "label == %@", "fixture linked image"))
+            .firstMatch
+        XCTAssertTrue(linkedImage.waitForExistence(timeout: 5))
+        linkedImage.tap()
+
+        XCTAssertFalse(app.sheets.firstMatch.waitForExistence(timeout: 1))
+        XCTAssertFalse(app.alerts.firstMatch.waitForExistence(timeout: 1))
+        XCTAssertTrue(
+            app.staticTexts["navigated:#fixture-target"].waitForExistence(timeout: 3),
+            "A linked image should navigate instead of opening image actions"
+        )
+    }
+
     func testSavedReaderFlow() throws {
         tapTab(index: 2, labels: ["Saved"])
 

@@ -789,8 +789,16 @@ struct WebViewHelper: UIViewRepresentable, Equatable {
     <button class="oshi-uitest-image-button" aria-label="fixture image one"><img class="oshi-uitest-image" src="https://example.com/fixture-image-one.jpg" alt="fixture image one" width="400" height="300"></button>
     <button class="oshi-uitest-image-button" aria-label="fixture image two"><img class="oshi-uitest-image" src="https://example.com/fixture-image-two.jpg" alt="fixture image two" width="400" height="300"></button>
     </div>
+    <a id="fixture-linked-image" href="#fixture-target" aria-label="fixture linked image"><img class="oshi-uitest-image" src="https://example.com/fixture-image-linked.jpg" alt="fixture linked image" width="400" height="300"></a>
+    <p id="fixture-nav-status">not navigated</p>
     <p>This cached article contains deterministic image-selection fixtures.</p>
-    </article></body></html>
+    </article>
+    <script>
+    window.addEventListener('hashchange', function() {
+      document.getElementById('fixture-nav-status').textContent = 'navigated:' + location.hash;
+    });
+    </script>
+    </body></html>
     """
 
     func makeCoordinator() -> Coordinator {
@@ -799,7 +807,11 @@ struct WebViewHelper: UIViewRepresentable, Equatable {
 
     func makeUIView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
+        configuration.defaultWebpagePreferences.preferredContentMode = .mobile
         configuration.userContentController.add(context.coordinator, name: "oshireader")
+        configuration.userContentController.addUserScript(
+            WKUserScript(source: viewportFixJS, injectionTime: .atDocumentStart, forMainFrameOnly: true)
+        )
         configuration.userContentController.addUserScript(WKUserScript(source: readerInjectedJS, injectionTime: .atDocumentEnd, forMainFrameOnly: false))
 
         let webView = WKWebView(frame: .zero, configuration: configuration)
@@ -1004,9 +1016,6 @@ struct WebViewHelper: UIViewRepresentable, Equatable {
 
         return """
         (function() {
-            document.querySelectorAll('[data-oshireader-reader-root="true"]').forEach(function(el) {
-                el.removeAttribute('data-oshireader-reader-root');
-            });
             var style = document.getElementById('oshireader-injected-style');
             if (!style) {
                 style = document.createElement('style');
@@ -1027,21 +1036,46 @@ struct WebViewHelper: UIViewRepresentable, Equatable {
                     '.content',
                     '#content'
                 ];
-                var best = null;
-                var bestScore = 0;
-                selectors.forEach(function(selector) {
-                    document.querySelectorAll(selector).forEach(function(el) {
-                        var text = el.innerText ? el.innerText.replace(/\\s+/g, ' ').trim() : '';
-                        var paragraphs = el.querySelectorAll('p, li, blockquote').length;
-                        var rect = el.getBoundingClientRect();
-                        var score = text.length + (paragraphs * 80) + Math.min(rect.height || 0, 1400);
-                        if (text.length >= 240 && rect.width > 0 && rect.height > 0 && score > bestScore) {
-                            best = el;
-                            bestScore = score;
-                        }
+                function applyReaderRoot() {
+                    document.querySelectorAll('[data-oshireader-reader-root="true"]').forEach(function(el) {
+                        el.removeAttribute('data-oshireader-reader-root');
                     });
+                    var best = null;
+                    var bestScore = 0;
+                    selectors.forEach(function(selector) {
+                        document.querySelectorAll(selector).forEach(function(el) {
+                            var text = el.innerText ? el.innerText.replace(/\\s+/g, ' ').trim() : '';
+                            var paragraphs = el.querySelectorAll('p, li, blockquote').length;
+                            var rect = el.getBoundingClientRect();
+                            var score = text.length + (paragraphs * 80) + Math.min(rect.height || 0, 1400);
+                            if (text.length >= 240 && rect.width > 0 && rect.height > 0 && score > bestScore) {
+                                best = el;
+                                bestScore = score;
+                            }
+                        });
+                    });
+                    if (best) best.setAttribute('data-oshireader-reader-root', 'true');
+                }
+                applyReaderRoot();
+                if (!window.__oshiReaderRootCatchUp) {
+                    var attempts = 0;
+                    window.__oshiReaderRootCatchUp = setInterval(function() {
+                        attempts++;
+                        applyReaderRoot();
+                        if (attempts >= 8) {
+                            clearInterval(window.__oshiReaderRootCatchUp);
+                            window.__oshiReaderRootCatchUp = null;
+                        }
+                    }, 750);
+                }
+            } else {
+                if (window.__oshiReaderRootCatchUp) {
+                    clearInterval(window.__oshiReaderRootCatchUp);
+                    window.__oshiReaderRootCatchUp = null;
+                }
+                document.querySelectorAll('[data-oshireader-reader-root="true"]').forEach(function(el) {
+                    el.removeAttribute('data-oshireader-reader-root');
                 });
-                if (best) best.setAttribute('data-oshireader-reader-root', 'true');
             }
         })();
         """
@@ -1410,6 +1444,32 @@ private func shouldBlockReaderRequest(_ rawUrl: String) -> Bool {
     return _ReaderRegex.adBlocklist?.firstMatch(in: rawUrl, range: range) != nil
 }
 
+private let viewportFixJS = """
+(function () {
+  var desiredContent = 'width=device-width, initial-scale=1';
+  function applyViewport() {
+    var meta = document.querySelector('meta[name="viewport"]');
+    if (!meta) {
+      meta = document.createElement('meta');
+      meta.setAttribute('name', 'viewport');
+      (document.head || document.documentElement).appendChild(meta);
+    }
+    if (meta.getAttribute('content') !== desiredContent) {
+      meta.setAttribute('content', desiredContent);
+    }
+  }
+  applyViewport();
+  document.addEventListener('DOMContentLoaded', applyViewport);
+  var target = document.documentElement || document;
+  new MutationObserver(applyViewport).observe(target, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ['name', 'content']
+  });
+})();
+"""
+
 private let readerInjectedJS = """
 (function () {
   if (window.__OSHIREADER_IMAGE_ACTIONS__) return true;
@@ -1425,38 +1485,6 @@ private let readerInjectedJS = """
     var parts = String(value).split(',').map(function(part) { return part.trim().split(/\\s+/)[0]; }).filter(Boolean);
     return parts.length ? parts[parts.length - 1] : '';
   }
-  function imageCandidate(target) {
-    var el = target;
-    var depth = 0;
-    while (el && el.nodeType === 1 && depth < 8) {
-      var tag = (el.tagName || '').toUpperCase();
-      if (tag === 'IMG') {
-        return {
-          url: el.currentSrc || el.src || el.getAttribute('src') || el.getAttribute('data-src') || el.getAttribute('data-original') || el.getAttribute('data-lazy-src') || srcFromSrcset(el.getAttribute('srcset') || el.getAttribute('data-srcset')),
-          alt: el.getAttribute('alt') || el.getAttribute('title') || document.title || ''
-        };
-      }
-      var bg = '';
-      try {
-        var style = window.getComputedStyle(el);
-        var match = style && style.backgroundImage && style.backgroundImage.match(/url\\((["']?)(.*?)\\1\\)/);
-        bg = match ? match[2] : '';
-      } catch (e) {}
-      if (bg && bg !== 'none') return { url: bg, alt: el.getAttribute('aria-label') || el.getAttribute('title') || document.title || '' };
-      el = el.parentElement;
-      depth++;
-    }
-    return null;
-  }
-  function postImage(target) {
-    var found = imageCandidate(target);
-    if (!found) return false;
-    var imageUrl = absoluteUrl(found.url);
-    if (!/^https?:\\/\\//i.test(imageUrl)) return false;
-    window.webkit.messageHandlers.oshireader.postMessage({ type: 'image-action', url: imageUrl, alt: found.alt || '' });
-    return true;
-  }
-
   var imageSelectionMode = false;
   var selectedImageUrls = new Set();
   var imageSelectionStyle = null;
@@ -1572,6 +1600,7 @@ private let readerInjectedJS = """
   };
 
   document.addEventListener('click', function(event) {
+    if (!imageSelectionMode) return;
     var el = event.target;
     var depth = 0;
     while (el && el.nodeType === 1 && depth < 6) {
@@ -1581,16 +1610,9 @@ private let readerInjectedJS = """
         image = control && control.querySelector ? control.querySelector('img') : null;
       }
       if (image) {
-        if (imageSelectionMode) {
-          toggleImageSelection(image);
-          event.preventDefault();
-          event.stopPropagation();
-          return;
-        }
-        if (postImage(image)) {
-          event.preventDefault();
-          event.stopPropagation();
-        }
+        toggleImageSelection(image);
+        event.preventDefault();
+        event.stopPropagation();
         return;
       }
       el = el.parentElement;
@@ -1599,14 +1621,11 @@ private let readerInjectedJS = """
   }, true);
 
   document.addEventListener('contextmenu', function(event) {
-    if (imageSelectionMode) {
-      if (event.target && (event.target.tagName || '').toUpperCase() === 'IMG') {
-        toggleImageSelection(event.target);
-      }
-      event.preventDefault();
-      return;
+    if (!imageSelectionMode) return;
+    if (event.target && (event.target.tagName || '').toUpperCase() === 'IMG') {
+      toggleImageSelection(event.target);
     }
-    if (postImage(event.target)) event.preventDefault();
+    event.preventDefault();
   }, true);
   return true;
 })();

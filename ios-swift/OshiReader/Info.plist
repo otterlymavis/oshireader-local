@@ -74,6 +74,8 @@
 	</array>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>OshiReader saves images you choose from the reader into your Photos library.</string>
 	<key>UIBackgroundModes</key>

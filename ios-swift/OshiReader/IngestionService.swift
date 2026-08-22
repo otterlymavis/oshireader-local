@@ -1732,13 +1732,14 @@ final class IngestionService {
         // the default URLSession agent, which made some sources return nothing.
         var allHeaders = ["User-Agent": rssUA, "Accept-Language": "ja,en;q=0.9"]
         allHeaders.merge(headers) { _, override in override }
-        guard case .success(let data, _) = await httpGET(url, headers: allHeaders, timeout: 12) else {
+        guard case .success(let data, let response) = await httpGET(url, headers: allHeaders, timeout: 12) else {
             return .failure(await currentFailure() ?? .invalidResponse)
         }
         let parser = XMLParser(data: data)
-        let delegate = RSSParserDelegate()
+        parser.shouldProcessNamespaces = true
+        let delegate = RSSParserDelegate(sourceURL: response.url ?? url)
         parser.delegate = delegate
-        guard parser.parse() else {
+        guard parser.parse(), delegate.recognizedFeedRoot else {
             await recordFailure(.invalidPayload)
             return .failure(SourceRefreshFailure.invalidPayload)
         }

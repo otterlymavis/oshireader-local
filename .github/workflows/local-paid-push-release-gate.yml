@@ -46,12 +46,23 @@ jobs:
           project = Path("ios-swift/project.yml").read_text(encoding="utf-8")
           info = Path("ios-swift/OshiReader/Info.plist").read_text(encoding="utf-8")
           entitlements = Path("ios-swift/OshiReader/OshiReader.entitlements").read_text(encoding="utf-8")
+          privacy = Path("ios-swift/OshiReader/PrivacyInfo.xcprivacy").read_text(encoding="utf-8")
+          content_info = Path("ios-swift/OshiReaderNotificationContent/Info.plist").read_text(encoding="utf-8")
           fastfile = Path("ios-swift/fastlane/Fastfile").read_text(encoding="utf-8")
           checks = {
               "Local bundle identifier": "PRODUCT_BUNDLE_IDENTIFIER: com.otterpia.oshireader" in project,
               "catalog build setting": 'PUSH_SUBSCRIPTION_PRODUCT_IDS: ""' in project,
               "catalog Info.plist binding": "$(PUSH_SUBSCRIPTION_PRODUCT_IDS)" in info,
               "APNs entitlement": "$(APNS_ENVIRONMENT)" in entitlements,
+              "notification service target": "OshiReaderNotificationService:" in project,
+              "notification content target": "OshiReaderNotificationContent:" in project,
+              "Local notification extension bundles": all(value in project for value in (
+                  "com.otterpia.oshireader.NotificationService",
+                  "com.otterpia.oshireader.NotificationContent",
+              )),
+              "paid-push notification category": "OSHI_RESULT_PREVIEW" in content_info,
+              "APNs device identifier privacy declaration": "NSPrivacyCollectedDataTypeDeviceID" in privacy,
+              "export compliance declaration": "ITSAppUsesNonExemptEncryption" in info,
               "Local Fastlane target": 'app_identifier: "com.otterpia.oshireader"' in fastfile,
               "environment-provided App Store credentials": "APP_STORE_CONNECT_KEY_ID" in fastfile,
           }
