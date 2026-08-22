@@ -91,6 +91,13 @@ final class IngestionService {
     static let freshnessWindow: TimeInterval = 10 * 24 * 60 * 60
     static let googleNewsLookbackDays = 10
     static let twitterPublicIndexSource = "twitter_public_index"
+    // Google News RSS's pubDate reflects when Google indexed/re-surfaced the
+    // page, not the page's real publish date, for sources that don't expose
+    // reliable article metadata (an unrestricted keyword search, or a
+    // fallback for a platform whose own dates are just thread/post creation
+    // time). Tag those so notifications can skip them while still trusting
+    // the dated RSS from real news sites (Yahoo News, Oricon, etc.).
+    static let unverifiedDateGoogleNewsSource = "google_news_unverified_date"
     static let shared = IngestionService(classifyFreshness: true)
     typealias RequestExecutor = @Sendable (URLRequest) async throws -> (Data, URLResponse)
     typealias RetrySleeper = @Sendable (UInt64) async -> Void
@@ -287,7 +294,7 @@ final class IngestionService {
             }
 
             add("news")        { await self.fetchCuratedNews(keyword: $0, mediaOnly: mediaOnly) }
-            add("5ch")         { await self.fetchGoogleNews(keyword: $0, query: "\($0) site:5ch.net", platform: "5ch", mediaType: "text", mediaOnly: mediaOnly) }
+            add("5ch")         { await self.fetchGoogleNews(keyword: $0, query: "\($0) site:5ch.net", platform: "5ch", mediaType: "text", mediaOnly: mediaOnly, source: Self.unverifiedDateGoogleNewsSource) }
             add("girlschannel") { await self.fetchGirlsChannel(keyword: $0, mediaOnly: mediaOnly) }
             add("mdpr")        { await self.fetchModelPress(keyword: $0, mediaOnly: mediaOnly) }
             add("oricon")      { await self.fetchGoogleNews(keyword: $0, query: "\($0) site:oricon.co.jp", platform: "oricon", mediaType: "article", mediaOnly: mediaOnly, author: "ORICON NEWS", limit: 20, titlePatterns: [#"\s*[-|]\s*(ORICON NEWS|オリコンニュース|オリコン)\s*$"#]) }
@@ -297,7 +304,7 @@ final class IngestionService {
             add("ameblo")     {
                 let blogs = LocalDB.shared.amebloBlogs
                 if blogs.isEmpty {
-                    return await self.fetchGoogleNews(keyword: $0, query: "\($0) site:ameblo.jp", platform: "ameblo", mediaType: "article", mediaOnly: mediaOnly)
+                    return await self.fetchGoogleNews(keyword: $0, query: "\($0) site:ameblo.jp", platform: "ameblo", mediaType: "article", mediaOnly: mediaOnly, source: Self.unverifiedDateGoogleNewsSource)
                 }
                 return await self.fetchAmeblo(keyword: $0, blogs: blogs, mediaOnly: mediaOnly)
             }
@@ -425,7 +432,7 @@ final class IngestionService {
         return await withTaskGroup(of: [FeedItem].self) { group in
             // Keyword-targeted Google News (general, no site filter).
             group.addTask {
-                await self.fetchGoogleNews(keyword: keyword, query: keyword, platform: "news", mediaType: "article", mediaOnly: false)
+                await self.fetchGoogleNews(keyword: keyword, query: keyword, platform: "news", mediaType: "article", mediaOnly: false, source: Self.unverifiedDateGoogleNewsSource)
             }
             // General entertainment feeds, filtered to the keyword client-side.
             for feedURL in Self.curatedFeeds {
@@ -693,7 +700,7 @@ final class IngestionService {
         // to thread-creation time), not the last-reply time — but it's a
         // reasonable fallback if girlschannel's own page is unreachable or
         // its markup changes underneath us.
-        return await fetchGoogleNews(keyword: keyword, query: "\(keyword) site:girlschannel.net", platform: "girlschannel", mediaType: "text", mediaOnly: mediaOnly)
+        return await fetchGoogleNews(keyword: keyword, query: "\(keyword) site:girlschannel.net", platform: "girlschannel", mediaType: "text", mediaOnly: mediaOnly, source: Self.unverifiedDateGoogleNewsSource)
     }
 
     /// girlschannel.net's own keyword-topic listing shows each topic's
@@ -776,7 +783,8 @@ final class IngestionService {
         author: String? = nil,
         limit: Int = 25,
         titlePatterns: [String] = [],
-        locale: PlatformDefinition.NewsLocale = .japan
+        locale: PlatformDefinition.NewsLocale = .japan,
+        source: String = "google_news"
     ) async -> [FeedItem] {
         if mediaOnly { return [] }
         var recentItems = [FeedItem]()
@@ -790,7 +798,8 @@ final class IngestionService {
                 mediaType: mediaType,
                 author: author,
                 limit: limit,
-                titlePatterns: titlePatterns
+                titlePatterns: titlePatterns,
+                source: source
             )
         }
         // The recent-window query already satisfies most refreshes; only pay
@@ -806,7 +815,8 @@ final class IngestionService {
             mediaType: mediaType,
             author: author,
             limit: limit,
-            titlePatterns: titlePatterns
+            titlePatterns: titlePatterns,
+            source: source
         )
         var seen = Set<String>()
         return (recentItems + historicalItems)
@@ -844,7 +854,8 @@ final class IngestionService {
         mediaType: String,
         author: String?,
         limit: Int,
-        titlePatterns: [String]
+        titlePatterns: [String],
+        source: String = "google_news"
     ) -> [FeedItem] {
         var seen = Set<String>()
         var items = [FeedItem]()
@@ -869,7 +880,7 @@ final class IngestionService {
                 published_at: publishedAt,
                 watch_term_keyword: keyword,
                 fetched_at: nowISO(),
-                source: "google_news"
+                source: source
             ))
         }
         return items
@@ -899,7 +910,7 @@ final class IngestionService {
             if case .success(let data, _) = await httpGET(url, headers: ["Accept": "application/json"], timeout: 10) {
                 guard let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
                     await recordFailure(.invalidPayload)
-                    return await fetchGoogleNews(keyword: keyword, query: "\(keyword) site:nicovideo.jp", platform: "niconico", mediaType: "video", mediaOnly: false)
+                    return await fetchGoogleNews(keyword: keyword, query: "\(keyword) site:nicovideo.jp", platform: "niconico", mediaType: "video", mediaOnly: false, source: Self.unverifiedDateGoogleNewsSource)
                 }
                 if let rows = json["data"] as? [[String: Any]], !rows.isEmpty {
                     var items = [FeedItem]()
@@ -937,7 +948,7 @@ final class IngestionService {
             }
         }
         // Fallback: Google News filtered to nicovideo.jp
-        return await fetchGoogleNews(keyword: keyword, query: "\(keyword) site:nicovideo.jp", platform: "niconico", mediaType: "video", mediaOnly: false)
+        return await fetchGoogleNews(keyword: keyword, query: "\(keyword) site:nicovideo.jp", platform: "niconico", mediaType: "video", mediaOnly: false, source: Self.unverifiedDateGoogleNewsSource)
     }
 
     // MARK: - note.com (hashtag RSS)

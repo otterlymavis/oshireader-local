@@ -777,6 +777,32 @@ final class FeedMergingTests: XCTestCase {
     }
 
     @MainActor
+    func testUnverifiedDateGoogleNewsItemsStayFeedOnly() async {
+        let center = MockNotificationCenter(status: .authorized)
+        let manager = NotificationManager(center: center)
+        let term = WatchTerm(id: "stale-index", keyword: "Stale Oshi", notify_on_new: true)
+        let nowString = ISO8601DateFormatter().string(from: Date())
+        let item = FeedItem(
+            id: "5ch:stale-thread",
+            platform: "5ch",
+            url: "https://news.google.com/rss/articles/stale-thread",
+            title: "Stale Oshi thread",
+            content_text: nil,
+            author: nil,
+            thumbnail_url: nil,
+            media_type: "text",
+            published_at: nowString,
+            watch_term_keyword: term.keyword,
+            fetched_at: nowString,
+            source: IngestionService.unverifiedDateGoogleNewsSource
+        )
+
+        await manager.notifyForNewItems([item], terms: [term])
+
+        XCTAssertTrue(center.requests.isEmpty)
+    }
+
+    @MainActor
     func testLocalDigestDoesNotScheduleWithoutNotificationPermission() async throws {
         let center = MockNotificationCenter(status: .notDetermined)
         let manager = NotificationManager(center: center)
