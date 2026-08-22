@@ -46,6 +46,7 @@ final class PaidBackendFeedCoordinator: ObservableObject {
             try await synchronizeActiveProfileTerms()
             errorMessage = nil
         } catch {
+            await refreshEntitlementAfterAccessRejection(error)
             errorMessage = "Hosted refresh could not synchronize: \(error.localizedDescription)"
         }
     }
@@ -108,6 +109,7 @@ final class PaidBackendFeedCoordinator: ObservableObject {
             errorMessage = nil
             return PaidBackendRefreshResult(addedCount: added, succeeded: true)
         } catch {
+            await refreshEntitlementAfterAccessRejection(error)
             lastRefreshSucceeded = false
             errorMessage = "Hosted refresh failed; on-device refresh is still available: \(error.localizedDescription)"
             return .unavailable
@@ -115,7 +117,17 @@ final class PaidBackendFeedCoordinator: ObservableObject {
     }
 
     private func synchronizeActiveProfileTerms() async throws {
-        let localTerms = LocalDB.shared.terms.filter(\.is_active)
+        let profileID = LocalProfileStore.shared.activeProfileID
+        let pushBoundLocalIDs = Set(
+            PushTermRegistry.shared.bindings(for: profileID).map(\.localTermID)
+        )
+        // Inactive ordinary terms do not consume hosted polling. An inactive
+        // guaranteed-push term still needs its backend row updated to inactive;
+        // otherwise disabling the local term would leave remote delivery on.
+        let localTerms = Self.termsForBackendSync(
+            LocalDB.shared.terms,
+            pushBoundLocalIDs: pushBoundLocalIDs
+        )
         var backendTerms = try await BackendClient.shared.fetchPushTerms()
         var usedBackendIDs = Set<Int>()
 
@@ -163,5 +175,18 @@ final class PaidBackendFeedCoordinator: ObservableObject {
     private func refreshCursor(forKey key: String) -> Date? {
         let timestamp = UserDefaults.standard.double(forKey: key)
         return timestamp > 0 ? Date(timeIntervalSince1970: timestamp) : nil
+    }
+
+    private func refreshEntitlementAfterAccessRejection(_ error: Error) async {
+        guard case BackendClientError.httpStatus(_, let code, _) = error,
+              code == "paid_backend_required" else { return }
+        await PlusStore.shared.refreshStatus()
+    }
+
+    static func termsForBackendSync(
+        _ terms: [WatchTerm],
+        pushBoundLocalIDs: Set<String>
+    ) -> [WatchTerm] {
+        terms.filter { $0.is_active || pushBoundLocalIDs.contains($0.id) }
     }
 }
