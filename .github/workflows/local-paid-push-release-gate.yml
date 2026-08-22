@@ -167,7 +167,14 @@ jobs:
               parameter.get("name")
               for parameter in openapi.get("paths", {}).get("/api/feed/", {}).get("get", {}).get("parameters", [])
           }
-          required_feed_parameters = {"term_ids", "offset", "since", "until"}
+          required_feed_parameters = {
+              "term_ids",
+              "since",
+              "until",
+              "scan",
+              "scan_before_published_at",
+              "scan_before_match_id",
+          }
           missing_feed_parameters = required_feed_parameters - feed_parameters
           if missing_feed_parameters:
               raise SystemExit(

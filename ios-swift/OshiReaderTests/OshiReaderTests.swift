@@ -167,17 +167,22 @@ final class OshiReaderTests: XCTestCase {
         let session = URLSession(configuration: configuration)
         let client = BackendClient(session: session)
         let lock = NSLock()
-        var requestedOffsets: [Int] = []
+        var requestIndex = 0
+        var requestedCursorIDs: [String?] = []
         MockURLProtocol.handler = { request in
             let components = try XCTUnwrap(URLComponents(
                 url: try XCTUnwrap(request.url),
                 resolvingAgainstBaseURL: false
             ))
-            let offset = Int(components.queryItems?.first(where: { $0.name == "offset" })?.value ?? "")
             lock.lock()
-            requestedOffsets.append(offset ?? -1)
+            let index = requestIndex
+            requestIndex += 1
+            requestedCursorIDs.append(
+                components.queryItems?.first(where: { $0.name == "scan_before_match_id" })?.value
+            )
             lock.unlock()
             XCTAssertEqual(components.queryItems?.first(where: { $0.name == "limit" })?.value, "2")
+            XCTAssertEqual(components.queryItems?.first(where: { $0.name == "scan" })?.value, "true")
             XCTAssertEqual(
                 components.queryItems?.first(where: { $0.name == "until" })?.value,
                 "2026-08-22T13:00:00Z"
@@ -186,7 +191,25 @@ final class OshiReaderTests: XCTestCase {
                 components.queryItems?.first(where: { $0.name == "term_ids" })?.value,
                 "11,22"
             )
-            let ids = offset == 0 ? ["one", "two"] : ["three"]
+            let ids: [String]
+            let headers: [String: String]?
+            switch index {
+            case 0:
+                ids = ["one", "two"]
+                headers = [
+                    "X-OshiReader-Next-Published-At": "2026-08-22T11:00:00Z",
+                    "X-OshiReader-Next-Match-ID": "42",
+                ]
+            case 1:
+                ids = []
+                headers = [
+                    "X-OshiReader-Next-Published-At": "2026-08-22T10:00:00Z",
+                    "X-OshiReader-Next-Match-ID": "21",
+                ]
+            default:
+                ids = ["three"]
+                headers = nil
+            }
             let rows = ids.map { id in
                 """
                 {
@@ -213,7 +236,7 @@ final class OshiReaderTests: XCTestCase {
                     url: try XCTUnwrap(request.url),
                     statusCode: 200,
                     httpVersion: nil,
-                    headerFields: nil
+                    headerFields: headers
                 ))
             )
         }
@@ -231,9 +254,12 @@ final class OshiReaderTests: XCTestCase {
 
         XCTAssertEqual(items.map(\.id), ["news:one", "news:two", "news:three"])
         lock.lock()
-        let offsets = requestedOffsets
+        let cursorIDs = requestedCursorIDs
         lock.unlock()
-        XCTAssertEqual(offsets, [0, 2])
+        XCTAssertEqual(cursorIDs.count, 3)
+        XCTAssertNil(cursorIDs[0])
+        XCTAssertEqual(cursorIDs[1], "42")
+        XCTAssertEqual(cursorIDs[2], "21")
     }
 
     func testBackendFeedClientSurfacesPaidAccessError() async throws {
