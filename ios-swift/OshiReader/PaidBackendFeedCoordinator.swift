@@ -43,7 +43,7 @@ final class PaidBackendFeedCoordinator: ObservableObject {
         }
         guard PlusStore.shared.hasActiveEntitlement else { return }
         do {
-            try await synchronizeActiveProfileTerms()
+            _ = try await synchronizeActiveProfileTerms()
             errorMessage = nil
         } catch {
             await refreshEntitlementAfterAccessRejection(error)
@@ -65,7 +65,7 @@ final class PaidBackendFeedCoordinator: ObservableObject {
         isRefreshing = true
         defer { isRefreshing = false }
         do {
-            try await synchronizeActiveProfileTerms()
+            let backendTermIDs = try await synchronizeActiveProfileTerms()
             let platform: String?
             switch request {
             case .platform(let value):
@@ -75,15 +75,23 @@ final class PaidBackendFeedCoordinator: ObservableObject {
                 platform = nil
             }
             let cursorKey = refreshCursorKey(profileID: profileID, platform: platform)
+            let refreshCutoff = Date()
             let since = refreshCursor(forKey: cursorKey).map {
                 ISO8601DateFormatter().string(from: $0.addingTimeInterval(-incrementalOverlap))
             }
-            let fetched = try await BackendClient.shared.fetchBackendFeed(
-                platform: platform,
-                limit: request == .background ? 100 : 200,
-                days: 90,
-                since: since
-            )
+            let fetched: [FeedItem]
+            if backendTermIDs.isEmpty {
+                fetched = []
+            } else {
+                fetched = try await BackendClient.shared.fetchAllBackendFeed(
+                    platform: platform,
+                    termIDs: backendTermIDs,
+                    pageSize: request == .background ? 100 : 200,
+                    days: 90,
+                    since: since,
+                    until: ISO8601DateFormatter().string(from: refreshCutoff)
+                )
+            }
             guard LocalProfileStore.shared.activeProfileID == profileID,
                   LocalDB.shared.dataRevision == sourceRevision,
                   !Task.isCancelled else { return .unavailable }
@@ -103,7 +111,7 @@ final class PaidBackendFeedCoordinator: ObservableObject {
                 return item.with(watch_term_keyword: localKeyword)
             }
             let added = LocalDB.shared.mergeItems(newItems: relevant, sourceRevision: sourceRevision)
-            UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: cursorKey)
+            UserDefaults.standard.set(refreshCutoff.timeIntervalSince1970, forKey: cursorKey)
             lastRefreshSucceeded = true
             lastRefreshedAt = Date()
             errorMessage = nil
@@ -116,7 +124,7 @@ final class PaidBackendFeedCoordinator: ObservableObject {
         }
     }
 
-    private func synchronizeActiveProfileTerms() async throws {
+    private func synchronizeActiveProfileTerms() async throws -> [Int] {
         let profileID = LocalProfileStore.shared.activeProfileID
         let pushBoundLocalIDs = Set(
             PushTermRegistry.shared.bindings(for: profileID).map(\.localTermID)
@@ -157,6 +165,7 @@ final class PaidBackendFeedCoordinator: ObservableObject {
         for backend in backendTerms where !backend.notify_on_new && !usedBackendIDs.contains(backend.id) {
             try await BackendClient.shared.deletePushTerm(id: backend.id)
         }
+        return usedBackendIDs.sorted()
     }
 
     private func needsUpdate(_ backend: BackendWatchTerm, from local: WatchTerm) -> Bool {

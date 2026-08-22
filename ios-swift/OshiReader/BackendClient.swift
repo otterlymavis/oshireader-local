@@ -143,6 +143,23 @@ final class BackendClient {
         queryItems: [URLQueryItem] = [],
         accepted: ClosedRange<Int> = 200...299
     ) async throws -> T {
+        let (value, _): (T, HTTPURLResponse) = try await requestWithResponse(
+            path,
+            method: method,
+            json: json,
+            queryItems: queryItems,
+            accepted: accepted
+        )
+        return value
+    }
+
+    private func requestWithResponse<T: Decodable>(
+        _ path: String,
+        method: String = "GET",
+        json: [String: Any]? = nil,
+        queryItems: [URLQueryItem] = [],
+        accepted: ClosedRange<Int> = 200...299
+    ) async throws -> (T, HTTPURLResponse) {
         var components = URLComponents(url: baseURL.appendingPathComponent(path), resolvingAgainstBaseURL: false)!
         if !queryItems.isEmpty { components.queryItems = queryItems }
         var request = URLRequest(url: components.url!)
@@ -168,7 +185,7 @@ final class BackendClient {
                 message: (object?["message"] as? String) ?? (detail as? String)
             )
         }
-        return try JSONDecoder().decode(T.self, from: data)
+        return (try JSONDecoder().decode(T.self, from: data), response)
     }
 
     func entitlementStatus() async throws -> EntitlementStatus {
@@ -233,12 +250,87 @@ final class BackendClient {
 
     func fetchBackendFeed(
         platform: String? = nil,
+        termIDs: [Int] = [],
         limit: Int = 200,
+        offset: Int = 0,
         days: Int = 30,
-        since: String? = nil
+        since: String? = nil,
+        until: String? = nil
     ) async throws -> [FeedItem] {
         var query = [
             URLQueryItem(name: "limit", value: String(limit)),
+            URLQueryItem(name: "offset", value: String(offset)),
+        ]
+        if let since {
+            query.append(URLQueryItem(name: "since", value: since))
+        } else {
+            query.append(URLQueryItem(name: "days", value: String(days)))
+        }
+        if let until { query.append(URLQueryItem(name: "until", value: until)) }
+        if !termIDs.isEmpty {
+            query.append(URLQueryItem(name: "term_ids", value: termIDs.map(String.init).joined(separator: ",")))
+        }
+        if let platform { query.append(URLQueryItem(name: "platform", value: platform)) }
+        let payloads: [BackendFeedPayload] = try await request("api/feed/", queryItems: query)
+        return payloads.map { $0.localItem(keyword: $0.watch_term_keyword) }
+    }
+
+    func fetchAllBackendFeed(
+        platform: String? = nil,
+        termIDs: [Int],
+        pageSize: Int = 200,
+        days: Int = 30,
+        since: String? = nil,
+        until: String
+    ) async throws -> [FeedItem] {
+        guard !termIDs.isEmpty else { return [] }
+        let boundedPageSize = min(200, max(1, pageSize))
+        var cursor: BackendFeedScanCursor?
+        var seenCursors = Set<BackendFeedScanCursor>()
+        var allItems: [FeedItem] = []
+        while true {
+            let (page, nextCursor) = try await fetchBackendFeedScanPage(
+                platform: platform,
+                termIDs: termIDs,
+                limit: boundedPageSize,
+                days: days,
+                since: since,
+                until: until,
+                cursor: cursor
+            )
+            allItems.append(contentsOf: page)
+            guard let nextCursor else { return allItems }
+            if let cursor {
+                guard nextCursor.matchID < cursor.matchID else {
+                    throw BackendClientError.invalidResponse
+                }
+            }
+            guard nextCursor != cursor, seenCursors.insert(nextCursor).inserted else {
+                throw BackendClientError.invalidResponse
+            }
+            cursor = nextCursor
+        }
+    }
+
+    private struct BackendFeedScanCursor: Hashable {
+        let publishedAt: String
+        let matchID: Int
+    }
+
+    private func fetchBackendFeedScanPage(
+        platform: String?,
+        termIDs: [Int],
+        limit: Int,
+        days: Int,
+        since: String?,
+        until: String,
+        cursor: BackendFeedScanCursor?
+    ) async throws -> ([FeedItem], BackendFeedScanCursor?) {
+        var query = [
+            URLQueryItem(name: "limit", value: String(limit)),
+            URLQueryItem(name: "scan", value: "true"),
+            URLQueryItem(name: "until", value: until),
+            URLQueryItem(name: "term_ids", value: termIDs.map(String.init).joined(separator: ",")),
         ]
         if let since {
             query.append(URLQueryItem(name: "since", value: since))
@@ -246,8 +338,30 @@ final class BackendClient {
             query.append(URLQueryItem(name: "days", value: String(days)))
         }
         if let platform { query.append(URLQueryItem(name: "platform", value: platform)) }
-        let payloads: [BackendFeedPayload] = try await request("api/feed/", queryItems: query)
-        return payloads.map { $0.localItem(keyword: $0.watch_term_keyword) }
+        if let cursor {
+            query.append(URLQueryItem(name: "scan_before_published_at", value: cursor.publishedAt))
+            query.append(URLQueryItem(name: "scan_before_match_id", value: String(cursor.matchID)))
+        }
+
+        let (payloads, response): ([BackendFeedPayload], HTTPURLResponse) = try await requestWithResponse(
+            "api/feed/",
+            queryItems: query
+        )
+        let nextPublishedAt = response.value(forHTTPHeaderField: "X-OshiReader-Next-Published-At")
+        let nextMatchID = response.value(forHTTPHeaderField: "X-OshiReader-Next-Match-ID")
+        let nextCursor: BackendFeedScanCursor?
+        switch (nextPublishedAt, nextMatchID.flatMap(Int.init)) {
+        case (nil, nil):
+            nextCursor = nil
+        case let (publishedAt?, matchID?):
+            nextCursor = BackendFeedScanCursor(publishedAt: publishedAt, matchID: matchID)
+        default:
+            throw BackendClientError.invalidResponse
+        }
+        return (
+            payloads.map { $0.localItem(keyword: $0.watch_term_keyword) },
+            nextCursor
+        )
     }
 
     func deletePushTerm(id: Int) async throws {
