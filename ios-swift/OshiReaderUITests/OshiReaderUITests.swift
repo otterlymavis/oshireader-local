@@ -70,6 +70,28 @@ final class OshiReaderUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Selected Source UI Keyword"].waitForExistence(timeout: 3))
     }
 
+    func testExistingKeywordSourceSelectionAllowsMultipleSelectionsWithoutReopening() throws {
+        tapTab(index: 4, labels: ["Settings"])
+
+        guard let sourceSelection = waitForAnyButton(
+            exactly: ["Source Selection", "ソース選択", "來源選擇", "来源选择"],
+            timeout: 2,
+            swipes: 3
+        ) else {
+            XCTFail("Could not find the seeded keyword's source-selection menu")
+            return
+        }
+        sourceSelection.tap()
+
+        let youtube = app.descendants(matching: .any)["settings.keywordSource.UITest Oshi.youtube"]
+        XCTAssertTrue(youtube.waitForExistence(timeout: 3))
+        youtube.tap()
+
+        let niconico = app.descendants(matching: .any)["settings.keywordSource.UITest Oshi.niconico"]
+        XCTAssertTrue(niconico.waitForExistence(timeout: 3), "Source selection closed after the first choice")
+        niconico.tap()
+    }
+
     func testRefreshFeedAndFilterSheet() throws {
         tapTab(index: 0, labels: ["Feed"])
 
