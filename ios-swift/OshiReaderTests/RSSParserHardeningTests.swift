@@ -584,6 +584,22 @@ final class RSSParserDelegateTests: XCTestCase {
         XCTAssertEqual(items.first?.pubDate, "2024-06-01T00:00:00Z")
     }
 
+    func testParsesDublinCoreCreatorAsAuthor() {
+        let xml = """
+        <?xml version="1.0"?><rss version="2.0" xmlns:dc="http://purl.org/dc/elements/1.1/"><channel>
+        <item>
+            <title>Creator item</title>
+            <link>https://example.com/creator</link>
+            <dc:creator>Oshi Artist</dc:creator>
+        </item>
+        </channel></rss>
+        """
+
+        let items = parse(xml)
+
+        XCTAssertEqual(items.first?.author, "Oshi Artist")
+    }
+
     func testParsesRfc822DateWithoutSeconds() {
         let xml = """
         <?xml version="1.0"?><rss version="2.0"><channel>

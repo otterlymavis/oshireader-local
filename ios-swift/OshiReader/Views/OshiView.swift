@@ -27,6 +27,7 @@ struct OshiView: View {
                     VStack(spacing: 12) {
                         Text("(ﾉ◕ヮ◕)ﾉ*:･ﾟ✧")
                             .font(.title)
+                            .accessibilityHidden(true)
                         Text(i18n.t("oshiEmpty"))
                             .font(.headline)
                             .foregroundColor(theme.colors.primary)

@@ -334,6 +334,7 @@ struct RssItem {
     var title: String = ""
     var link: String = ""
     var description: String = ""
+    var author: String? = nil
     var pubDate: String? = nil
     var thumbnailUrl: String? = nil
 }
@@ -367,6 +368,7 @@ class RSSParserDelegate: NSObject, XMLParserDelegate {
     private var currentDescription = ""
     private var currentSummary = ""
     private var currentContent = ""
+    private var currentAuthor = ""
     private var currentPublishedDate = ""
     private var currentUpdatedDate = ""
     private var currentThumbnailUrl: String? = nil
@@ -438,6 +440,7 @@ class RSSParserDelegate: NSObject, XMLParserDelegate {
             currentDescription = ""
             currentSummary = ""
             currentContent = ""
+            currentAuthor = ""
             currentPublishedDate = ""
             currentUpdatedDate = ""
             currentThumbnailUrl = nil
@@ -542,6 +545,16 @@ class RSSParserDelegate: NSObject, XMLParserDelegate {
         case "description": currentDescription += string
         case "summary": currentSummary += string
         case "content": currentContent += string
+        case "artist", "creator", "author":
+            // Atom's structured person construct (<author><name>...</name>
+            // <email>...</email></author>) nests text several levels below
+            // `contentElement`, which stays pinned to "author" for every
+            // descendant. Only capture the flat text form or the <name>
+            // child so sibling <email>/<uri> text isn't concatenated in.
+            let leaf = elementStack.last
+            if leaf == contentElement || leaf == "name" {
+                currentAuthor += string
+            }
         case "pubdate", "published", "date": currentPublishedDate += cleaned
         case "updated": currentUpdatedDate += cleaned
         default: break
@@ -577,6 +590,7 @@ class RSSParserDelegate: NSObject, XMLParserDelegate {
         item.description = [currentDescription, currentSummary, currentContent]
             .map(normalizedText)
             .first { !$0.isEmpty } ?? ""
+        item.author = cleanDisplayText(currentAuthor)
         item.thumbnailUrl = currentThumbnailUrl.flatMap {
             resolveWebURLString($0, baseURL: currentThumbnailBaseURL)
         }
@@ -600,7 +614,10 @@ class RSSParserDelegate: NSObject, XMLParserDelegate {
         let localName = elementName.lowercased()
         let namespace = namespaceURI?.lowercased()
         if namespace == atomNamespace { return localName }
-        if namespace == dublinCoreNamespace, localName == "date" { return "date" }
+        if namespace == dublinCoreNamespace,
+           localName == "date" || localName == "creator" {
+            return localName
+        }
         if namespace == mediaRSSNamespace { return "media:\(localName)" }
         if namespace == rssContentNamespace, localName == "encoded" { return "content" }
 
@@ -612,6 +629,8 @@ class RSSParserDelegate: NSObject, XMLParserDelegate {
             return localName
         case ("dc", "date"):
             return "date"
+        case ("dc", "creator"):
+            return "creator"
         default:
             return normalized
         }

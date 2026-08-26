@@ -4,12 +4,6 @@ import SwiftUI
 import UIKit
 import WebKit
 
-struct ReaderImageAction: Identifiable {
-    let id = UUID()
-    let url: URL
-    let alt: String?
-}
-
 enum ReaderWebLoadState {
     case loading
     case loaded
@@ -37,7 +31,6 @@ struct ReaderView: View {
     @State private var readerTheme: AppThemeMode = .light
     @State private var fontSize: CGFloat = 16.0
     @State private var isTranslated = false
-    @State private var imageAction: ReaderImageAction?
     @State private var saveImageStatus = ""
     @State private var showingSaveImageStatus = false
     @State private var selectImagesCounter = 0
@@ -163,7 +156,6 @@ struct ReaderView: View {
                                     showOpenInBrowserBanner = false
                                 }
                             },
-                            onImageAction: { imageAction = $0 },
                             onImageSelectionState: { selectedImageCount = $0 },
                             onImageSelectionUnavailable: {
                                 isSelectingImages = false
@@ -177,8 +169,13 @@ struct ReaderView: View {
                                 saveImageStatus = i18n.t("imageSelectionError")
                                 showingSaveImageStatus = true
                             },
+                            onSaveAllImagesUnavailable: {
+                                isSavingSelectedImages = false
+                                saveImageStatus = i18n.t("imageSelectionError")
+                                showingSaveImageStatus = true
+                            },
                             onSelectedImages: { urls in saveSelectedImages(urls) },
-                            onAllImages: { urls in saveSelectedImages(urls, emptyMessageKey: "noLargeImagesFound") },
+                            onAllImages: { urls in saveSelectedImages(urls, emptyMessageKey: "imageNoLargeImages") },
                             onContentBlocked: {
                                 if PlatformRegistry.normalizeID(currentItem.platform) == "twitter" {
                                     if !isSigningIntoX { showSignInBanner = true }
@@ -307,7 +304,7 @@ struct ReaderView: View {
                                 selectedImageCount = 0
                                 selectImagesCounter += 1
                             } label: {
-                                Label(i18n.t("selectImages"), systemImage: "checklist")
+                                Label(i18n.t("selectMultipleImages"), systemImage: "checklist")
                             }
                             .accessibilityIdentifier("reader.selectImagesButton")
 
@@ -323,7 +320,7 @@ struct ReaderView: View {
                                 .foregroundColor(theme.colors.primary)
                         }
                         .accessibilityLabel(i18n.t("selectImages"))
-                        .accessibilityIdentifier("reader.imagesMenuButton")
+                        .accessibilityIdentifier("reader.imageActionsMenuButton")
                     }
                 }
             }
@@ -335,26 +332,6 @@ struct ReaderView: View {
                             .foregroundColor(theme.colors.primary)
                     }
                     .accessibilityIdentifier("reader.shareButton")
-                }
-            }
-        }
-        .confirmationDialog(i18n.t("imageActions"), isPresented: Binding(
-            get: { imageAction != nil },
-            set: { isPresented in
-                if !isPresented {
-                    imageAction = nil
-                }
-            }
-        )) {
-            if let action = imageAction {
-                ShareLink(item: action.url) {
-                    Label(i18n.t("shareImage"), systemImage: "square.and.arrow.up")
-                }
-                Button(i18n.t("saveImage")) {
-                    saveImage(action.url)
-                }
-                Button(i18n.t("openImage")) {
-                    UIApplication.shared.open(action.url)
                 }
             }
         }
@@ -640,43 +617,17 @@ struct ReaderView: View {
         }
     }
 
-    private func saveImage(_ url: URL) {
-        Task {
-            do {
-                let (data, response) = try await URLSession.shared.data(for: imageRequest(for: url))
-                if let httpResponse = response as? HTTPURLResponse,
-                   !(200...299).contains(httpResponse.statusCode) {
-                    throw URLError(.badServerResponse)
-                }
-                guard let image = UIImage(data: data) else {
-                    await MainActor.run {
-                        saveImageStatus = i18n.t("imageLoadError")
-                        showingSaveImageStatus = true
-                    }
-                    return
-                }
-                let auth = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
-                guard auth == .authorized || auth == .limited else {
-                    await MainActor.run {
-                        saveImageStatus = i18n.t("photosAccessRequired")
-                        showingSaveImageStatus = true
-                    }
-                    return
-                }
-                try await PHPhotoLibrary.shared().performChanges {
-                    PHAssetChangeRequest.creationRequestForAsset(from: image)
-                }
-                await MainActor.run {
-                    saveImageStatus = i18n.t("imageSavedToPhotos")
-                    showingSaveImageStatus = true
-                }
-            } catch {
-                await MainActor.run {
-                    saveImageStatus = i18n.t("imageSaveError")
-                    showingSaveImageStatus = true
-                }
-            }
-        }
+    static let bulkImageSaveLimit = 25
+    static let bulkImageDownloadConcurrency = 3
+    static let maximumBulkImageDownloadBytes: Int64 = 20 * 1024 * 1024
+
+    static func cappedBulkImageURLs(_ urls: [URL]) -> [URL] {
+        Array(urls.prefix(bulkImageSaveLimit))
+    }
+
+    static func acceptsBulkImageDownload(expectedContentLength: Int64, fileSize: Int64) -> Bool {
+        guard fileSize >= 0, fileSize <= maximumBulkImageDownloadBytes else { return false }
+        return expectedContentLength <= 0 || expectedContentLength <= maximumBulkImageDownloadBytes
     }
 
     private func saveSelectedImages(_ urls: [URL], emptyMessageKey: String = "imageNoSelectedImages") {
@@ -701,23 +652,40 @@ struct ReaderView: View {
                 return
             }
             var saved = 0
-            await withTaskGroup(of: Bool.self) { group in
-                for url in urls {
+            let requests = Self.cappedBulkImageURLs(urls).map(imageRequest(for:))
+            await withTaskGroup(of: Data?.self) { group in
+                var nextRequestIndex = 0
+                let initialRequestCount = min(Self.bulkImageDownloadConcurrency, requests.count)
+                for _ in 0..<initialRequestCount {
+                    let request = requests[nextRequestIndex]
+                    nextRequestIndex += 1
                     group.addTask {
-                        guard let (data, response) = try? await URLSession.shared.data(for: imageRequest(for: url)),
-                              (response as? HTTPURLResponse).map({ (200...299).contains($0.statusCode) }) ?? true,
-                              let image = UIImage(data: data) else { return false }
+                        await Self.downloadBulkImageData(for: request)
+                    }
+                }
+                while let data = await group.next() {
+                    if !Task.isCancelled,
+                       let data,
+                       let image = UIImage(data: data) {
                         do {
                             try await PHPhotoLibrary.shared().performChanges {
                                 PHAssetChangeRequest.creationRequestForAsset(from: image)
                             }
-                            return true
+                            saved += 1
                         } catch {
-                            return false
+                            // Continue saving the remaining independent images.
                         }
                     }
+                    if !Task.isCancelled, nextRequestIndex < requests.count {
+                        let request = requests[nextRequestIndex]
+                        nextRequestIndex += 1
+                        group.addTask {
+                            await Self.downloadBulkImageData(for: request)
+                        }
+                    } else if Task.isCancelled {
+                        group.cancelAll()
+                    }
                 }
-                for await ok in group where ok { saved += 1 }
             }
             await MainActor.run {
                 isSelectingImages = false
@@ -728,6 +696,25 @@ struct ReaderView: View {
                     : i18n.t("imageNoneSaved")
                 showingSaveImageStatus = true
             }
+        }
+    }
+
+    private static func downloadBulkImageData(for request: URLRequest) async -> Data? {
+        do {
+            let (temporaryURL, response) = try await URLSession.shared.download(for: request)
+            guard let http = response as? HTTPURLResponse,
+                  (200...299).contains(http.statusCode) else { return nil }
+            guard let downloadedFileSize = try temporaryURL
+                .resourceValues(forKeys: [.fileSizeKey])
+                .fileSize else { return nil }
+            let fileSize = Int64(downloadedFileSize)
+            guard acceptsBulkImageDownload(
+                expectedContentLength: http.expectedContentLength,
+                fileSize: fileSize
+            ) else { return nil }
+            return try Data(contentsOf: temporaryURL, options: .mappedIfSafe)
+        } catch {
+            return nil
         }
     }
 
@@ -756,10 +743,10 @@ struct WebViewHelper: UIViewRepresentable, Equatable {
     let imageSelectionAction: String
     let saveAllImagesCounter: Int
     let onLoadStateChange: (ReaderWebLoadState) -> Void
-    let onImageAction: (ReaderImageAction) -> Void
     let onImageSelectionState: (Int) -> Void
     let onImageSelectionUnavailable: () -> Void
     let onImageSelectionFailure: () -> Void
+    let onSaveAllImagesUnavailable: () -> Void
     let onSelectedImages: ([URL]) -> Void
     let onAllImages: ([URL]) -> Void
     let onContentBlocked: () -> Void
@@ -898,7 +885,7 @@ struct WebViewHelper: UIViewRepresentable, Equatable {
             context.coordinator.lastSaveAllImagesCounter = saveAllImagesCounter
             uiView.evaluateJavaScript("(function(){ if(!window.__oshiSaveAllImages) return false; window.__oshiSaveAllImages(); return true; })()") { result, _ in
                 guard (result as? Bool) == true else {
-                    DispatchQueue.main.async { onImageSelectionFailure() }
+                    DispatchQueue.main.async { onSaveAllImagesUnavailable() }
                     return
                 }
             }
@@ -1307,11 +1294,7 @@ struct WebViewHelper: UIViewRepresentable, Equatable {
             guard message.name == "oshireader",
                   let body = message.body as? [String: Any],
                   let type = body["type"] as? String else { return }
-            if type == "image-action",
-               let rawUrl = body["url"] as? String,
-               let url = URL(string: rawUrl) {
-                parent.onImageAction(ReaderImageAction(url: url, alt: body["alt"] as? String))
-            } else if type == "image-selection-state",
+            if type == "image-selection-state",
                       let count = body["count"] as? Int {
                 DispatchQueue.main.async { self.parent.onImageSelectionState(count) }
             } else if type == "selected-images",

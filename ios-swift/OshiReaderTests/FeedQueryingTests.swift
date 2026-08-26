@@ -278,6 +278,27 @@ final class FeedQueryingTests: XCTestCase {
         }
     }
 
+    func testReaderViewCapsAndSizeChecksBulkImageDownloads() {
+        let urls = (0..<ReaderView.bulkImageSaveLimit + 5).compactMap {
+            URL(string: "https://example.com/image-\($0).jpg")
+        }
+
+        XCTAssertEqual(ReaderView.cappedBulkImageURLs(urls).count, ReaderView.bulkImageSaveLimit)
+        XCTAssertEqual(ReaderView.cappedBulkImageURLs(urls).last, urls[ReaderView.bulkImageSaveLimit - 1])
+        XCTAssertTrue(ReaderView.acceptsBulkImageDownload(
+            expectedContentLength: -1,
+            fileSize: ReaderView.maximumBulkImageDownloadBytes
+        ))
+        XCTAssertFalse(ReaderView.acceptsBulkImageDownload(
+            expectedContentLength: ReaderView.maximumBulkImageDownloadBytes + 1,
+            fileSize: 1
+        ))
+        XCTAssertFalse(ReaderView.acceptsBulkImageDownload(
+            expectedContentLength: -1,
+            fileSize: ReaderView.maximumBulkImageDownloadBytes + 1
+        ))
+    }
+
     func testReaderViewSiblingNavigationWalksAdjacentFeedItems() throws {
         let now = ISO8601DateFormatter().string(from: Date())
         func item(_ id: String) -> FeedItem {

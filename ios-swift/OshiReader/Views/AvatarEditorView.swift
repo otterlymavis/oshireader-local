@@ -203,8 +203,8 @@ struct AvatarEditorView: View {
 
                         toolbarBtn("＋", a11y: "avatar.scaleUpButton", accessibilityLabel: i18n.t("scaleUp"), size: 12) { scaleLayer(0.15) }
                         toolbarBtn("－", a11y: "avatar.scaleDownButton", accessibilityLabel: i18n.t("scaleDown"), size: 12) { scaleLayer(-0.15) }
-                        toolbarBtn("⟲", accessibilityLabel: i18n.t("rotateLeft"), size: 12) { rotateLayer(-15) }
-                        toolbarBtn("⟳", accessibilityLabel: i18n.t("rotateRight"), size: 12) { rotateLayer(15) }
+                        toolbarBtn("⟲", a11y: "avatar.rotateLeftButton", accessibilityLabel: i18n.t("rotateLeft"), size: 12) { rotateLayer(-15) }
+                        toolbarBtn("⟳", a11y: "avatar.rotateRightButton", accessibilityLabel: i18n.t("rotateRight"), size: 12) { rotateLayer(15) }
                         toolbarBtn(i18n.t("layerForward")) { bringForward() }
                         toolbarBtn(i18n.t("layerBack")) { sendBack() }
                         toolbarBtn(i18n.t("delete"), a11y: "avatar.deleteLayerButton", destructive: true) { deleteSelected() }
@@ -279,6 +279,7 @@ struct AvatarEditorView: View {
                         .background(theme.colors.primary)
                         .cornerRadius(10)
                 }
+                .accessibilityLabel(i18n.t("searchStickersButton"))
                 .accessibilityIdentifier("avatar.stickerSearchButton")
             }
             .padding(.horizontal, 12)
@@ -318,6 +319,7 @@ struct AvatarEditorView: View {
                     Spacer()
                     Text("(´• ω •`)")
                         .font(.largeTitle)
+                        .accessibilityHidden(true)
                     Text(i18n.t("noStickersFound"))
                         .font(.subheadline)
                         .foregroundColor(theme.colors.textMuted)
@@ -345,6 +347,7 @@ struct AvatarEditorView: View {
                                                     .background(theme.colors.primary)
                                                     .clipShape(Circle())
                                                     .padding(4)
+                                                    .accessibilityHidden(true)
                                             }
                                         }
                                     }
@@ -356,6 +359,7 @@ struct AvatarEditorView: View {
                                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(theme.colors.border, lineWidth: 1))
                             }
                             .buttonStyle(PlainButtonStyle())
+                            .accessibilityLabel(sticker.title)
                         }
                     }
                     .padding(.horizontal, 12)
