@@ -397,6 +397,12 @@ final class LocalRefreshCoordinator: ObservableObject {
             lastCompletedUnitID: UserDefaults.standard.string(forKey: completedUnitKey),
             legacyCursor: UserDefaults.standard.integer(forKey: legacyCursorKey)
         )
+        // The 5ch subject index is disposable cache maintenance and is kept
+        // outside source ingestion/status accounting.
+        await IngestionService.shared.maintainFiveChIndex(
+            profileID: profileID,
+            deadline: Date(timeIntervalSinceNow: min(Self.backgroundUnitDeadline, Self.backgroundWorkBudget))
+        )
         guard !plan.units.isEmpty else {
             return LocalRefreshResult(completion: .completed, addedCount: 0, sourceStatuses: [], customRefreshCompleted: true)
         }
@@ -424,6 +430,7 @@ final class LocalRefreshCoordinator: ObservableObject {
                         term: term,
                         platforms: [platform],
                         maximumAliases: LocalRefreshRequest.background.maximumAliases,
+                        fetchScope: .background,
                         transportAttemptLimit: 1,
                         requestTimeoutCap: Self.backgroundUnitDeadline,
                         requestDeadline: unitDeadline
@@ -531,7 +538,8 @@ final class LocalRefreshCoordinator: ObservableObject {
                         term: term,
                         platforms: platforms,
                         maximumAliases: request.maximumAliases,
-                        skippedSourceIDs: skippedSourceIDs
+                        skippedSourceIDs: skippedSourceIDs,
+                        fetchScope: request == .background ? .background : .foreground
                     )
                 }
             }

@@ -20,24 +20,36 @@ struct PlatformDefinition: Equatable {
     let id: String
     let name: String
     let icon: String
+    let rawPlatformValues: Set<String>
     let googleNewsSite: String?
     let newsLocale: NewsLocale
     let usesStrictKeywordMatching: Bool
+    let isMediaPlatform: Bool
+    let skipDateCutoff: Bool
+    let usesActivityDateWindow: Bool
 
     init(
         id: String,
         name: String,
         icon: String,
+        rawPlatformValues: Set<String>? = nil,
         googleNewsSite: String? = nil,
         newsLocale: NewsLocale = .japan,
-        usesStrictKeywordMatching: Bool = false
+        usesStrictKeywordMatching: Bool = false,
+        isMediaPlatform: Bool = false,
+        skipDateCutoff: Bool = false,
+        usesActivityDateWindow: Bool = false
     ) {
         self.id = id
         self.name = name
         self.icon = icon
+        self.rawPlatformValues = rawPlatformValues ?? [id]
         self.googleNewsSite = googleNewsSite
         self.newsLocale = newsLocale
         self.usesStrictKeywordMatching = usesStrictKeywordMatching
+        self.isMediaPlatform = isMediaPlatform
+        self.skipDateCutoff = skipDateCutoff
+        self.usesActivityDateWindow = usesActivityDateWindow
     }
 }
 
@@ -45,17 +57,17 @@ enum PlatformRegistry {
     /// Keep this order stable: it is the default order shown in Settings and
     /// becomes the fallback order when no custom source order is saved.
     static let all: [PlatformDefinition] = [
-        PlatformDefinition(id: "youtube", name: "YouTube", icon: "📹"),
-        PlatformDefinition(id: "niconico", name: "NicoNico", icon: "💬"),
-        PlatformDefinition(id: "tver", name: "TVer", icon: "📺"),
+        PlatformDefinition(id: "youtube", name: "YouTube", icon: "📹", isMediaPlatform: true),
+        PlatformDefinition(id: "niconico", name: "NicoNico", icon: "💬", isMediaPlatform: true),
+        PlatformDefinition(id: "tver", name: "TVer", icon: "📺", isMediaPlatform: true),
+        PlatformDefinition(id: "twitter", name: "X", icon: "𝕏", rawPlatformValues: ["twitter", "x"]),
         PlatformDefinition(id: "note", name: "Note", icon: "📝"),
-        PlatformDefinition(id: "girlschannel", name: "GirlsChannel", icon: "👭", googleNewsSite: "girlschannel.net", usesStrictKeywordMatching: true),
-        PlatformDefinition(id: "5ch", name: "5ch", icon: "💬", googleNewsSite: "5ch.net", usesStrictKeywordMatching: true),
+        PlatformDefinition(id: "girlschannel", name: "GirlsChannel", icon: "👭", googleNewsSite: "girlschannel.net", usesStrictKeywordMatching: true, skipDateCutoff: true, usesActivityDateWindow: true),
+        PlatformDefinition(id: "5ch", name: "5ch", icon: "💬", googleNewsSite: "5ch.net", usesStrictKeywordMatching: true, skipDateCutoff: true, usesActivityDateWindow: true),
         PlatformDefinition(id: "news", name: "General News", icon: "📰"),
-        PlatformDefinition(id: "yahoonews", name: "YahooNews", icon: "🇯🇵", googleNewsSite: "news.yahoo.co.jp", usesStrictKeywordMatching: true),
-        PlatformDefinition(id: "mdpr", name: "ModelPress", icon: "💅", googleNewsSite: "mdpr.jp", usesStrictKeywordMatching: true),
+        PlatformDefinition(id: "yahoonews", name: "YahooNews", icon: "🇯🇵", rawPlatformValues: ["yahoonews", "news:yahoo_ent"], googleNewsSite: "news.yahoo.co.jp", usesStrictKeywordMatching: true),
+        PlatformDefinition(id: "mdpr", name: "ModelPress", icon: "💅", rawPlatformValues: ["mdpr", "news:mdpr"], googleNewsSite: "mdpr.jp", usesStrictKeywordMatching: true),
         PlatformDefinition(id: "oricon", name: "Oricon", icon: "🎤", googleNewsSite: "oricon.co.jp", usesStrictKeywordMatching: true),
-        PlatformDefinition(id: "twitter", name: "X", icon: "𝕏"),
 
         // Additional reference sources, implemented locally through the same
         // dated Google News RSS path used by the existing source fallbacks.
@@ -88,15 +100,23 @@ enum PlatformRegistry {
     }
 
     static var defaultSubscribedIDs: [String] {
-        [
-            "youtube", "niconico", "tver", "note",
-            "girlschannel", "5ch", "news",
-            "yahoonews", "mdpr", "oricon", "custom"
-        ]
+        all.map(\.id)
     }
 
     static var strictKeywordPlatformIDs: Set<String> {
         Set(all.filter(\.usesStrictKeywordMatching).map(\.id))
+    }
+
+    static var mediaPlatformIDs: Set<String> {
+        Set(all.filter(\.isMediaPlatform).map(\.id))
+    }
+
+    static var activityDateWindowPlatformIDs: Set<String> {
+        Set(all.filter(\.usesActivityDateWindow).map(\.id))
+    }
+
+    static var dateCutoffExemptPlatformIDs: Set<String> {
+        Set(all.filter(\.skipDateCutoff).map(\.id))
     }
 
     static func normalizeIDs(_ ids: [String]) -> [String] {
@@ -119,6 +139,9 @@ enum PlatformRegistry {
         case "news:yahoo_ent":
             return "yahoonews"
         default:
+            if let definition = all.first(where: { $0.rawPlatformValues.contains(id) }) {
+                return definition.id
+            }
             if id.hasPrefix("news:") { return "news" }
             return id
         }

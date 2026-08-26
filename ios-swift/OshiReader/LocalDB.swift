@@ -93,7 +93,9 @@ class LocalDB: ObservableObject {
     private static let maximumSavedPages = 2_000
     private static let minFeedItemsPerSubscribedPlatform = 8
     private static let minFeedItemsPerDiscussionPlatform = 25
-    private static let discussionActivityPlatforms: Set<String> = ["5ch", "girlschannel"]
+    private static var discussionActivityPlatforms: Set<String> {
+        PlatformRegistry.dateCutoffExemptPlatformIDs
+    }
     private static let iso8601 = ISO8601DateFormatter()
     
     // Published states for views
@@ -769,6 +771,8 @@ class LocalDB: ObservableObject {
         var addedCount = 0
         var addedItems: [FeedItem] = []
         var addedKeys: [String] = []
+        var activityUpdateItems: [FeedItem] = []
+        var activityUpdateKeys: [String] = []
 
         // Compute each incoming item's key once (it's a string interpolation,
         // not free) instead of recomputing it here and again in the merge
@@ -803,17 +807,51 @@ class LocalDB: ObservableObject {
                     (existing.title == nil ||
                      existing.title?.contains("...") == true ||
                      (item.title?.count ?? 0) > (existing.title?.count ?? 0) + 8)
-
-                let merged = existing.with(
-                    title: shouldReplaceTitle ? item.title : existing.title,
-                    content_text: item.content_text ?? existing.content_text,
-                    author: item.author ?? existing.author,
-                    thumbnail_url: item.thumbnail_url ?? existing.thumbnail_url,
-                    published_at: Self.mergedPublishedAt(existing: existing, incoming: item),
-                    fetched_at: item.fetched_at,
-                    source: item.source ?? existing.source
+                let isVerifiedFiveChActivityUpdate = Self.isVerifiedFiveChActivityUpdate(
+                    existing: existing,
+                    incoming: item
                 )
+                let merged: FeedItem
+                if isVerifiedFiveChActivityUpdate {
+                    let refreshedTitle = item.title?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+                        ? item.title
+                        : existing.title
+                    let refreshedContent = item.content_text?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+                        ? item.content_text
+                        : existing.content_text
+                    let refreshedAuthor = item.author?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+                        ? item.author
+                        : existing.author
+                    let refreshedThumbnail = item.thumbnail_url?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+                        ? item.thumbnail_url
+                        : existing.thumbnail_url
+                    merged = existing.with(
+                        url: item.url.isEmpty ? existing.url : item.url,
+                        title: refreshedTitle,
+                        content_text: refreshedContent,
+                        author: refreshedAuthor,
+                        thumbnail_url: refreshedThumbnail,
+                        media_type: item.media_type.isEmpty ? existing.media_type : item.media_type,
+                        published_at: Self.mergedPublishedAt(existing: existing, incoming: item),
+                        fetched_at: item.fetched_at,
+                        source: item.source ?? existing.source
+                    )
+                } else {
+                    merged = existing.with(
+                        title: shouldReplaceTitle ? item.title : existing.title,
+                        content_text: item.content_text ?? existing.content_text,
+                        author: item.author ?? existing.author,
+                        thumbnail_url: item.thumbnail_url ?? existing.thumbnail_url,
+                        published_at: Self.mergedPublishedAt(existing: existing, incoming: item),
+                        fetched_at: item.fetched_at,
+                        source: item.source ?? existing.source
+                    )
+                }
                 currentMap[key] = merged
+                if isVerifiedFiveChActivityUpdate {
+                    activityUpdateItems.append(merged)
+                    activityUpdateKeys.append(key)
+                }
             }
         }
         
@@ -841,17 +879,36 @@ class LocalDB: ObservableObject {
 
         // Only notify for items that survived the cap — avoids pinging for articles
         // that were immediately evicted as too old.
-        if !addedItems.isEmpty && !wasFirstLoad {
+        var notificationCandidates: [(item: FeedItem, key: String)] = []
+        var notificationCandidateIndex: [String: Int] = [:]
+        for (item, key) in zip(addedItems + activityUpdateItems, addedKeys + activityUpdateKeys) {
+            if let index = notificationCandidateIndex[key] {
+                notificationCandidates[index] = (item, key)
+            } else {
+                notificationCandidateIndex[key] = notificationCandidates.count
+                notificationCandidates.append((item, key))
+            }
+        }
+        if !notificationCandidates.isEmpty && !wasFirstLoad {
             let survivedKeys = Set(finalItems.map(Self.feedItemKey))
             let now = Date()
-            let notifyItems = zip(addedItems, addedKeys)
-                .filter { survivedKeys.contains($0.1) }
-                .map(\.0)
+            let discussionActivityPlatforms = Self.discussionActivityPlatforms
+            let notifyItems = notificationCandidates
+                .filter { survivedKeys.contains($0.key) }
+                .map(\.item)
                 .filter {
-                    // 5ch/girlschannel published_at reflects thread creation, not the
-                    // latest bump, so it's not a useful staleness signal there — same
-                    // exemption computeQueryFeed's cutoff check makes.
-                    if Self.discussionActivityPlatforms.contains(normalizedPlatformKey($0.platform)) {
+                    if $0.source == IngestionService.fiveChThreadCreatedSource {
+                        return false
+                    }
+                    // Direct 5ch DAT timestamps reflect latest reply activity, so
+                    // they can use the same notification age guard as articles.
+                    if $0.source == IngestionService.fiveChVerifiedActivitySource {
+                        guard let published = parseISO8601Date($0.published_at) else { return false }
+                        return now.timeIntervalSince(published) <= Self.maxNotifiableItemAge
+                    }
+                    // Other discussion routes can still carry thread-creation dates,
+                    // which are not useful staleness signals for current activity.
+                    if discussionActivityPlatforms.contains(normalizedPlatformKey($0.platform)) {
                         return true
                     }
                     // An unparseable date means we can't tell whether the item is
@@ -896,6 +953,14 @@ class LocalDB: ObservableObject {
         }
 
         return incomingDate >= existingDate ? incoming.published_at : existing.published_at
+    }
+
+    private static func isVerifiedFiveChActivityUpdate(existing: FeedItem, incoming: FeedItem) -> Bool {
+        guard PlatformRegistry.normalizeID(incoming.platform) == "5ch",
+              incoming.source == IngestionService.fiveChVerifiedActivitySource,
+              let existingDate = parseISO8601Date(existing.published_at),
+              let incomingDate = parseISO8601Date(incoming.published_at) else { return false }
+        return incomingDate > existingDate
     }
 
 
@@ -1010,6 +1075,7 @@ class LocalDB: ObservableObject {
         
         let strictKeywordPlatforms = PlatformRegistry.strictKeywordPlatformIDs
             .union(["news", "tver"])
+        let discussionActivityPlatforms = Self.discussionActivityPlatforms
         let termsByKeyword = Dictionary(self.terms.map { ($0.keyword, $0) }, uniquingKeysWith: { first, _ in first })
 
         let candidates = feedItems.compactMap { item -> FeedQueryCandidate? in
@@ -1026,8 +1092,10 @@ class LocalDB: ObservableObject {
                 return nil
             }
             
-            // Cutoff check (skip limit check for 5ch, girlschannel)
-            let skipCutoff = Self.discussionActivityPlatforms.contains(platformKey)
+            // Discussion sources are activity-oriented. Direct 5ch DAT rows carry
+            // latest-reply dates, while fallback rows may only know thread creation;
+            // keep the established cutoff exemption for both representations.
+            let skipCutoff = discussionActivityPlatforms.contains(platformKey)
             if let cutoff = cutoffDate, !skipCutoff {
                 guard let itemDate = parseISO8601Date(item.published_at), itemDate >= cutoff else {
                     return nil
@@ -1919,7 +1987,7 @@ class LocalDB: ObservableObject {
             return PlatformRegistry.normalizeID(args[index + 1])
         }()
         let usesAllPlatformSortFixture = ProcessInfo.processInfo.arguments.contains("--uitesting-all-platform-sort-feed")
-        let mediaPlatformIDs: Set<String> = ["youtube", "niconico", "tver", "twitter"]
+        let mediaPlatformIDs = PlatformRegistry.mediaPlatformIDs
         let allPlatformFeedItems = PlatformRegistry.all.enumerated().map { index, platform in
             let publishedAt = usesAllPlatformSortFixture
                 ? Self.iso8601.string(from: Date().addingTimeInterval(TimeInterval(-index * 60)))

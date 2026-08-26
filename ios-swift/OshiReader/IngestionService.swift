@@ -24,6 +24,57 @@ enum SourceRefreshFailure: String, Codable, Equatable, CaseIterable, Error {
     }
 }
 
+/// Rebuildable, profile-scoped cache for rotating 2ch.sc subject listings.
+actor FiveChIndexStore {
+    static let shared = FiveChIndexStore()
+    static let version = 1
+    static let boardCap = 900
+    static let entriesPerBoardCap = 500
+    static let totalEntryCap = 10_000
+    static let catalogTTL: TimeInterval = 24 * 60 * 60
+    struct BoardSnapshot: Codable, Sendable { var boardURL: String; var fetchedAt: Date; var entries: [FiveChSubjectEntry] }
+    struct State: Codable, Sendable { var version: Int; var catalogFetchedAt: Date?; var boards: [String]; var snapshots: [String: BoardSnapshot]; var cursor: Int }
+    private var states: [UUID: State] = [:]
+    private static let empty = State(version: version, catalogFetchedAt: nil, boards: [], snapshots: [:], cursor: 0)
+
+    func state(for profileID: UUID) -> State {
+        if let state = states[profileID] { return state }
+        let loaded: State
+        do {
+            let data = try Data(contentsOf: LocalProfileStore.shared.fileURL(for: "fivech_index", profileID: profileID))
+            let value = try JSONDecoder().decode(State.self, from: data)
+            loaded = value.version == Self.version ? Self.capped(value) : Self.empty
+        } catch {
+            loaded = Self.empty
+            try? FileManager.default.removeItem(at: LocalProfileStore.shared.fileURL(for: "fivech_index", profileID: profileID))
+        }
+        states[profileID] = loaded
+        return loaded
+    }
+    func indexedEntries(for profileID: UUID) -> [FiveChSubjectEntry] { state(for: profileID).snapshots.values.flatMap(\.entries) }
+    func catalog(for profileID: UUID) -> (boards: [String], fetchedAt: Date?) { let value = state(for: profileID); return (value.boards, value.catalogFetchedAt) }
+    func shouldRefreshCatalog(for profileID: UUID, now: Date) -> Bool { state(for: profileID).catalogFetchedAt.map { now.timeIntervalSince($0) >= Self.catalogTTL } ?? true }
+    func updateCatalog(_ boards: [String], fetchedAt: Date, profileID: UUID) {
+        var value = state(for: profileID); value.boards = Array(NSOrderedSet(array: boards).compactMap { $0 as? String }.prefix(Self.boardCap)); value.snapshots = value.snapshots.filter { value.boards.contains($0.key) }; value.catalogFetchedAt = fetchedAt; value.cursor = value.boards.isEmpty ? 0 : min(value.cursor, value.boards.count - 1); commit(value, profileID: profileID)
+    }
+    func nextBatch(for profileID: UUID, count: Int) -> (boards: [String], start: Int) {
+        let value = state(for: profileID); guard !value.boards.isEmpty else { return ([], 0) }; let start = value.cursor % value.boards.count
+        return ((0..<min(count, value.boards.count)).map { value.boards[(start + $0) % value.boards.count] }, start)
+    }
+    func commit(snapshots: [BoardSnapshot], nextCursor: Int, profileID: UUID) {
+        var value = state(for: profileID); for snapshot in snapshots { value.snapshots[snapshot.boardURL] = snapshot }; value.cursor = value.boards.isEmpty ? 0 : nextCursor % value.boards.count; commit(Self.capped(value), profileID: profileID)
+    }
+    private func commit(_ value: State, profileID: UUID) {
+        states[profileID] = value; let url = LocalProfileStore.shared.fileURL(for: "fivech_index", profileID: profileID)
+        do { let data = try JSONEncoder().encode(value); let dir = url.deletingLastPathComponent(); try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true); let temp = dir.appendingPathComponent(".fivech-index-\(UUID().uuidString).tmp"); try data.write(to: temp, options: .atomic); if FileManager.default.fileExists(atPath: url.path) { _ = try FileManager.default.replaceItemAt(url, withItemAt: temp) } else { try FileManager.default.moveItem(at: temp, to: url) } } catch { }
+    }
+    private static func capped(_ input: State) -> State {
+        var value = input; value.version = version; value.boards = Array(input.boards.prefix(boardCap)); var snapshots: [String: BoardSnapshot] = [:]; var total = 0
+        for board in value.boards { guard let snapshot = input.snapshots[board], total < totalEntryCap else { continue }; let entries = Array(snapshot.entries.prefix(min(entriesPerBoardCap, totalEntryCap - total))); snapshots[board] = BoardSnapshot(boardURL: board, fetchedAt: snapshot.fetchedAt, entries: entries); total += entries.count }
+        value.snapshots = snapshots; value.cursor = value.boards.isEmpty ? 0 : value.cursor % value.boards.count; return value
+    }
+}
+
 enum SourceRefreshOutcome: Equatable {
     case received
     case stale
@@ -63,6 +114,11 @@ struct IngestionReport {
     let sourceStatuses: [SourceRefreshStatus]
 }
 
+enum IngestionFetchScope {
+    case foreground
+    case background
+}
+
 private enum TransportResult {
     case success(Data, HTTPURLResponse)
     case failure(SourceRefreshFailure)
@@ -82,6 +138,93 @@ private actor SourceFailureRecorder {
     }
 }
 
+struct FiveChSubjectEntry: Codable, Sendable, Equatable {
+    let host: String
+    let board: String
+    let threadID: String
+    let title: String
+    let posts: Int
+    let boardURL: URL
+}
+
+private actor FiveChSubjectCache {
+    private struct CachedValue {
+        let entries: [FiveChSubjectEntry]
+        let expiresAt: Date
+    }
+
+    private var values: [String: CachedValue] = [:]
+    private var inFlight: [String: Task<[FiveChSubjectEntry]?, Never>] = [:]
+
+    func entries(
+        for url: URL,
+        now: Date,
+        ttl: TimeInterval,
+        loader: @escaping @Sendable () async -> [FiveChSubjectEntry]?
+    ) async -> [FiveChSubjectEntry]? {
+        let key = url.absoluteString
+        if let cached = values[key], cached.expiresAt > now {
+            return cached.entries
+        }
+        if let task = inFlight[key] {
+            return await task.value
+        }
+
+        let task = Task { await loader() }
+        inFlight[key] = task
+        let loaded = await task.value
+        inFlight[key] = nil
+        if let loaded {
+            values[key] = CachedValue(entries: loaded, expiresAt: now.addingTimeInterval(ttl))
+        }
+        return loaded
+    }
+}
+
+private actor RequestStartPacer {
+    private let intervalNanoseconds: UInt64
+    private var nextStartNanoseconds: UInt64 = 0
+
+    init(intervalNanoseconds: UInt64) {
+        self.intervalNanoseconds = intervalNanoseconds
+    }
+
+    func wait(
+        deadline: Date?,
+        sleeper: @escaping IngestionService.PacingSleeper
+    ) async -> Bool {
+        guard !Task.isCancelled else { return false }
+        if let deadline, deadline.timeIntervalSinceNow <= 0 {
+            return false
+        }
+        let now = DispatchTime.now().uptimeNanoseconds
+        let reservedStart = max(now, nextStartNanoseconds)
+        let (nextStart, overflowed) = reservedStart.addingReportingOverflow(intervalNanoseconds)
+        nextStartNanoseconds = overflowed ? UInt64.max : nextStart
+        let delay = reservedStart > now ? reservedStart - now : 0
+        if delay > 0 {
+            let boundedDelay: UInt64
+            if let deadline {
+                let remainingNanoseconds = max(0, deadline.timeIntervalSinceNow * 1_000_000_000)
+                guard remainingNanoseconds > 0 else { return false }
+                boundedDelay = min(delay, UInt64(remainingNanoseconds))
+            } else {
+                boundedDelay = delay
+            }
+            do {
+                try await sleeper(boundedDelay)
+            } catch {
+                return false
+            }
+        }
+        guard !Task.isCancelled else { return false }
+        if let deadline, deadline.timeIntervalSinceNow <= 0 {
+            return false
+        }
+        return true
+    }
+}
+
 /// On-device ingestion for public RSS feeds, JSON APIs, and pages.
 ///
 /// Each `fetch*` method reads directly from the phone.
@@ -89,8 +232,10 @@ private actor SourceFailureRecorder {
 /// flat `FeedItem`s ready for `LocalDB.mergeItems`.
 final class IngestionService {
     static let freshnessWindow: TimeInterval = 10 * 24 * 60 * 60
-    static let googleNewsLookbackDays = 10
+    static let googleNewsHistoricalLookbackYears = 10
     static let twitterPublicIndexSource = "twitter_public_index"
+    static let fiveChVerifiedActivitySource = "2ch_sc_dat"
+    static let fiveChThreadCreatedSource = "2ch_sc_thread_created"
     // Google News RSS's pubDate reflects when Google indexed/re-surfaced the
     // page, not the page's real publish date, for sources that don't expose
     // reliable article metadata (an unrestricted keyword search, or a
@@ -101,11 +246,18 @@ final class IngestionService {
     static let shared = IngestionService(classifyFreshness: true)
     typealias RequestExecutor = @Sendable (URLRequest) async throws -> (Data, URLResponse)
     typealias RetrySleeper = @Sendable (UInt64) async -> Void
+    typealias PacingSleeper = @Sendable (UInt64) async throws -> Void
 
     private let requestExecutor: RequestExecutor
     private let retrySleeper: RetrySleeper
+    private let pacingSleeper: PacingSleeper
     private let classifyFreshness: Bool
     private let now: @Sendable () -> Date
+    private let fiveChSubjectCache = FiveChSubjectCache()
+    private let fiveChSubjectLimiter = RequestLimiter(limit: 4)
+    private let fiveChDatLimiter = RequestLimiter(limit: 3)
+    private let tverDetailLimiter = RequestLimiter(limit: 4)
+    private let googleNewsPacer = RequestStartPacer(intervalNanoseconds: 200_000_000)
     private static let maximumTransportAttempts = 2
     private static let retryDelayNanoseconds: UInt64 = 100_000_000
     private static let outputISO8601: ISO8601DateFormatter = {
@@ -142,7 +294,68 @@ final class IngestionService {
         #"\\\\x22videoId\\\\x22:\\\\x22(\#(videoIdCharacterClass))\\\\x22"#,
         #"/(?:watch\?v\\\\x3d|shorts/)(\#(videoIdCharacterClass))"#
     ].compactMap { try? NSRegularExpression(pattern: $0) }
-    private static let youTubeUploadDateSearchParam = "CAI%3D"
+    private static let youTubeFallbackMaximumAge: TimeInterval = 31 * 24 * 60 * 60
+    private static let fiveChDirectBudget: TimeInterval = 12
+    private static let fiveChSubjectCacheTTL: TimeInterval = 5 * 60
+    private static let fiveChResultLimit = 25
+    private static let fiveChRequestTimeout: TimeInterval = 8
+    private static let fiveChHeaders = [
+        "User-Agent": "Monazilla/1.00 OshiReader/1.0",
+        "Accept": "text/plain,text/html;q=0.8,*/*;q=0.5",
+        "Accept-Language": "ja,en;q=0.9",
+    ]
+    private static let fiveChBoardURLs: [URL] = [
+        "https://toro.2ch.sc/nogizaka/",
+        "https://tarte.2ch.sc/keyakizaka46/",
+        "https://awabi.2ch.sc/akb/",
+        "https://tarte.2ch.sc/akbsaloon/",
+        "https://tarte.2ch.sc/world48/",
+        "https://nozomi.2ch.sc/idol/",
+        "https://awabi.2ch.sc/uraidol/",
+        "https://anago.2ch.sc/indieidol/",
+        "https://anago.2ch.sc/netidol/",
+        "https://tarte.2ch.sc/idolplus/",
+        "https://anago.2ch.sc/geino/",
+        "https://hayabusa3.2ch.sc/mnewsalpha/",
+        "https://hayabusa3.2ch.sc/mnewsplus/",
+        "https://anago.2ch.sc/news5plus/",
+        "https://sweet.2ch.sc/headline/",
+        "https://ai.2ch.sc/newsalpha/",
+        "https://ai.2ch.sc/newsplus/",
+        "https://nozomi.2ch.sc/snsplus/",
+        "https://hayabusa3.2ch.sc/news/",
+        "https://hayabusa3.2ch.sc/news4viptasu/",
+        "https://ikura.2ch.sc/musicnews/",
+        "https://awabi.2ch.sc/drama/",
+        "https://awabi.2ch.sc/cinema/",
+        "https://anago.2ch.sc/tvsaloon/",
+        "https://toro.2ch.sc/tv/",
+        "https://awabi.2ch.sc/tvd/",
+        "https://nozomi.2ch.sc/nhkdrama/",
+        "https://anago.2ch.sc/cm/",
+        "https://anago.2ch.sc/actor/",
+        "https://anago.2ch.sc/mendol/",
+        "https://toro.2ch.sc/sfx/",
+        "https://maguro.2ch.sc/fortune/",
+        "https://sweet.2ch.sc/patisserie/",
+        "https://anago.2ch.sc/mass/",
+        "https://ai.2ch.sc/kokusai/",
+        "https://nozomi.2ch.sc/4649/",
+        "https://anago.2ch.sc/am/",
+        "https://awabi.2ch.sc/musicj/",
+        "https://awabi.2ch.sc/musicjm/",
+        "https://awabi.2ch.sc/musicjf/",
+        "https://toro.2ch.sc/musicjg/",
+        "https://awabi.2ch.sc/music/",
+        "https://anago.2ch.sc/streaming/",
+        "https://anago.2ch.sc/sns/",
+    ].compactMap(URL.init(string:))
+    private static let fiveChSubjectRegex = try? NSRegularExpression(
+        pattern: #"^(\d+)\.dat<>(.+?)\s*\((\d+)\)\s*$"#
+    )
+    private static let fiveChDatDateRegex = try? NSRegularExpression(
+        pattern: #"(\d{4})/(\d{2})/(\d{2})\([^)]+\)\s+(\d{2}):(\d{2}):(\d{2})"#
+    )
 
     init(
         requestExecutor: @escaping RequestExecutor = { request in
@@ -151,11 +364,15 @@ final class IngestionService {
         retrySleeper: @escaping RetrySleeper = { nanoseconds in
             try? await Task.sleep(nanoseconds: nanoseconds)
         },
+        pacingSleeper: @escaping PacingSleeper = { nanoseconds in
+            try await Task.sleep(nanoseconds: nanoseconds)
+        },
         classifyFreshness: Bool = false,
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.requestExecutor = requestExecutor
         self.retrySleeper = retrySleeper
+        self.pacingSleeper = pacingSleeper
         self.classifyFreshness = classifyFreshness
         self.now = now
     }
@@ -171,6 +388,8 @@ final class IngestionService {
 
     /// Caps concurrent news.google.com requests across all in-flight terms.
     private static let googleNewsLimiter = RequestLimiter(limit: 3)
+    /// Caps concurrent bing.com/news requests across all in-flight terms.
+    private static let bingNewsLimiter = RequestLimiter(limit: 3)
     /// Caps all source requests across foreground and background ingestion.
     private static let sourceRequestLimiter = RequestLimiter(limit: 4)
     static let maximumAliasesPerTerm = 5
@@ -229,8 +448,20 @@ final class IngestionService {
 
     /// Fetch every subscribed source for one watch term. Network errors in any
     /// single source are swallowed (that source just contributes no items).
-    func ingest(term: WatchTerm, platforms: Set<String>, maximumAliases: Int? = nil, skippedSourceIDs: Set<String> = []) async -> [FeedItem] {
-        await ingestReport(term: term, platforms: platforms, maximumAliases: maximumAliases, skippedSourceIDs: skippedSourceIDs).items
+    func ingest(
+        term: WatchTerm,
+        platforms: Set<String>,
+        maximumAliases: Int? = nil,
+        skippedSourceIDs: Set<String> = [],
+        fetchScope: IngestionFetchScope = .foreground
+    ) async -> [FeedItem] {
+        await ingestReport(
+            term: term,
+            platforms: platforms,
+            maximumAliases: maximumAliases,
+            skippedSourceIDs: skippedSourceIDs,
+            fetchScope: fetchScope
+        ).items
     }
 
     /// - Parameter skippedSourceIDs: Sources to skip entirely for this call
@@ -242,6 +473,7 @@ final class IngestionService {
         platforms: Set<String>,
         maximumAliases: Int? = nil,
         skippedSourceIDs: Set<String> = [],
+        fetchScope: IngestionFetchScope = .foreground,
         transportAttemptLimit: Int? = nil,
         requestTimeoutCap: TimeInterval? = nil,
         requestDeadline: Date? = nil
@@ -254,7 +486,8 @@ final class IngestionService {
                             term: term,
                             platforms: platforms,
                             maximumAliases: maximumAliases,
-                            skippedSourceIDs: skippedSourceIDs
+                            skippedSourceIDs: skippedSourceIDs,
+                            fetchScope: fetchScope
                         )
                     }
                 }
@@ -294,7 +527,7 @@ final class IngestionService {
             }
 
             add("news")        { await self.fetchCuratedNews(keyword: $0, mediaOnly: mediaOnly) }
-            add("5ch")         { await self.fetchGoogleNews(keyword: $0, query: "\($0) site:5ch.net", platform: "5ch", mediaType: "text", mediaOnly: mediaOnly, source: Self.unverifiedDateGoogleNewsSource) }
+            add("5ch")         { await self.fetchFiveCh(keyword: $0, mediaOnly: mediaOnly, fetchScope: fetchScope) }
             add("girlschannel") { await self.fetchGirlsChannel(keyword: $0, mediaOnly: mediaOnly) }
             add("mdpr")        { await self.fetchModelPress(keyword: $0, mediaOnly: mediaOnly) }
             add("oricon")      { await self.fetchGoogleNews(keyword: $0, query: "\($0) site:oricon.co.jp", platform: "oricon", mediaType: "article", mediaOnly: mediaOnly, author: "ORICON NEWS", limit: 20, titlePatterns: [#"\s*[-|]\s*(ORICON NEWS|オリコンニュース|オリコン)\s*$"#]) }
@@ -304,7 +537,7 @@ final class IngestionService {
             add("ameblo")     {
                 let blogs = LocalDB.shared.amebloBlogs
                 if blogs.isEmpty {
-                    return await self.fetchGoogleNews(keyword: $0, query: "\($0) site:ameblo.jp", platform: "ameblo", mediaType: "article", mediaOnly: mediaOnly, source: Self.unverifiedDateGoogleNewsSource)
+                    return await self.fetchAmebloDiscovery(keyword: $0, mediaOnly: mediaOnly)
                 }
                 return await self.fetchAmeblo(keyword: $0, blogs: blogs, mediaOnly: mediaOnly)
             }
@@ -312,10 +545,11 @@ final class IngestionService {
             add("barks")       { await self.fetchDedicatedRSSSource(sourceID: "barks", keyword: $0, feedURLs: Self.dedicatedRSSFeeds["barks"] ?? [], mediaOnly: mediaOnly, fallbackSite: "barks.jp") }
             add("aera")        { await self.fetchDedicatedRSSSource(sourceID: "aera", keyword: $0, feedURLs: Self.dedicatedRSSFeeds["aera"] ?? [], mediaOnly: mediaOnly, fallbackSite: "dot.asahi.com") }
             add("hochi")       { await self.fetchDedicatedRSSSource(sourceID: "hochi", keyword: $0, feedURLs: Self.dedicatedRSSFeeds["hochi"] ?? [], mediaOnly: mediaOnly, fallbackSite: "hochi.news") }
-            add("realsound")   { await self.fetchDedicatedRSSSource(sourceID: "realsound", keyword: $0, feedURLs: Self.dedicatedRSSFeeds["realsound"] ?? [], mediaOnly: mediaOnly, fallbackSite: "realsound.jp") }
+            add("realsound")   { await self.fetchRealSound(keyword: $0, mediaOnly: mediaOnly) }
             add("cinemacafe")  { await self.fetchDedicatedRSSSource(sourceID: "cinemacafe", keyword: $0, feedURLs: Self.dedicatedRSSFeeds["cinemacafe"] ?? [], mediaOnly: mediaOnly, fallbackSite: "cinemacafe.net") }
             add("billboardjapan") { await self.fetchDedicatedRSSSource(sourceID: "billboardjapan", keyword: $0, feedURLs: Self.dedicatedRSSFeeds["billboardjapan"] ?? [], mediaOnly: mediaOnly, fallbackSite: "billboard-japan.com") }
-            add("kpopofficial") { await self.fetchDedicatedRSSSource(sourceID: "kpopofficial", keyword: $0, feedURLs: Self.dedicatedRSSFeeds["kpopofficial"] ?? [], mediaOnly: mediaOnly, fallbackSite: "kpopofficial.com", locale: .englishUS) }
+            add("soompi") { await self.fetchDedicatedRSSSource(sourceID: "soompi", keyword: $0, feedURLs: Self.dedicatedRSSFeeds["soompi"] ?? [], mediaOnly: mediaOnly, fallbackSite: "soompi.com", locale: .englishUS) }
+            add("kpopofficial") { await self.fetchDedicatedRSSSource(sourceID: "kpopofficial", keyword: $0, feedURLs: Self.dedicatedRSSFeeds["kpopofficial"] ?? [], mediaOnly: mediaOnly, fallbackSite: "kpopofficial.com", locale: .englishUS, supplementStaleWithFallback: true) }
             add("tver")        { await self.fetchTVer(keyword: $0) }
             add("youtube")     { await self.fetchYouTube(keyword: $0) }
             add("twitter")     { await self.fetchTwitter(keyword: $0, mediaOnly: mediaOnly) }
@@ -324,7 +558,7 @@ final class IngestionService {
             // above win, while the remaining reference sources use dated RSS
             // results from Google News until they warrant a dedicated parser.
             for source in PlatformRegistry.googleNewsSources where
-                !["5ch", "girlschannel", "mdpr", "oricon", "yahoonews", "twitter", "ameblo", "natalie", "barks", "aera", "hochi", "realsound", "cinemacafe", "billboardjapan", "kpopofficial"].contains(source.id) {
+                !["5ch", "girlschannel", "mdpr", "oricon", "yahoonews", "twitter", "ameblo", "natalie", "barks", "aera", "hochi", "realsound", "cinemacafe", "billboardjapan", "soompi", "kpopofficial"].contains(source.id) {
                 add(source.id) {
                     await self.fetchGoogleNews(
                         keyword: $0,
@@ -395,9 +629,8 @@ final class IngestionService {
     ]
 
     private static let dedicatedRSSFeeds: [String: [String]] = [
-        // Publisher-documented RSS feeds verified against the live official
-        // domains. Sponichi remains on the Google News fallback until it
-        // exposes a stable official RSS endpoint.
+        // Publisher feeds already used by the backend-free target remain
+        // primary; the shared Plus RSS-first routes below use the same URLs.
         "aera": [
             "https://dot.asahi.com/list/feed/rss4provider-all",
         ],
@@ -413,12 +646,13 @@ final class IngestionService {
         "billboardjapan": [
             "https://www.billboard-japan.com/d_news/doc.xml",
         ],
+        "soompi": [
+            "https://www.soompi.com/feed",
+        ],
         "natalie": [
             "https://natalie.mu/music/feed/news",
             "https://natalie.mu/tv/feed/news",
         ],
-        // Use the current WordPress RSS feed; the old about/?m=rss endpoint
-        // now redirects to an HTML page.
         "barks": [
             "https://barks.jp/feed/",
         ],
@@ -432,7 +666,15 @@ final class IngestionService {
         return await withTaskGroup(of: [FeedItem].self) { group in
             // Keyword-targeted Google News (general, no site filter).
             group.addTask {
-                await self.fetchGoogleNews(keyword: keyword, query: keyword, platform: "news", mediaType: "article", mediaOnly: false, source: Self.unverifiedDateGoogleNewsSource)
+                await self.fetchGoogleNews(
+                    keyword: keyword,
+                    query: keyword,
+                    platform: "news",
+                    mediaType: "article",
+                    mediaOnly: false,
+                    source: Self.unverifiedDateGoogleNewsSource,
+                    allowsBingFallback: false
+                )
             }
             // General entertainment feeds, filtered to the keyword client-side.
             for feedURL in Self.curatedFeeds {
@@ -462,7 +704,12 @@ final class IngestionService {
             }
             var all = [FeedItem]()
             for await items in group { all.append(contentsOf: items) }
-            return all
+            guard classifyFreshness else { return all }
+            let cutoff = now().addingTimeInterval(-Self.freshnessWindow)
+            return all.filter { item in
+                guard let publishedAt = parseISO8601Date(item.published_at) else { return false }
+                return publishedAt >= cutoff
+            }
         }
     }
 
@@ -472,7 +719,8 @@ final class IngestionService {
         feedURLs: [String],
         mediaOnly: Bool,
         fallbackSite: String? = nil,
-        locale: PlatformDefinition.NewsLocale = .japan
+        locale: PlatformDefinition.NewsLocale = .japan,
+        supplementStaleWithFallback: Bool = false
     ) async -> [FeedItem] {
         guard !mediaOnly, !feedURLs.isEmpty else { return [] }
 
@@ -493,8 +741,12 @@ final class IngestionService {
                     var seen = Set<String>()
                     let items = entries.compactMap { entry -> FeedItem? in
                         guard !entry.link.isEmpty,
-                              let publishedAt = self.validPublishedDate(entry.pubDate),
-                              self.matchesKeyword(title: entry.title, desc: entry.description, kw: keyword) else {
+                              let publishedAt = self.dedicatedPublishedDate(entry.pubDate, sourceID: sourceID),
+                              self.matchesKeyword(
+                                title: entry.title,
+                                desc: [entry.description, entry.author].compactMap { $0 }.joined(separator: " "),
+                                kw: keyword
+                              ) else {
                             return nil
                         }
                         let canonical = Self.canonicalURLForDedup(entry.link)
@@ -505,7 +757,7 @@ final class IngestionService {
                             url: entry.link,
                             title: self.cleanedOptionalTitle(entry.title),
                             content_text: entry.description.isEmpty ? nil : entry.description,
-                            author: nil,
+                            author: entry.author,
                             thumbnail_url: entry.thumbnailUrl,
                             media_type: "article",
                             published_at: publishedAt,
@@ -538,7 +790,28 @@ final class IngestionService {
         }
 
         let dedicatedItems = dedicatedResult.0
-        if !dedicatedItems.isEmpty { return dedicatedItems }
+        if !dedicatedItems.isEmpty {
+            let newestPublishedAt = dedicatedItems
+                .compactMap { parseISO8601Date($0.published_at) }
+                .max() ?? .distantPast
+            guard supplementStaleWithFallback,
+                  classifyFreshness,
+                  newestPublishedAt < now().addingTimeInterval(-Self.freshnessWindow),
+                  let fallbackSite,
+                  !fallbackSite.isEmpty else {
+                return dedicatedItems
+            }
+            let fallbackItems = await fetchGoogleNews(
+                keyword: keyword,
+                query: "\(keyword) site:\(fallbackSite)",
+                platform: sourceID,
+                mediaType: "article",
+                mediaOnly: mediaOnly,
+                locale: locale,
+                source: Self.unverifiedDateGoogleNewsSource
+            )
+            return dedupedSortedCapped(dedicatedItems + fallbackItems)
+        }
         if dedicatedResult.1 && !dedicatedResult.2 { return [] }
         if dedicatedResult.2 && !dedicatedResult.3 { return [] }
         guard let fallbackSite, !fallbackSite.isEmpty else { return [] }
@@ -548,7 +821,8 @@ final class IngestionService {
             platform: sourceID,
             mediaType: "article",
             mediaOnly: mediaOnly,
-            locale: locale
+            locale: locale,
+            source: Self.unverifiedDateGoogleNewsSource
         )
     }
 
@@ -603,7 +877,545 @@ final class IngestionService {
         return dedupedSortedCapped(results.flatMap(\.1))
     }
 
-    // MARK: - Google News site-filtered RSS (5ch, girlschannel, mdpr, oricon, yahoonews, niconico fallback)
+    private func fetchAmebloDiscovery(keyword: String, mediaOnly: Bool) async -> [FeedItem] {
+        guard !mediaOnly else { return [] }
+        let directItems = await fetchAmebloSearch(keyword: keyword)
+        if !directItems.isEmpty { return directItems }
+        return await fetchGoogleNews(
+            keyword: keyword,
+            query: "\(keyword) site:ameblo.jp",
+            platform: "ameblo",
+            mediaType: "article",
+            mediaOnly: false,
+            source: Self.unverifiedDateGoogleNewsSource
+        )
+    }
+
+    private func fetchAmebloSearch(keyword: String) async -> [FeedItem] {
+        guard let encoded = keyword.addingPercentEncoding(withAllowedCharacters: Self.pathComponentAllowedCharacters),
+              let url = URL(string: "https://search.ameba.jp/search/\(encoded).html"),
+              case .success(let data, _) = await httpGET(
+                url,
+                headers: ["User-Agent": browserUA, "Accept-Language": "ja,en;q=0.9"],
+                timeout: 15
+              ),
+              let html = String(data: data, encoding: .utf8),
+              let state = extractJSONObject(after: "window.__STATE__=", in: html),
+              let blogEntry = state["blogEntry"] as? [String: Any],
+              let entryMap = blogEntry["blogEntryMap"] as? [String: Any] else {
+            return []
+        }
+
+        var seen = Set<String>()
+        var items = [FeedItem]()
+        for key in entryMap.keys.sorted() {
+            guard let raw = entryMap[key] as? [String: Any],
+                  let itemID = sourceString(raw["entryId"]),
+                  seen.insert(itemID).inserted,
+                  let title = cleanDisplayText(sourceString(raw["entryTitle"])),
+                  !title.isEmpty else { continue }
+            let content = cleanDisplayText(sourceString(raw["entryContent"]))
+            let blogTitle = cleanDisplayText(sourceString(raw["blogTitle"]))
+            let context = [content, blogTitle].compactMap { $0 }.joined(separator: " ")
+            guard matchesKeyword(title: title, desc: context, kw: keyword) else { continue }
+
+            let amebaID = sourceString(raw["amebaId"])
+            let rawURL = sourceString(raw["url"])
+            let itemURL: String
+            if let amebaID {
+                itemURL = "https://ameblo.jp/\(amebaID)/entry-\(itemID).html"
+            } else if let rawURL {
+                itemURL = rawURL
+            } else {
+                continue
+            }
+            let publishedDate = [
+                raw["entryUpdatedDatetime"], raw["updatedTime"], raw["updatedAt"],
+                raw["entryCreatedDatetime"], raw["publishedTime"]
+            ].compactMap(amebloDate).max()
+            guard let publishedDate else { continue }
+            if classifyFreshness {
+                guard isWithinFreshnessWindow(publishedDate) else { continue }
+            }
+            let displayTitle = matchesKeyword(title: title, desc: "", kw: keyword) || content == nil
+                ? title
+                : "\(title) - \(content ?? "")"
+            items.append(FeedItem(
+                id: "ameblo:\(itemID)",
+                platform: "ameblo",
+                url: itemURL,
+                title: displayTitle,
+                content_text: content,
+                author: blogTitle,
+                thumbnail_url: sourceString(raw["firstImageUrl"]),
+                media_type: "article",
+                published_at: isoString(publishedDate),
+                watch_term_keyword: keyword,
+                fetched_at: nowISO(),
+                source: "ameba_search"
+            ))
+        }
+        return Array(sortedByPublishedDate(items).prefix(25))
+    }
+
+    private func amebloDate(_ value: Any?) -> Date? {
+        if let number = value as? NSNumber {
+            return Date(timeIntervalSince1970: number.doubleValue / 1_000)
+        }
+        guard let string = sourceString(value) else { return nil }
+        return parseISO8601Date(string)
+    }
+
+    private func extractJSONObject(after marker: String, in text: String) -> [String: Any]? {
+        guard let markerRange = text.range(of: marker) else { return nil }
+        let suffix = text[markerRange.upperBound...]
+        guard let start = suffix.firstIndex(of: "{") else { return nil }
+        var depth = 0
+        var isInsideString = false
+        var isEscaped = false
+        var index = start
+        while index < suffix.endIndex {
+            let character = suffix[index]
+            if isInsideString {
+                if isEscaped {
+                    isEscaped = false
+                } else if character == "\\" {
+                    isEscaped = true
+                } else if character == "\"" {
+                    isInsideString = false
+                }
+            } else if character == "\"" {
+                isInsideString = true
+            } else if character == "{" {
+                depth += 1
+            } else if character == "}" {
+                depth -= 1
+                if depth == 0 {
+                    let end = suffix.index(after: index)
+                    guard let data = String(suffix[start..<end]).data(using: .utf8) else { return nil }
+                    return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+                }
+            }
+            index = suffix.index(after: index)
+        }
+        return nil
+    }
+
+    private func fetchRealSound(keyword: String, mediaOnly: Bool) async -> [FeedItem] {
+        guard !mediaOnly else { return [] }
+        let directItems = await fetchRealSoundSearch(keyword: keyword)
+        if !directItems.isEmpty { return directItems }
+        return await fetchDedicatedRSSSource(
+            sourceID: "realsound",
+            keyword: keyword,
+            feedURLs: Self.dedicatedRSSFeeds["realsound"] ?? [],
+            mediaOnly: false,
+            fallbackSite: "realsound.jp"
+        )
+    }
+
+    private func fetchRealSoundSearch(keyword: String) async -> [FeedItem] {
+        guard var components = URLComponents(string: "https://realsound.jp/") else { return [] }
+        components.queryItems = [URLQueryItem(name: "s", value: keyword)]
+        guard let url = components.url,
+              case .success(let data, _) = await httpGET(url, timeout: 12),
+              let html = String(data: data, encoding: .utf8),
+              let articleRegex = Self.generalRegex(for: #"(?is)<article[^>]*class=[\"'][^\"']*\bentry-summary\b[^\"']*[\"'][^>]*>(.*?)</article>"#) else {
+            return []
+        }
+
+        let range = NSRange(html.startIndex..., in: html)
+        var seen = Set<String>()
+        var items = [FeedItem]()
+        for match in articleRegex.matches(in: html, range: range) {
+            guard items.count < 25,
+                  let blockRange = Range(match.range(at: 1), in: html) else { continue }
+            let block = String(html[blockRange])
+            guard let titleMatch = regexGroups(
+                block,
+                #"(?is)<h3[^>]*class=[\"'][^\"']*\bentry-title\b[^\"']*[\"'][^>]*>.*?<a[^>]*href=[\"']([^\"']+)[\"'][^>]*>(.*?)</a>"#
+            ),
+                  let title = cleanDisplayText(titleMatch[1]),
+                  let itemURL = URL(string: titleMatch[0], relativeTo: URL(string: "https://realsound.jp/"))?.absoluteURL.absoluteString else { continue }
+            let excerpt = regexGroups(
+                block,
+                #"(?is)<[^>]*class=[\"'][^\"']*\bentry-excerpt\b[^\"']*[\"'][^>]*>(.*?)</[^>]+>"#
+            )?.first.flatMap { cleanDisplayText($0) }
+            guard matchesKeyword(title: title, desc: excerpt ?? "", kw: keyword) else { continue }
+            let dateValue = regexGroups(block, #"(?is)<time[^>]*datetime=[\"']([^\"']+)[\"']"#)?.first
+            guard let publishedDate = realSoundSearchDate(dateValue) else { continue }
+            if classifyFreshness {
+                guard isWithinFreshnessWindow(publishedDate) else { continue }
+            }
+            guard seen.insert(itemURL).inserted else { continue }
+            let author = regexGroups(
+                block,
+                #"(?is)<[^>]*class=[\"'][^\"']*\bentry-author\b[^\"']*[\"'][^>]*>(.*?)</[^>]+>"#
+            )?.first.flatMap { cleanDisplayText($0) }
+            let thumbnail = regexGroups(block, #"(?is)<img[^>]*src=[\"']([^\"']+)[\"']"#)?.first
+                .flatMap { URL(string: $0, relativeTo: URL(string: "https://realsound.jp/"))?.absoluteURL.absoluteString }
+            items.append(FeedItem(
+                id: "realsound:\(stableId(itemURL))",
+                platform: "realsound",
+                url: itemURL,
+                title: title,
+                content_text: excerpt,
+                author: author,
+                thumbnail_url: thumbnail,
+                media_type: "article",
+                published_at: isoString(publishedDate),
+                watch_term_keyword: keyword,
+                fetched_at: nowISO(),
+                source: "realsound_search"
+            ))
+        }
+        return sortedByPublishedDate(items)
+    }
+
+    /// realsound.jp's `<time datetime>` values omit a UTC/offset suffix when
+    /// they're bare Japan wall-clock timestamps, so — unlike the shared
+    /// `parseISO8601Date` naive-formatter fallbacks, which assume UTC — these
+    /// need Asia/Tokyo. Built once and reused rather than allocated per call.
+    private static let realSoundNaiveFormatters: [DateFormatter] = [
+        "yyyy-MM-dd'T'HH:mm:ss", "yyyy-MM-dd HH:mm:ss", "yyyy-MM-dd"
+    ].map { format in
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "Asia/Tokyo")
+        formatter.dateFormat = format
+        return formatter
+    }
+
+    private func realSoundSearchDate(_ value: String?) -> Date? {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
+            return nil
+        }
+        if let date = parseISO8601Date(value), value.range(of: #"(?:Z|[+-]\d{2}:?\d{2})$"#, options: .regularExpression) != nil {
+            return date
+        }
+        return Self.realSoundNaiveFormatters.lazy.compactMap { $0.date(from: value) }.first
+    }
+
+    // MARK: - 5ch (bounded direct 2ch.sc scan, Google News fallback)
+
+    private func fetchFiveCh(
+        keyword: String,
+        mediaOnly: Bool,
+        fetchScope: IngestionFetchScope
+    ) async -> [FeedItem] {
+        if mediaOnly { return [] }
+        if fetchScope == .background {
+            return await fetchFiveChGoogleNews(keyword: keyword)
+        }
+
+        let directItems = await Self.$transportAttemptLimit.withValue(1) {
+            await fetchFiveChDirect(keyword: keyword)
+        }
+        if !directItems.isEmpty { return directItems }
+        return await fetchFiveChGoogleNews(keyword: keyword)
+    }
+
+    private func fetchFiveChGoogleNews(keyword: String) async -> [FeedItem] {
+        await fetchGoogleNews(
+            keyword: keyword,
+            query: "\(keyword) site:5ch.net",
+            platform: "5ch",
+            mediaType: "text",
+            mediaOnly: false,
+            source: Self.unverifiedDateGoogleNewsSource
+        )
+    }
+
+    private func fetchFiveChDirect(keyword: String) async -> [FeedItem] {
+        let localDeadline = Date().addingTimeInterval(Self.fiveChDirectBudget)
+        let deadline = min(Self.requestDeadline ?? localDeadline, localDeadline)
+        var seen = Set<String>()
+        var hits = [FiveChSubjectEntry]()
+
+        let profileID = LocalProfileStore.shared.activeProfileID
+        let indexed = await FiveChIndexStore.shared.indexedEntries(for: profileID)
+        let catalog = await FiveChIndexStore.shared.catalog(for: profileID)
+        let indexedBoards = catalog.boards.compactMap(URL.init(string:))
+        let boards = Array(Set(Self.fiveChBoardURLs + indexedBoards)).sorted { $0.absoluteString < $1.absoluteString }
+
+        for entry in indexed where matchesKeyword(title: entry.title, desc: "", kw: keyword) {
+            let key = "\(entry.host)|\(entry.board)|\(entry.threadID)"
+            if seen.insert(key).inserted { hits.append(entry) }
+        }
+
+        await withTaskGroup(of: [FiveChSubjectEntry].self) { group in
+            for boardURL in boards {
+                group.addTask {
+                    guard !Task.isCancelled, Date() < deadline,
+                          await self.fiveChSubjectLimiter.acquire() else { return [] }
+                    guard !Task.isCancelled, Date() < deadline else {
+                        await self.fiveChSubjectLimiter.release()
+                        return []
+                    }
+                    let entries = await self.fiveChSubjectCache.entries(
+                        for: boardURL,
+                        now: self.now(),
+                        ttl: Self.fiveChSubjectCacheTTL
+                    ) {
+                        await self.fetchFiveChSubject(boardURL, deadline: deadline)
+                    } ?? []
+                    await self.fiveChSubjectLimiter.release()
+                    return entries
+                }
+            }
+
+            for await entries in group {
+                guard !Task.isCancelled, Date() < deadline else {
+                    group.cancelAll()
+                    break
+                }
+                for entry in entries where matchesKeyword(title: entry.title, desc: "", kw: keyword) {
+                    let key = "\(entry.host)|\(entry.board)|\(entry.threadID)"
+                    guard seen.insert(key).inserted else { continue }
+                    hits.append(entry)
+                    if hits.count >= Self.fiveChResultLimit {
+                        group.cancelAll()
+                        break
+                    }
+                }
+                if hits.count >= Self.fiveChResultLimit { break }
+            }
+        }
+
+        // Refresh the rotating cache after the live subject fan-out so the
+        // shared four-slot subject limiter remains a strict global cap.
+        let hasIndexedCatalogBoards = catalog.boards.contains { indexedBoard in
+            !Self.fiveChBoardURLs.contains(where: { $0.absoluteString == indexedBoard })
+        }
+        if hasIndexedCatalogBoards, !Task.isCancelled, Date() < deadline {
+            await maintainFiveChIndex(profileID: profileID, deadline: deadline)
+        }
+        guard !hits.isEmpty, !Task.isCancelled, Date() < deadline else { return [] }
+        return await withTaskGroup(of: FeedItem?.self) { group in
+            for hit in hits.prefix(Self.fiveChResultLimit) {
+                group.addTask {
+                    guard !Task.isCancelled, Date() < deadline,
+                          await self.fiveChDatLimiter.acquire() else { return nil }
+                    guard !Task.isCancelled, Date() < deadline else {
+                        await self.fiveChDatLimiter.release()
+                        return nil
+                    }
+                    let item = await self.makeFiveChItem(hit, keyword: keyword, deadline: deadline)
+                    await self.fiveChDatLimiter.release()
+                    return item
+                }
+            }
+
+            var items = [FeedItem]()
+            for await item in group {
+                guard !Task.isCancelled, Date() < deadline else {
+                    group.cancelAll()
+                    break
+                }
+                if let item { items.append(item) }
+            }
+            return dedupedSortedCapped(items)
+        }
+    }
+
+    private func fetchFiveChSubject(_ boardURL: URL, deadline: Date) async -> [FiveChSubjectEntry]? {
+        guard let url = URL(string: "subject.txt", relativeTo: boardURL)?.absoluteURL,
+              let data = await fetchFiveChData(url, deadline: deadline),
+              let text = decodeFiveChText(data) else { return nil }
+        let entries = parseFiveChSubject(text, boardURL: boardURL)
+        return entries.isEmpty && !text.contains(".dat<>") ? nil : entries
+    }
+
+    /// Advances the disposable profile-scoped board index. Failures are
+    /// intentionally swallowed: this is maintenance, not a feed source.
+    func maintainFiveChIndex(profileID: UUID, deadline: Date) async {
+        guard !Task.isCancelled, Date() < deadline else { return }
+        let store = FiveChIndexStore.shared
+        let now = now()
+        let existingCatalog = await store.catalog(for: profileID)
+        if existingCatalog.boards.isEmpty {
+            await store.updateCatalog(Self.fiveChBoardURLs.map(\.absoluteString), fetchedAt: .distantPast, profileID: profileID)
+            guard let menuURL = URL(string: "https://menu.2ch.sc/bbsmenu.html"),
+                  let data = await fetchFiveChData(menuURL, deadline: deadline),
+                  let text = decodeFiveChText(data) else { return }
+            let boards = Self.parseFiveChBBsmenu(text)
+            if !boards.isEmpty { await store.updateCatalog(boards, fetchedAt: now, profileID: profileID) }
+        }
+        if await store.shouldRefreshCatalog(for: profileID, now: now),
+           let menuURL = URL(string: "https://menu.2ch.sc/bbsmenu.html"),
+           let data = await fetchFiveChData(menuURL, deadline: deadline),
+           let text = decodeFiveChText(data) {
+            let boards = Self.parseFiveChBBsmenu(text)
+            if !boards.isEmpty { await store.updateCatalog(boards, fetchedAt: now, profileID: profileID) }
+        }
+        let batch = await store.nextBatch(for: profileID, count: 16)
+        guard !batch.boards.isEmpty else { return }
+        let successful = await withTaskGroup(of: FiveChIndexStore.BoardSnapshot?.self,
+                                             returning: [FiveChIndexStore.BoardSnapshot].self) { group in
+            for rawBoard in batch.boards {
+                group.addTask {
+                    guard !Task.isCancelled, Date() < deadline, let boardURL = URL(string: rawBoard),
+                          await self.fiveChSubjectLimiter.acquire() else { return nil }
+                    guard !Task.isCancelled, Date() < deadline else {
+                        await self.fiveChSubjectLimiter.release()
+                        return nil
+                    }
+                    let entries = await self.fetchFiveChSubject(boardURL, deadline: deadline)
+                    await self.fiveChSubjectLimiter.release()
+                    guard let entries else { return nil }
+                    return .init(boardURL: rawBoard, fetchedAt: self.now(), entries: Array(entries.prefix(FiveChIndexStore.entriesPerBoardCap)))
+                }
+            }
+            var completed = [FiveChIndexStore.BoardSnapshot]()
+            for await snapshot in group {
+                if let snapshot { completed.append(snapshot) }
+                if Task.isCancelled || Date() >= deadline { group.cancelAll() }
+            }
+            return completed
+        }
+        guard !successful.isEmpty || !Task.isCancelled else { return }
+        let next = batch.start + max(successful.count, 1)
+        await store.commit(snapshots: successful, nextCursor: next, profileID: profileID)
+    }
+
+    static func parseFiveChBBsmenu(_ text: String) -> [String] {
+        var result = [String](), seen = Set<String>()
+        for line in text.split(whereSeparator: \.isNewline) {
+            let value = String(line)
+            guard let start = value.range(of: "http", options: .caseInsensitive)?.lowerBound else { continue }
+            let tail = value[start...]
+            let endDouble = tail.firstIndex(of: "\"") ?? tail.endIndex
+            let endSingle = tail.firstIndex(of: "'") ?? tail.endIndex
+            let end = min(endDouble, endSingle)
+            let href = String(tail[..<end])
+            guard let url = URL(string: href),
+                      let host = url.host?.lowercased(), host.hasSuffix(".2ch.sc"), host != "menu.2ch.sc",
+                      !url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/")).isEmpty else { continue }
+            var components = URLComponents(url: url, resolvingAgainstBaseURL: true)
+            components?.scheme = "https"; components?.host = host; components?.query = nil; components?.fragment = nil
+            guard var normalized = components?.url?.absoluteString else { continue }
+            if !normalized.hasSuffix("/") { normalized += "/" }
+            guard seen.insert(normalized).inserted else { continue }
+            result.append(normalized)
+        }
+        return Array(result.prefix(FiveChIndexStore.boardCap))
+    }
+
+    private func parseFiveChSubject(_ text: String, boardURL: URL) -> [FiveChSubjectEntry] {
+        guard let regex = Self.fiveChSubjectRegex,
+              let host = boardURL.host,
+              let board = boardURL.pathComponents.filter({ $0 != "/" }).last else { return [] }
+        return text.split(whereSeparator: \Character.isNewline).compactMap { rawLine in
+            let line = String(rawLine).trimmingCharacters(in: .whitespacesAndNewlines)
+            let range = NSRange(line.startIndex..., in: line)
+            guard let match = regex.firstMatch(in: line, range: range),
+                  let idRange = Range(match.range(at: 1), in: line),
+                  let titleRange = Range(match.range(at: 2), in: line),
+                  let postsRange = Range(match.range(at: 3), in: line),
+                  let posts = Int(line[postsRange]),
+                  let title = cleanDisplayText(String(line[titleRange])),
+                  !title.isEmpty else { return nil }
+            return FiveChSubjectEntry(
+                host: host,
+                board: board,
+                threadID: String(line[idRange]),
+                title: title,
+                posts: posts,
+                boardURL: boardURL
+            )
+        }
+    }
+
+    private func makeFiveChItem(
+        _ hit: FiveChSubjectEntry,
+        keyword: String,
+        deadline: Date
+    ) async -> FeedItem? {
+        let datURL = URL(string: "dat/\(hit.threadID).dat", relativeTo: hit.boardURL)?.absoluteURL
+        let latestPostAt: Date?
+        if let datURL,
+           let data = await fetchFiveChData(datURL, deadline: deadline),
+           let text = decodeFiveChText(data) {
+            latestPostAt = parseFiveChLatestPostDate(text)
+        } else {
+            latestPostAt = nil
+        }
+        guard let publishedAt = latestPostAt ?? fiveChThreadCreatedAt(hit.threadID) else { return nil }
+        let source = latestPostAt == nil
+            ? Self.fiveChThreadCreatedSource
+            : Self.fiveChVerifiedActivitySource
+        let url = "https://\(hit.host)/test/read.cgi/\(hit.board)/\(hit.threadID)/"
+        return FeedItem(
+            id: "2ch.sc:\(hit.host):\(hit.board):\(hit.threadID)",
+            platform: "5ch",
+            url: url,
+            title: hit.title,
+            content_text: nil,
+            author: nil,
+            thumbnail_url: nil,
+            media_type: "text",
+            published_at: isoString(publishedAt),
+            watch_term_keyword: keyword,
+            fetched_at: nowISO(),
+            source: source
+        )
+    }
+
+    private func fetchFiveChData(_ url: URL, deadline: Date) async -> Data? {
+        let remaining = deadline.timeIntervalSinceNow
+        guard remaining > 0 else { return nil }
+        let timeout = min(Self.fiveChRequestTimeout, remaining)
+        guard case .success(let data, _) = await httpGET(
+            url,
+            headers: Self.fiveChHeaders,
+            timeout: timeout
+        ) else { return nil }
+        return data
+    }
+
+    private func decodeFiveChText(_ data: Data) -> String? {
+        String(data: data, encoding: .shiftJIS) ?? String(data: data, encoding: .utf8)
+    }
+
+    private func parseFiveChLatestPostDate(_ text: String) -> Date? {
+        guard let regex = Self.fiveChDatDateRegex else { return nil }
+        for rawLine in text.split(whereSeparator: \Character.isNewline).reversed() {
+            let fields = rawLine.split(separator: "<>", omittingEmptySubsequences: false)
+            guard fields.count >= 3 else { continue }
+            let dateField = String(fields[2])
+            let range = NSRange(dateField.startIndex..., in: dateField)
+            guard let match = regex.firstMatch(in: dateField, range: range) else { continue }
+            let values = (1...6).compactMap { index -> Int? in
+                guard let matchRange = Range(match.range(at: index), in: dateField) else { return nil }
+                return Int(dateField[matchRange])
+            }
+            guard values.count == 6 else { continue }
+            var calendar = Calendar(identifier: .gregorian)
+            calendar.locale = Locale(identifier: "en_US_POSIX")
+            calendar.timeZone = TimeZone(identifier: "Asia/Tokyo") ?? TimeZone(secondsFromGMT: 9 * 3600)!
+            let components = DateComponents(
+                calendar: calendar,
+                timeZone: calendar.timeZone,
+                year: values[0], month: values[1], day: values[2],
+                hour: values[3], minute: values[4], second: values[5]
+            )
+            if let date = calendar.date(from: components), date <= now().addingTimeInterval(Self.searchResultFutureGrace) {
+                return date
+            }
+        }
+        return nil
+    }
+
+    private func fiveChThreadCreatedAt(_ threadID: String) -> Date? {
+        guard (9...12).contains(threadID.count),
+              threadID.allSatisfy(\.isNumber),
+              let timestamp = TimeInterval(threadID) else { return nil }
+        let date = Date(timeIntervalSince1970: timestamp)
+        guard date <= now().addingTimeInterval(Self.searchResultFutureGrace) else { return nil }
+        return date
+    }
+
+    // MARK: - Google News site-filtered RSS (girlschannel, mdpr, oricon, yahoonews, niconico fallback)
 
     private func fetchModelPress(keyword: String, mediaOnly: Bool) async -> [FeedItem] {
         if mediaOnly { return [] }
@@ -784,32 +1596,30 @@ final class IngestionService {
         limit: Int = 25,
         titlePatterns: [String] = [],
         locale: PlatformDefinition.NewsLocale = .japan,
-        source: String = "google_news"
+        source: String = "google_news",
+        allowsBingFallback: Bool = true
     ) async -> [FeedItem] {
         if mediaOnly { return [] }
-        var recentItems = [FeedItem]()
-        if classifyFreshness,
-           let recentURL = Self.googleNewsURL(query, locale: locale, recentDays: Self.googleNewsLookbackDays),
-           let recentEntries = await fetchGoogleNewsEntries(recentURL, locale: locale) {
-            recentItems = makeGoogleNewsItems(
-                entries: recentEntries,
+        func bingFallback() async -> [FeedItem] {
+            await fetchBingNews(
                 keyword: keyword,
+                query: query,
                 platform: platform,
                 mediaType: mediaType,
                 author: author,
                 limit: limit,
                 titlePatterns: titlePatterns,
+                locale: locale,
                 source: source
             )
         }
-        // The recent-window query already satisfies most refreshes; only pay
-        // for the full historical query when it came back close to empty.
-        if recentItems.count >= min(limit, 3) { return recentItems }
-
-        guard let url = Self.googleNewsURL(query, locale: locale),
-              let entries = await fetchGoogleNewsEntries(url, locale: locale) else { return recentItems }
-        let historicalItems = makeGoogleNewsItems(
-            entries: entries,
+        guard let initialURL = Self.googleNewsURL(query, locale: locale),
+              let initialEntries = await fetchGoogleNewsEntries(initialURL, locale: locale) else {
+            guard allowsBingFallback else { return [] }
+            return await bingFallback()
+        }
+        let initialItems = makeGoogleNewsItems(
+            entries: initialEntries,
             keyword: keyword,
             platform: platform,
             mediaType: mediaType,
@@ -818,11 +1628,86 @@ final class IngestionService {
             titlePatterns: titlePatterns,
             source: source
         )
-        var seen = Set<String>()
-        return (recentItems + historicalItems)
-            .filter { seen.insert($0.id).inserted }
-            .prefix(limit)
-            .map { $0 }
+        // Match OshiReader+'s device fallback: widen to a ten-year indexed
+        // search only when the normal Google News result has no relevant hit.
+        guard initialItems.isEmpty else {
+            return initialItems
+        }
+        // Start the Bing fallback as a plain unstructured Task rather than
+        // `async let`: if historical comes back non-empty we return without
+        // ever needing Bing's result, and `async let` would implicitly
+        // cancel-and-*await* an unconsumed child task at scope exit — still
+        // blocking this return on Bing's in-flight round trip. A Task isn't
+        // joined automatically, so an early return can leave it to finish
+        // (or get cancelled) in the background instead.
+        let bingTask: Task<[FeedItem], Never>? = allowsBingFallback ? Task { await bingFallback() } : nil
+
+        if let historicalURL = Self.googleNewsURL(
+            query,
+            locale: locale,
+            recentYears: Self.googleNewsHistoricalLookbackYears
+        ), let historicalEntries = await fetchGoogleNewsEntries(historicalURL, locale: locale) {
+            let historicalItems = makeGoogleNewsItems(
+                entries: historicalEntries,
+                keyword: keyword,
+                platform: platform,
+                mediaType: mediaType,
+                author: author,
+                limit: limit,
+                titlePatterns: titlePatterns,
+                source: source
+            )
+            if !historicalItems.isEmpty {
+                bingTask?.cancel()
+                return historicalItems
+            }
+        }
+        guard let bingTask else { return [] }
+        return await bingTask.value
+    }
+
+    private func fetchBingNews(
+        keyword: String,
+        query: String,
+        platform: String,
+        mediaType: String,
+        author: String?,
+        limit: Int,
+        titlePatterns: [String],
+        locale: PlatformDefinition.NewsLocale,
+        source: String
+    ) async -> [FeedItem] {
+        guard !Task.isCancelled else { return [] }
+        guard await Self.bingNewsLimiter.acquire() else { return [] }
+        guard !Task.isCancelled else {
+            await Self.bingNewsLimiter.release()
+            return []
+        }
+        guard let url = Self.bingNewsURL(query, locale: locale),
+              case .success(let entries) = await parseRSS(
+                url,
+                headers: ["Accept-Language": locale.acceptLanguage]
+              ) else {
+            await Self.bingNewsLimiter.release()
+            return []
+        }
+        await Self.bingNewsLimiter.release()
+        let bingSource = source == Self.unverifiedDateGoogleNewsSource ? source : "bing_news"
+        let normalizedEntries = entries.map { entry -> RssItem in
+            var normalized = entry
+            normalized.link = Self.unwrapBingNewsURL(entry.link)
+            return normalized
+        }
+        return makeGoogleNewsItems(
+            entries: normalizedEntries,
+            keyword: keyword,
+            platform: platform,
+            mediaType: mediaType,
+            author: author,
+            limit: limit,
+            titlePatterns: titlePatterns,
+            source: bingSource
+        )
     }
 
     private func fetchGoogleNewsEntries(
@@ -832,6 +1717,22 @@ final class IngestionService {
         // Many sources funnel through news.google.com; throttle so we don't get
         // rate-limited (which previously made sources like 5ch return nothing).
         guard await Self.googleNewsLimiter.acquire() else { return nil }
+        guard !Task.isCancelled else {
+            await Self.googleNewsLimiter.release()
+            return nil
+        }
+        guard await googleNewsPacer.wait(
+            deadline: Self.requestDeadline,
+            sleeper: pacingSleeper
+        ) else {
+            await Self.googleNewsLimiter.release()
+            if !Task.isCancelled,
+               let deadline = Self.requestDeadline,
+               deadline.timeIntervalSinceNow <= 0 {
+                await recordFailure(.timeout)
+            }
+            return nil
+        }
         guard !Task.isCancelled else {
             await Self.googleNewsLimiter.release()
             return nil
@@ -862,7 +1763,14 @@ final class IngestionService {
         for entry in entries {
             if items.count >= limit { break }
             guard !entry.link.isEmpty,
-                  let publishedAt = validPublishedDate(entry.pubDate) else { continue }
+                  let publishedAt = validPublishedDate(entry.pubDate),
+                  let publishedDate = parseISO8601Date(publishedAt) else { continue }
+            if classifyFreshness {
+                let maximumAge = platform == "news"
+                    ? Self.freshnessWindow
+                    : Self.searchResultMaximumAge
+                guard isWithinFreshnessWindow(publishedDate, maximumAge: maximumAge) else { continue }
+            }
             let key = entry.link
             if !seen.insert(key).inserted { continue }
             let title = cleanTitle(entry.title, patterns: titlePatterns)
@@ -901,18 +1809,17 @@ final class IngestionService {
         var comps = URLComponents(string: "https://snapshot.search.nicovideo.jp/api/v2/snapshot/video/contents/search")!
         comps.queryItems = [
             URLQueryItem(name: "q", value: keyword),
-            URLQueryItem(name: "targets", value: "title,description,tags"),
+            URLQueryItem(name: "targets", value: "title"),
             URLQueryItem(name: "fields", value: "contentId,title,description,userId,channelId,startTime,thumbnailUrl"),
             URLQueryItem(name: "_sort", value: "-startTime"),
             URLQueryItem(name: "_limit", value: "25"),
+            URLQueryItem(name: "_context", value: "OshiReader"),
         ]
         if let url = comps.url {
             if case .success(let data, _) = await httpGET(url, headers: ["Accept": "application/json"], timeout: 10) {
-                guard let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
-                    await recordFailure(.invalidPayload)
-                    return await fetchGoogleNews(keyword: keyword, query: "\(keyword) site:nicovideo.jp", platform: "niconico", mediaType: "video", mediaOnly: false, source: Self.unverifiedDateGoogleNewsSource)
-                }
-                if let rows = json["data"] as? [[String: Any]], !rows.isEmpty {
+                if let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                   let rows = json["data"] as? [[String: Any]] {
+                    if rows.isEmpty { return [] }
                     var items = [FeedItem]()
                     for raw in rows {
                         guard let contentId = raw["contentId"] as? String,
@@ -944,11 +1851,68 @@ final class IngestionService {
                         ))
                     }
                     if !items.isEmpty { return items }
+                    // A nonempty payload with no usable rows is malformed, not
+                    // an authoritative empty result. Preserve that diagnostic
+                    // while allowing the independent RSS routes to recover.
+                    await recordFailure(.invalidPayload)
+                } else {
+                    // Non-JSON body or a missing `data` array means the
+                    // primary API itself broke (e.g. a maintenance page) —
+                    // record that instead of silently falling through.
+                    await recordFailure(.invalidPayload)
                 }
             }
         }
-        // Fallback: Google News filtered to nicovideo.jp
+        let nativeRSSItems = await fetchNiconicoNativeRSS(keyword: keyword)
+        if !nativeRSSItems.isEmpty { return nativeRSSItems }
+        // Retain the Plus device-side fallback after its connector-equivalent
+        // native routes fail, so local refresh still works when Nico blocks RSS.
         return await fetchGoogleNews(keyword: keyword, query: "\(keyword) site:nicovideo.jp", platform: "niconico", mediaType: "video", mediaOnly: false, source: Self.unverifiedDateGoogleNewsSource)
+    }
+
+    private func fetchNiconicoNativeRSS(keyword: String) async -> [FeedItem] {
+        guard let encoded = keyword.addingPercentEncoding(withAllowedCharacters: Self.pathComponentAllowedCharacters) else {
+            return []
+        }
+        let urls = [
+            "https://www.nicovideo.jp/search/\(encoded)?sort=f&order=d&rss=2.0&lang=ja-jp",
+            "https://www.nicovideo.jp/tag/\(encoded)?sort=f&order=d&rss=2.0&lang=ja-jp",
+        ].compactMap(URL.init(string:))
+        return await withTaskGroup(of: [FeedItem].self) { group in
+            for url in urls {
+                group.addTask {
+                    guard case .success(let entries) = await self.parseRSS(
+                        url,
+                        headers: ["User-Agent": self.browserUA, "Accept-Language": "ja,en;q=0.9"]
+                    ) else { return [] }
+                    return entries.prefix(25).compactMap { entry -> FeedItem? in
+                        guard !entry.link.isEmpty,
+                              let publishedAt = self.validPublishedDate(entry.pubDate),
+                              self.matchesKeyword(title: entry.title, desc: entry.description, kw: keyword) else {
+                            return nil
+                        }
+                        let contentID = entry.link.split(separator: "/").last.map(String.init) ?? entry.link
+                        return FeedItem(
+                            id: "niconico:\(contentID)",
+                            platform: "niconico",
+                            url: entry.link,
+                            title: self.cleanedOptionalTitle(entry.title),
+                            content_text: nil,
+                            author: nil,
+                            thumbnail_url: entry.thumbnailUrl,
+                            media_type: "video",
+                            published_at: publishedAt,
+                            watch_term_keyword: keyword,
+                            fetched_at: self.nowISO(),
+                            source: "niconico_rss"
+                        )
+                    }
+                }
+            }
+            var all = [FeedItem]()
+            for await items in group { all.append(contentsOf: items) }
+            return dedupedSortedCapped(all)
+        }
     }
 
     // MARK: - note.com (hashtag RSS)
@@ -979,7 +1943,7 @@ final class IngestionService {
                 platform: "note",
                 url: entry.link,
                 title: cleanedOptionalTitle(entry.title),
-                content_text: entry.description.isEmpty ? nil : entry.description,
+                content_text: cleanDisplayText(entry.description),
                 author: nil,
                 thumbnail_url: entry.thumbnailUrl,
                 media_type: "article",
@@ -992,6 +1956,31 @@ final class IngestionService {
     }
 
     // MARK: - TVer (public platform API: create token, then keyword search)
+
+    private struct TVerCandidate: Sendable {
+        let index: Int
+        let id: String
+        let title: String
+        let contentType: String
+        let thumbnailURL: String?
+        let author: String?
+        let description: String?
+        let seriesTitle: String?
+        let publishedAt: String?
+    }
+
+    private struct TVerDetail: Sendable {
+        let description: String?
+        let author: String?
+        let publishedAt: String?
+    }
+
+    private static let searchResultMaximumAge: TimeInterval = 31 * 24 * 60 * 60
+    private static let searchResultFutureGrace: TimeInterval = 24 * 60 * 60
+
+    private func isWithinFreshnessWindow(_ date: Date, maximumAge: TimeInterval = IngestionService.searchResultMaximumAge) -> Bool {
+        date >= now().addingTimeInterval(-maximumAge) && date <= now().addingTimeInterval(Self.searchResultFutureGrace)
+    }
 
     private func fetchTVer(keyword: String) async -> [FeedItem] {
         let baseHeaders = [
@@ -1055,42 +2044,171 @@ final class IngestionService {
             episodes = (json["contents"] as? [[String: Any]]) ?? (json["rows"] as? [[String: Any]]) ?? []
         }
 
-        var items = [FeedItem]()
-        for ep in episodes.prefix(25) {
-            let content = (ep["content"] as? [String: Any]) ?? (ep["episode"] as? [String: Any]) ?? ep
-            let epId = (content["id"] as? String) ?? (content["seriesId"] as? String) ?? (ep["id"] as? String)
-            guard let epId, !epId.isEmpty else { continue }
-            let title = (content["title"] as? String) ?? (content["episodeTitle"] as? String) ?? (content["seriesTitle"] as? String)
-            guard let title, !title.isEmpty,
-                  let publishedAt = tverDate(content) else { continue }
+        let candidates = episodes.prefix(25).enumerated().compactMap { index, episode in
+            makeTVerCandidate(episode, index: index)
+        }
+        guard !candidates.isEmpty else { return [] }
 
-            let type = ((ep["type"] as? String) ?? (content["type"] as? String) ?? "").lowercased()
-            let url: String
-            switch type {
-            case "series": url = "https://tver.jp/series/\(epId)"
-            case "special": url = "https://tver.jp/specials/\(epId)"
-            default: url = "https://tver.jp/episodes/\(epId)"
+        return await withTaskGroup(of: (Int, FeedItem?).self) { group in
+            for candidate in candidates {
+                group.addTask {
+                    (candidate.index, await self.makeTVerItem(
+                        candidate,
+                        keyword: keyword,
+                        headers: baseHeaders
+                    ))
+                }
             }
 
-            var thumb = (content["thumbnailUrl"] as? String) ?? (content["thumbnailURL"] as? String) ?? (content["thumbnail_path"] as? String)
-            if let t = thumb, t.hasPrefix("/") { thumb = "https://statics.tver.jp\(t)" }
-
-            items.append(FeedItem(
-                id: "tver:\(epId)",
-                platform: "tver",
-                url: url,
-                title: title,
-                content_text: (content["description"] as? String) ?? (content["episodeDescription"] as? String),
-                author: (content["broadcasterName"] as? String) ?? (content["productionProviderName"] as? String),
-                thumbnail_url: thumb,
-                media_type: "video",
-                published_at: publishedAt,
-                watch_term_keyword: keyword,
-                fetched_at: nowISO(),
-                source: "tver_api"
-            ))
+            var resolved = [(Int, FeedItem)]()
+            for await (index, item) in group {
+                if let item { resolved.append((index, item)) }
+            }
+            return resolved.sorted { $0.0 < $1.0 }.map(\.1)
         }
-        return items
+    }
+
+    private func makeTVerCandidate(_ episode: [String: Any], index: Int) -> TVerCandidate? {
+        let content = (episode["content"] as? [String: Any])
+            ?? (episode["episode"] as? [String: Any])
+            ?? episode
+        guard let id = sourceString(content["id"] ?? content["seriesId"] ?? episode["id"]),
+              let title = sourceString(content["title"] ?? content["episodeTitle"] ?? content["seriesTitle"]) else {
+            return nil
+        }
+        var thumbnailURL = sourceString(content["thumbnailUrl"] ?? content["thumbnailURL"] ?? content["thumbnail_path"])
+        if let value = thumbnailURL, value.hasPrefix("/") {
+            thumbnailURL = "https://statics.tver.jp\(value)"
+        }
+        return TVerCandidate(
+            index: index,
+            id: id,
+            title: title,
+            contentType: (sourceString(episode["type"] ?? content["type"]) ?? "").lowercased(),
+            thumbnailURL: thumbnailURL,
+            author: sourceString(content["broadcasterName"] ?? content["productionProviderName"]),
+            description: sourceString(content["description"] ?? content["episodeDescription"]),
+            seriesTitle: sourceString(content["seriesTitle"]),
+            publishedAt: tverDate(content)
+        )
+    }
+
+    private func makeTVerItem(
+        _ candidate: TVerCandidate,
+        keyword: String,
+        headers: [String: String]
+    ) async -> FeedItem? {
+        let listContext = [candidate.description, candidate.author, candidate.seriesTitle]
+            .compactMap { $0 }
+            .joined(separator: " ")
+        let listMatches = matchesKeyword(title: candidate.title, desc: listContext, kw: keyword)
+        var detail: TVerDetail?
+        if candidate.publishedAt == nil || !listMatches {
+            detail = await fetchLimitedTVerDetail(id: candidate.id, headers: headers)
+        }
+
+        let matches: Bool
+        if let detail {
+            let detailContext = [detail.description, detail.author]
+                .compactMap { $0 }
+                .joined(separator: " ")
+            matches = matchesKeyword(
+                title: candidate.title,
+                desc: [listContext, detailContext].filter { !$0.isEmpty }.joined(separator: " "),
+                kw: keyword
+            )
+        } else {
+            matches = listMatches
+        }
+        guard matches else { return nil }
+
+        guard let publishedAt = candidate.publishedAt ?? detail?.publishedAt,
+              let publishedDate = parseISO8601Date(publishedAt) else {
+            return nil
+        }
+        if classifyFreshness {
+            guard isWithinFreshnessWindow(publishedDate) else {
+                return nil
+            }
+        }
+
+        let description = detail?.description ?? candidate.description
+        var contentParts = [candidate.seriesTitle, description]
+            .compactMap { cleanDisplayText($0) }
+        var seenContent = Set<String>()
+        contentParts = contentParts.filter { seenContent.insert($0).inserted }
+        let contentText = contentParts.isEmpty ? nil : contentParts.joined(separator: "\n")
+        let url: String
+        switch candidate.contentType {
+        case "series": url = "https://tver.jp/series/\(candidate.id)"
+        case "special": url = "https://tver.jp/specials/\(candidate.id)"
+        default: url = "https://tver.jp/episodes/\(candidate.id)"
+        }
+        return FeedItem(
+            id: "tver:\(candidate.id)",
+            platform: "tver",
+            url: url,
+            title: candidate.title,
+            content_text: contentText,
+            author: candidate.author ?? detail?.author,
+            thumbnail_url: candidate.thumbnailURL,
+            media_type: "video",
+            published_at: isoString(publishedDate),
+            watch_term_keyword: keyword,
+            fetched_at: nowISO(),
+            source: "tver_api"
+        )
+    }
+
+    private func fetchLimitedTVerDetail(id: String, headers: [String: String]) async -> TVerDetail? {
+        guard await tverDetailLimiter.acquire() else { return nil }
+        guard !Task.isCancelled else {
+            await tverDetailLimiter.release()
+            return nil
+        }
+        if let deadline = Self.requestDeadline, deadline.timeIntervalSinceNow <= 0 {
+            await tverDetailLimiter.release()
+            return nil
+        }
+        let detail = await fetchTVerDetail(id: id, headers: headers)
+        await tverDetailLimiter.release()
+        return detail
+    }
+
+    private func fetchTVerDetail(id: String, headers: [String: String]) async -> TVerDetail? {
+        guard let encodedID = id.addingPercentEncoding(withAllowedCharacters: Self.pathComponentAllowedCharacters),
+              let url = URL(string: "https://statics.tver.jp/content/episode/\(encodedID).json") else {
+            return nil
+        }
+        var request = URLRequest(url: url, cachePolicy: .reloadRevalidatingCacheData)
+        request.timeoutInterval = min(10, Self.requestTimeoutCap ?? 10)
+        if let deadline = Self.requestDeadline {
+            let remaining = deadline.timeIntervalSinceNow
+            guard remaining > 0 else { return nil }
+            request.timeoutInterval = min(request.timeoutInterval, remaining)
+        }
+        for (key, value) in headers { request.setValue(value, forHTTPHeaderField: key) }
+        do {
+            let (data, response) = try await requestExecutor(request)
+            guard let http = response as? HTTPURLResponse,
+                  (200...299).contains(http.statusCode),
+                  let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+                return nil
+            }
+            return TVerDetail(
+                description: sourceString(json["description"]),
+                author: sourceString(json["broadcastProviderLabel"] ?? json["productionProviderLabel"]),
+                publishedAt: tverDate(json)
+            )
+        } catch {
+            return nil
+        }
+    }
+
+    private func sourceString(_ value: Any?) -> String? {
+        guard let value, !(value is NSNull) else { return nil }
+        let string = String(describing: value).trimmingCharacters(in: .whitespacesAndNewlines)
+        return string.isEmpty ? nil : string
     }
 
     private func tverDate(_ content: [String: Any]) -> String? {
@@ -1188,8 +2306,7 @@ final class IngestionService {
                     "gl": "JP"
                 ]
             ],
-            "query": keyword,
-            "params": Self.youTubeUploadDateSearchParam
+            "query": keyword
         ]
         guard let body = try? JSONSerialization.data(withJSONObject: payload),
               case .success(let data, _) = await httpPOST(url, body: body, headers: [
@@ -1200,7 +2317,7 @@ final class IngestionService {
               let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
             return []
         }
-        let cutoff = now().addingTimeInterval(-90 * 86400)
+        let cutoff = now().addingTimeInterval(-Self.youTubeFallbackMaximumAge)
         // Both renderer kinds live in the same response tree; collecting them
         // in one walk avoids traversing the (potentially large) JSON twice.
         var grouped = [String: [[String: Any]]]()
@@ -1218,8 +2335,7 @@ final class IngestionService {
             return []
         }
         components.queryItems = [
-            URLQueryItem(name: "search_query", value: keyword),
-            URLQueryItem(name: "sp", value: Self.youTubeUploadDateSearchParam)
+            URLQueryItem(name: "search_query", value: keyword)
         ]
         guard let url = components.url else { return [] }
         guard case .success(let data, _) = await httpGET(url, headers: ["User-Agent": browserUA, "Accept-Language": "ja,ja-JP;q=0.9,en;q=0.8"], timeout: 15) else {
@@ -1228,7 +2344,7 @@ final class IngestionService {
         guard let html = String(data: data, encoding: .utf8) else {
             return []
         }
-        let cutoff = now().addingTimeInterval(-90 * 86400)
+        let cutoff = now().addingTimeInterval(-Self.youTubeFallbackMaximumAge)
         guard let json = extractYouTubeInitialData(from: html) else {
             return collectYouTubeItemsFromEscapedHTML(html, keyword: keyword, cutoff: cutoff)
         }
@@ -1799,9 +2915,17 @@ final class IngestionService {
     static func googleNewsURL(
         _ query: String,
         locale: PlatformDefinition.NewsLocale = .japan,
-        recentDays: Int? = nil
+        recentDays: Int? = nil,
+        recentYears: Int? = nil
     ) -> URL? {
-        let effectiveQuery = recentDays.map { "\(query) when:\($0)d" } ?? query
+        let effectiveQuery: String
+        if let recentDays {
+            effectiveQuery = "\(query) when:\(recentDays)d"
+        } else if let recentYears {
+            effectiveQuery = "\(query) when:\(recentYears)y"
+        } else {
+            effectiveQuery = query
+        }
         var components = URLComponents()
         components.scheme = "https"
         components.host = "news.google.com"
@@ -1823,6 +2947,40 @@ final class IngestionService {
             ]
         }
         return components.url
+    }
+
+    static func bingNewsURL(
+        _ query: String,
+        locale: PlatformDefinition.NewsLocale = .japan
+    ) -> URL? {
+        var components = URLComponents()
+        components.scheme = "https"
+        components.host = "www.bing.com"
+        components.path = "/news/search"
+        components.queryItems = [
+            URLQueryItem(name: "q", value: query),
+            URLQueryItem(name: "format", value: "rss"),
+            URLQueryItem(name: "mkt", value: locale == .englishUS ? "en-US" : "ja-JP"),
+        ]
+        return components.url
+    }
+
+    static func unwrapBingNewsURL(_ value: String) -> String {
+        guard let components = URLComponents(string: value),
+              let host = components.host?.lowercased(),
+              (host == "bing.com" || host.hasSuffix(".bing.com")),
+              components.path.lowercased().hasSuffix("/news/apiclick.aspx"),
+              let rawTarget = components.queryItems?.first(where: { $0.name == "url" })?.value else {
+            return value
+        }
+        let target = rawTarget.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard
+              let targetURL = URL(string: target),
+              ["http", "https"].contains(targetURL.scheme?.lowercased() ?? ""),
+              targetURL.host != nil else {
+            return value
+        }
+        return target
     }
 
     private func cleanTitle(_ value: String, patterns: [String]) -> String {
@@ -1862,7 +3020,7 @@ final class IngestionService {
     }
 
     private func matchesKeyword(title: String, desc: String, kw: String) -> Bool {
-        let haystack = title.lowercased()
+        let haystack = "\(title) \(desc)".lowercased()
         let needle = kw.lowercased()
         if needle.isEmpty { return true }
         if haystack.contains(needle) { return true }
@@ -1878,6 +3036,25 @@ final class IngestionService {
               !value.isEmpty,
               parseISO8601Date(value) != nil else { return nil }
         return value
+    }
+
+    private func dedicatedPublishedDate(_ value: String?, sourceID: String) -> String? {
+        guard let publishedAt = validPublishedDate(value) else { return nil }
+        // Real Sound currently writes Japan local wall-clock values with a
+        // trailing `Z` (for example, an article available at 04:16Z is emitted
+        // as 13:16Z). Correct only that source/format combination so a future
+        // upstream switch to an explicit +09:00 offset is preserved as-is.
+        //
+        // This can't be gated on "does the timestamp look future-dated" —
+        // that signature only holds for articles published within the last
+        // ~9 hours; anything older reads as past-dated either way, so such a
+        // guard would silently leave most articles uncorrected.
+        guard sourceID == "realsound",
+              publishedAt.hasSuffix("Z"),
+              let date = parseISO8601Date(publishedAt) else {
+            return publishedAt
+        }
+        return isoString(date.addingTimeInterval(-9 * 60 * 60))
     }
 
     private func sortedByPublishedDate(_ items: [FeedItem]) -> [FeedItem] {
