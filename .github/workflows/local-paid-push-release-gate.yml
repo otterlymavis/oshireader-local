@@ -11,7 +11,7 @@ on:
           - disabled
           - enabled
       product_ids:
-        description: "Comma-separated StoreKit IDs; required only when catalog_mode is enabled"
+        description: "Approved monthly,yearly StoreKit IDs in that order; required only when catalog_mode is enabled"
         required: false
         type: string
       physical_push_test:
@@ -31,7 +31,15 @@ on:
           - pending
           - passed
       sandbox_billing_matrix:
-        description: "Sandbox purchase, restore, downgrade, refund, and lifetime acceptance"
+        description: "Sandbox purchase, restore, monthly/yearly switching, expiry, and refund/revocation acceptance"
+        required: true
+        type: choice
+        options:
+          - not-required
+          - pending
+          - passed
+      paid_client_matrix:
+        description: "Hosted feed/status, muting, notification controls, recovery, expiry/renewal, and opt-in diagnostics acceptance"
         required: true
         type: choice
         options:
@@ -60,13 +68,16 @@ jobs:
           PHYSICAL_PUSH_TEST: ${{ inputs.physical_push_test }}
           RECEIPT_REPORTING_TEST: ${{ inputs.receipt_reporting_test }}
           SANDBOX_BILLING_MATRIX: ${{ inputs.sandbox_billing_matrix }}
+          PAID_CLIENT_MATRIX: ${{ inputs.paid_client_matrix }}
           ACCEPTANCE_EVIDENCE: ${{ inputs.acceptance_evidence }}
         run: |
           python3 - <<'PY'
+          import json
           import os
           from pathlib import Path
 
           project = Path("ios-swift/project.yml").read_text(encoding="utf-8")
+          catalog = json.loads(Path("ios-swift/config/paid-catalog.json").read_text(encoding="utf-8"))
           info = Path("ios-swift/OshiReader/Info.plist").read_text(encoding="utf-8")
           entitlements = Path("ios-swift/OshiReader/OshiReader.entitlements").read_text(encoding="utf-8")
           privacy = Path("ios-swift/OshiReader/PrivacyInfo.xcprivacy").read_text(encoding="utf-8")
@@ -75,11 +86,22 @@ jobs:
           backend_client = Path("ios-swift/OshiReader/BackendClient.swift").read_text(encoding="utf-8")
           paid_backend = Path("ios-swift/OshiReader/PaidBackendFeedCoordinator.swift").read_text(encoding="utf-8")
           plus_store = Path("ios-swift/OshiReader/PlusStore.swift").read_text(encoding="utf-8")
+          settings_view = Path("ios-swift/OshiReader/Views/SettingsView.swift").read_text(encoding="utf-8")
           fastfile = Path("ios-swift/fastlane/Fastfile").read_text(encoding="utf-8")
           checks = {
               "Local bundle identifier": "PRODUCT_BUNDLE_IDENTIFIER: com.otterpia.oshireader" in project,
               "catalog build setting": 'PUSH_SUBSCRIPTION_PRODUCT_IDS: ""' in project,
+              "approved catalog remains default-off": catalog.get("repository_default_enabled") is False,
+              "single hosted subscription group": catalog.get("subscription_group") == "OshiReader Hosted",
+              "approved catalog has two ten-term products": [
+                  (product.get("duration"), product.get("push_term_limit"))
+                  for product in catalog.get("products", [])
+              ] == [("monthly", 10), ("yearly", 10)],
               "catalog Info.plist binding": "$(PUSH_SUBSCRIPTION_PRODUCT_IDS)" in info,
+              "APNs environment Info.plist binding": all(value in info for value in (
+                  "OshiReaderAPNSEnvironment",
+                  "$(APNS_ENVIRONMENT)",
+              )),
               "APNs entitlement": "$(APNS_ENVIRONMENT)" in entitlements,
               "notification service target": "OshiReaderNotificationService:" in project,
               "notification content target": "OshiReaderNotificationContent:" in project,
@@ -99,7 +121,24 @@ jobs:
                   "PlusStore.shouldSyncBackend",
                   "hasActiveEntitlement",
               )),
+              "paid hosted source health": "func fetchHostedSourceHealth(" in backend_client,
+              "paid hosted item muting": "func muteHostedFeedItem(" in backend_client,
+              "paid pending notification controls": all(value in backend_client for value in (
+                  "func triggerPendingNotification(",
+                  "func clearPendingNotification(",
+              )),
+              "paid APNs cleanup": "func unregisterAPNSToken(" in backend_client,
+              "device-scoped paid background refresh": "func triggerBackgroundPoll(" in backend_client,
+              "opt-in paid diagnostics client": all(value in paid_backend for value in (
+                  'static let consentKey = "paid_backend.diagnostics_opt_in"',
+                  "PaidHostedDiagnosticReporter",
+              )),
+              "active-paid diagnostics setting": all(value in settings_view for value in (
+                  "paidDiagnosticsEnabled",
+                  "plusStore.hasActiveEntitlement",
+              )),
               "no client-triggered global poll": "func triggerPoll(" not in backend_client,
+              "no client admin credential API": "/api/credentials" not in backend_client,
           }
           failed = [name for name, passed in checks.items() if not passed]
           if failed:
@@ -107,9 +146,11 @@ jobs:
 
           catalog_mode = os.environ["CATALOG_MODE"]
           product_ids = [value.strip() for value in os.environ.get("PRODUCT_IDS", "").split(",") if value.strip()]
+          expected_product_ids = [product["id"] for product in catalog["products"]]
           physical = os.environ["PHYSICAL_PUSH_TEST"]
           receipt_reporting = os.environ["RECEIPT_REPORTING_TEST"]
           billing_matrix = os.environ["SANDBOX_BILLING_MATRIX"]
+          paid_client_matrix = os.environ["PAID_CLIENT_MATRIX"]
           acceptance_evidence = os.environ.get("ACCEPTANCE_EVIDENCE", "").strip()
           if catalog_mode == "disabled":
               if product_ids:
@@ -120,17 +161,27 @@ jobs:
                   raise SystemExit("receipt_reporting_test must be not-required for a free-only candidate")
               if billing_matrix != "not-required":
                   raise SystemExit("sandbox_billing_matrix must be not-required for a free-only candidate")
+              if paid_client_matrix != "not-required":
+                  raise SystemExit("paid_client_matrix must be not-required for a free-only candidate")
               if acceptance_evidence:
                   raise SystemExit("acceptance_evidence must stay empty for a free-only candidate")
           else:
-              if not product_ids:
-                  raise SystemExit("product_ids are required when the paid catalog is enabled")
+              if product_ids != expected_product_ids:
+                  raise SystemExit(
+                      "product_ids must exactly match the approved monthly/yearly hosted catalog"
+                  )
               if physical != "passed":
                   raise SystemExit("sandbox purchase, hosted-feed, and terminated-app push acceptance must pass")
               if receipt_reporting != "passed":
                   raise SystemExit("physical-device receipt reporting acceptance must pass")
               if billing_matrix != "passed":
-                  raise SystemExit("purchase, restore, downgrade, refund, and lifetime acceptance must pass")
+                  raise SystemExit(
+                      "configured-product purchase, restore, switching, expiry, and refund/revocation acceptance must pass"
+                  )
+              if paid_client_matrix != "passed":
+                  raise SystemExit(
+                      "hosted paid-client features, recovery, lifecycle, and diagnostics acceptance must pass"
+                  )
               if not acceptance_evidence:
                   raise SystemExit("a TestFlight build and dated acceptance evidence reference is required")
           print(f"Validated {catalog_mode} catalog candidate")
@@ -138,6 +189,30 @@ jobs:
 
       - name: Install XcodeGen
         run: brew install xcodegen
+
+      - name: Verify paid catalog cost gate
+        run: |
+          python3 scripts/paid_catalog_cost_gate.py \
+            --compute 1 --database 1 --egress 1 \
+            --proxy 1 --apns 1 --diagnostics 1 \
+            --monthly-price 100 >/dev/null
+          if python3 scripts/paid_catalog_cost_gate.py \
+            --compute 1 --monthly-price 1 >/dev/null; then
+            echo "The paid catalog cost gate accepted an underpriced product" >&2
+            exit 1
+          fi
+          PRICE_OUTPUT=$(python3 scripts/paid_catalog_cost_gate.py \
+            --compute 0.1 --database 0.1 --egress 0.1 \
+            --proxy 0.1 --apns 0.1 --diagnostics 0.1 \
+            --monthly-price 19.99)
+          PRICE_OUTPUT="$PRICE_OUTPUT" python3 - <<'PY'
+          import json
+          import os
+
+          result = json.loads(os.environ["PRICE_OUTPUT"])
+          if result["suggested_annual_price_at_ten_months"] != "199.90":
+              raise SystemExit("The annual suggestion did not use the accepted monthly price")
+          PY
 
       - name: Verify generated project consistency
         run: |
@@ -201,6 +276,55 @@ jobs:
               raise SystemExit("Backend APNs registration lacks bundle_id")
           if "/api/entitlements/apple-notifications" not in openapi.get("paths", {}):
               raise SystemExit("Backend lacks the Apple notification lifecycle endpoint")
+          paths = openapi.get("paths", {})
+          required_operations = {
+              "/api/source-health": {"get"},
+              "/api/client-diagnostics": {"post"},
+              "/api/feed/muted-items": {"post"},
+              "/api/watch-terms/{term_id}/notify": {"post", "delete"},
+              "/api/devices/background-refresh": {"post"},
+              "/api/devices/apns-token": {"post"},
+              "/api/devices/apns-token/{token}": {"delete"},
+          }
+          for path, methods in required_operations.items():
+              available_methods = paths.get(path, {})
+              missing_methods = methods - available_methods.keys()
+              if missing_methods:
+                  raise SystemExit(
+                      f"Backend contract is missing {path} methods {sorted(missing_methods)}"
+                  )
+
+          diagnostics = schemas.get("ClientDiagnosticIn", {}).get("properties", {})
+          required_diagnostic_fields = {
+              "reason",
+              "environment",
+              "api_base",
+              "app_version",
+              "build",
+              "active_terms_count",
+              "subscribed_platforms",
+              "cached_feed_count",
+              "events",
+          }
+          missing_diagnostic_fields = required_diagnostic_fields - diagnostics.keys()
+          if missing_diagnostic_fields:
+              raise SystemExit(
+                  f"Backend diagnostic contract is missing {sorted(missing_diagnostic_fields)}"
+              )
+          diagnostic_event = schemas.get("ClientDiagnosticEvent", {}).get("properties", {})
+          required_event_fields = {"strategy", "status", "item_count", "added_count", "detail"}
+          missing_event_fields = required_event_fields - diagnostic_event.keys()
+          if missing_event_fields:
+              raise SystemExit(
+                  f"Backend diagnostic event contract is missing {sorted(missing_event_fields)}"
+              )
+          mute_request = schemas.get("FeedItemMuteIn", {}).get("properties", {})
+          required_mute_fields = {"source_item_id", "watch_term_id"}
+          missing_mute_fields = required_mute_fields - mute_request.keys()
+          if missing_mute_fields:
+              raise SystemExit(
+                  f"Backend mute contract is missing {sorted(missing_mute_fields)}"
+              )
           feed_operation = openapi.get("paths", {}).get("/api/feed/", {}).get("get", {})
           feed_parameters = {
               parameter.get("name")

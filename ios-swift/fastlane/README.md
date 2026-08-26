@@ -21,7 +21,7 @@ For _fastlane_ installation instructions, see [Installing _fastlane_](https://do
 [bundle exec] fastlane ios upload_metadata
 ```
 
-Upload OshiReader Local metadata for `com.otterpia.oshireader`.
+Upload OshiReader Local metadata to App Store Connect
 
 ### ios download_metadata
 
@@ -29,10 +29,23 @@ Upload OshiReader Local metadata for `com.otterpia.oshireader`.
 [bundle exec] fastlane ios download_metadata
 ```
 
-Download OshiReader Local metadata from App Store Connect.
+Download OshiReader Local metadata from App Store Connect
 
-Both lanes require `APP_STORE_CONNECT_KEY_ID`,
-`APP_STORE_CONNECT_ISSUER_ID`, and `APP_STORE_CONNECT_KEY_PATH`.
+### ios paid_acceptance_archive
+
+```sh
+[bundle exec] fastlane ios paid_acceptance_archive
+```
+
+Build a signed paid-catalog acceptance IPA without enabling the repository default catalog
+
+### ios paid_acceptance_beta
+
+```sh
+[bundle exec] fastlane ios paid_acceptance_beta
+```
+
+Build and upload the paid-catalog acceptance candidate to TestFlight
 
 ----
 

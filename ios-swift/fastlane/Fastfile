@@ -1,6 +1,36 @@
+require "json"
+
 default_platform(:ios)
 
 platform :ios do
+  private_lane :paid_acceptance_build_number do
+    configured = ENV.fetch("PAID_ACCEPTANCE_BUILD_NUMBER", "").strip
+    if configured.empty?
+      UI.user_error!("Set PAID_ACCEPTANCE_BUILD_NUMBER to a build number not already used in App Store Connect")
+    end
+    unless configured.match?(/\A[1-9]\d*\z/)
+      UI.user_error!("PAID_ACCEPTANCE_BUILD_NUMBER must be a positive integer")
+    end
+    configured
+  end
+
+  private_lane :build_paid_acceptance do |options|
+    catalog_path = File.expand_path("../config/paid-catalog.json", __dir__)
+    catalog = JSON.parse(File.read(catalog_path))
+    product_ids = catalog.fetch("products").map { |product| product.fetch("id") }.join(",")
+    build_number = options[:build_number] || paid_acceptance_build_number
+
+    build_app(
+      project: "OshiReader.xcodeproj",
+      scheme: "OshiReader Production",
+      configuration: "Release",
+      export_method: "app-store",
+      output_directory: "./build/paid-acceptance",
+      output_name: "OshiReader-Paid-Acceptance.ipa",
+      xcargs: "PUSH_SUBSCRIPTION_PRODUCT_IDS=#{product_ids} CURRENT_PROJECT_VERSION=#{build_number}"
+    )
+  end
+
   private_lane :app_store_connect_key do
     app_store_connect_api_key(
       key_id: ENV.fetch("APP_STORE_CONNECT_KEY_ID"),
@@ -29,6 +59,32 @@ platform :ios do
       app_identifier: "com.otterpia.oshireader",
       metadata_path: "./fastlane/metadata",
       run_precheck_before_submit: false
+    )
+  end
+
+  desc "Build a signed paid-catalog acceptance IPA without enabling the repository default catalog"
+  lane :paid_acceptance_archive do
+    build_paid_acceptance
+  end
+
+  desc "Build and upload the paid-catalog acceptance candidate to TestFlight"
+  lane :paid_acceptance_beta do
+    key = app_store_connect_key
+    version = get_version_number(
+      xcodeproj: "OshiReader.xcodeproj",
+      target: "OshiReader"
+    )
+    next_build_number = latest_testflight_build_number(
+      api_key: key,
+      app_identifier: "com.otterpia.oshireader",
+      version: version,
+      initial_build_number: 0
+    ).to_i + 1
+    ipa = build_paid_acceptance(build_number: next_build_number.to_s)
+    upload_to_testflight(
+      api_key: key,
+      ipa: ipa,
+      skip_waiting_for_build_processing: true
     )
   end
 end
