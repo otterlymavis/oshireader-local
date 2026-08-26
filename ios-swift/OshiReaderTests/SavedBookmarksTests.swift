@@ -865,6 +865,30 @@ final class SavedBookmarksTests: XCTestCase {
     }
 
     @MainActor
+    func testSilentPushPreviewMergesOnceWithoutASecondFeedItem() {
+        let now = ISO8601DateFormatter().string(from: Date())
+        let payload: [AnyHashable: Any] = [
+            "item_id": "news:silent-preview",
+            "item_url": "https://example.com/silent-preview",
+            "watch_term_keyword": "Preview Oshi",
+            "preview_item": [
+                "id": "news:silent-preview",
+                "url": "https://example.com/silent-preview",
+                "platform": "news",
+                "title": "Silent preview",
+                "media_type": "article",
+                "published_at": now,
+                "source": "backend_feed",
+            ],
+        ]
+
+        XCTAssertTrue(NotificationNavigationManager.shared.mergeNotificationItem(userInfo: payload))
+        XCTAssertTrue(NotificationNavigationManager.shared.mergeNotificationItem(userInfo: payload))
+        XCTAssertEqual(db.feedItems.filter { $0.id == "news:silent-preview" }.count, 1)
+        XCTAssertEqual(db.feedItems.first { $0.id == "news:silent-preview" }?.source, "backend_feed")
+    }
+
+    @MainActor
     func testNotificationPayloadUsesCachedItemForMissingFields() throws {
         let cached = FeedItem(
             id: "youtube:abc123def45",

@@ -567,6 +567,208 @@ final class FeedMergingTests: XCTestCase {
     }
 
     @MainActor
+    func testRemoteRegistrationRetriesSameTokenAfterTransientBackendFailure() async {
+        let center = MockNotificationCenter(status: .authorized)
+        var attempts: [String] = []
+        let manager = NotificationManager(
+            center: center,
+            registeredTokenProvider: { nil },
+            remoteRegistration: {},
+            registerDeviceToken: { token in
+                attempts.append(token)
+                if attempts.count == 1 { throw URLError(.timedOut) }
+            },
+            registrationRetryDelays: [0],
+            retrySleeper: { _ in }
+        )
+
+        await manager.handleRegisteredDeviceToken(Data([0x0a, 0xff]))
+        while attempts.count < 2 { await Task.yield() }
+
+        XCTAssertEqual(attempts, ["0aff", "0aff"])
+        XCTAssertTrue(manager.hasRemoteDeviceToken)
+        XCTAssertNil(manager.lastRemoteRegistrationError)
+    }
+
+    @MainActor
+    func testRemoteRegistrationStopsAfterBoundedRetryBudget() async {
+        let center = MockNotificationCenter(status: .authorized)
+        var attempts = 0
+        let manager = NotificationManager(
+            center: center,
+            registeredTokenProvider: { nil },
+            remoteRegistration: {},
+            registerDeviceToken: { _ in
+                attempts += 1
+                throw URLError(.cannotConnectToHost)
+            },
+            registrationRetryDelays: [0, 0],
+            retrySleeper: { _ in }
+        )
+
+        await manager.handleRegisteredDeviceToken(Data([0x01]))
+        while attempts < 3 { await Task.yield() }
+        for _ in 0..<10 { await Task.yield() }
+
+        XCTAssertEqual(attempts, 3)
+        XCTAssertFalse(manager.hasRemoteDeviceToken)
+        XCTAssertNotNil(manager.lastRemoteRegistrationError)
+    }
+
+    @MainActor
+    func testInvalidatingRemoteRegistrationClearsPersistedAndInMemoryState() {
+        let originalToken = KeychainHelper.read(.apnsDeviceToken)
+        let originalEnvironment = KeychainHelper.read(.apnsDeviceEnvironment)
+        defer {
+            _ = KeychainHelper.save(.apnsDeviceToken, originalToken)
+            _ = KeychainHelper.save(.apnsDeviceEnvironment, originalEnvironment)
+        }
+        _ = KeychainHelper.save(.apnsDeviceToken, "cached-token")
+        _ = KeychainHelper.save(.apnsDeviceEnvironment, BackendClient.shared.apnsEnvironment)
+        let center = MockNotificationCenter(status: .authorized)
+        let manager = NotificationManager(
+            center: center,
+            initialRegisteredDeviceToken: "cached-token",
+            registeredTokenProvider: {
+                BackendClient.shared.hasRegisteredAPNSDeviceForCurrentEnvironment
+                    ? KeychainHelper.read(.apnsDeviceToken)
+                    : nil
+            },
+            remoteRegistration: {}
+        )
+        XCTAssertTrue(manager.hasRemoteDeviceToken)
+
+        manager.invalidateRemoteNotificationRegistration()
+
+        XCTAssertFalse(manager.hasRemoteDeviceToken)
+        XCTAssertNil(KeychainHelper.read(.apnsDeviceToken))
+        XCTAssertNil(KeychainHelper.read(.apnsDeviceEnvironment))
+        XCTAssertFalse(BackendClient.shared.hasRegisteredAPNSDeviceForCurrentEnvironment)
+    }
+
+    @MainActor
+    func testConditionalRemoteRegistrationInvalidationPreservesNewerTokenAndEnvironment() async {
+        let originalToken = KeychainHelper.read(.apnsDeviceToken)
+        let originalEnvironment = KeychainHelper.read(.apnsDeviceEnvironment)
+        defer {
+            _ = KeychainHelper.save(.apnsDeviceToken, originalToken)
+            _ = KeychainHelper.save(.apnsDeviceEnvironment, originalEnvironment)
+        }
+        _ = KeychainHelper.save(.apnsDeviceToken, "old-token")
+        _ = KeychainHelper.save(.apnsDeviceEnvironment, "sandbox")
+        let center = MockNotificationCenter(status: .authorized)
+        let manager = NotificationManager(
+            center: center,
+            initialRegisteredDeviceToken: "old-token",
+            registeredTokenProvider: { KeychainHelper.read(.apnsDeviceToken) },
+            remoteRegistration: {},
+            registerDeviceToken: { token in
+                _ = KeychainHelper.save(.apnsDeviceToken, token)
+                _ = KeychainHelper.save(.apnsDeviceEnvironment, "production")
+            },
+            registrationRetryDelays: []
+        )
+
+        await manager.handleRegisteredDeviceToken(Data([0xab, 0xcd]))
+        let cleared = manager.invalidateRemoteNotificationRegistration(
+            ifTokenMatches: "old-token",
+            environment: "sandbox"
+        )
+
+        XCTAssertFalse(cleared)
+        XCTAssertTrue(manager.hasRemoteDeviceToken)
+        XCTAssertEqual(KeychainHelper.read(.apnsDeviceToken), "abcd")
+        XCTAssertEqual(KeychainHelper.read(.apnsDeviceEnvironment), "production")
+    }
+
+    @MainActor
+    func testConditionalRemoteRegistrationInvalidationClearsMatchingState() {
+        let originalToken = KeychainHelper.read(.apnsDeviceToken)
+        let originalEnvironment = KeychainHelper.read(.apnsDeviceEnvironment)
+        defer {
+            _ = KeychainHelper.save(.apnsDeviceToken, originalToken)
+            _ = KeychainHelper.save(.apnsDeviceEnvironment, originalEnvironment)
+        }
+        _ = KeychainHelper.save(.apnsDeviceToken, "matching-token")
+        _ = KeychainHelper.save(.apnsDeviceEnvironment, "sandbox")
+        let manager = NotificationManager(
+            center: MockNotificationCenter(status: .authorized),
+            initialRegisteredDeviceToken: "matching-token",
+            registeredTokenProvider: { KeychainHelper.read(.apnsDeviceToken) },
+            remoteRegistration: {}
+        )
+
+        let cleared = manager.invalidateRemoteNotificationRegistration(
+            ifTokenMatches: "matching-token",
+            environment: "sandbox"
+        )
+
+        XCTAssertTrue(cleared)
+        XCTAssertFalse(manager.hasRemoteDeviceToken)
+        XCTAssertNil(KeychainHelper.read(.apnsDeviceToken))
+        XCTAssertNil(KeychainHelper.read(.apnsDeviceEnvironment))
+    }
+
+    @MainActor
+    func testGuaranteedPushPreflightRevalidatesCachedTokenWithoutSystemCallback() async {
+        let center = MockNotificationCenter(status: .authorized)
+        var registeredTokens: [String] = []
+        var systemRegistrationCount = 0
+        let manager = NotificationManager(
+            center: center,
+            initialRegisteredDeviceToken: "cached-token",
+            registeredTokenProvider: { "cached-token" },
+            remoteRegistration: { systemRegistrationCount += 1 },
+            registerDeviceToken: { registeredTokens.append($0) },
+            registrationRetryDelays: [],
+            retrySleeper: { _ in }
+        )
+
+        let registered = await manager.ensureRemoteNotificationsRegistered(
+            timeout: 1,
+            forceRefresh: true
+        )
+
+        XCTAssertTrue(registered)
+        XCTAssertEqual(registeredTokens, ["cached-token"])
+        XCTAssertEqual(systemRegistrationCount, 0)
+    }
+
+    @MainActor
+    func testNotificationStatusAndPreviewCategoryUseLocalizedPlusContract() async {
+        let i18n = I18nManager.shared
+        let originalLanguage = i18n.lang
+        defer { i18n.setLanguage(originalLanguage) }
+        i18n.setLanguage("ja")
+
+        let enabledCenter = MockNotificationCenter(status: .authorized)
+        let enabledManager = NotificationManager(center: enabledCenter)
+        await enabledManager.refreshAuthorizationStatus()
+        XCTAssertEqual(enabledManager.statusText, "有効")
+
+        let quietCenter = MockNotificationCenter(status: .provisional)
+        let quietManager = NotificationManager(center: quietCenter)
+        await quietManager.refreshAuthorizationStatus()
+        XCTAssertEqual(quietManager.statusText, "控えめに有効")
+
+        let deniedCenter = MockNotificationCenter(status: .denied)
+        let deniedManager = NotificationManager(center: deniedCenter)
+        await deniedManager.refreshAuthorizationStatus()
+        XCTAssertEqual(deniedManager.statusText, "iOS設定で無効")
+
+        enabledManager.registerNotificationCategories()
+        let category = enabledCenter.categories.first
+        XCTAssertEqual(enabledCenter.categories.count, 1)
+        XCTAssertEqual(category?.identifier, NotificationManager.categoryIdentifier)
+        XCTAssertEqual(category?.actions.map(\.identifier), [
+            NotificationManager.openActionIdentifier,
+            NotificationManager.saveActionIdentifier,
+        ])
+        XCTAssertEqual(category?.actions.map(\.title), [i18n.t("openNotification"), i18n.t("save")])
+        XCTAssertTrue(category?.options.contains(.customDismissAction) == true)
+    }
+
+    @MainActor
     func testLocalAlertPermissionHelperRequestsWhenNeeded() async throws {
         let center = MockNotificationCenter(status: .notDetermined, grantsAuthorization: true)
         let manager = NotificationManager(center: center)
@@ -671,13 +873,13 @@ final class FeedMergingTests: XCTestCase {
         let items = [
             FeedItem(
                 id: "youtube:enabled-1", platform: "youtube", url: "https://youtube.com/1",
-                title: "Enabled first", content_text: nil, author: nil, thumbnail_url: nil,
+                title: "Enabled first", content_text: "Enabled first details", author: nil, thumbnail_url: nil,
                 media_type: "video", published_at: oldString, watch_term_keyword: enabledTerm.keyword,
                 fetched_at: oldString, source: "youtube_scrape"
             ),
             FeedItem(
                 id: "note:enabled-2", platform: "note", url: "https://note.com/2",
-                title: "Enabled second", content_text: nil, author: nil, thumbnail_url: nil,
+                title: "Enabled second", content_text: "Enabled second details", author: nil, thumbnail_url: nil,
                 media_type: "article", published_at: newString, watch_term_keyword: enabledTerm.keyword,
                 fetched_at: newString,
                 source: "note_rss"
@@ -694,14 +896,63 @@ final class FeedMergingTests: XCTestCase {
 
         XCTAssertEqual(center.requests.count, 2)
         XCTAssertTrue(center.requests.allSatisfy { $0.content.title == "Enabled Oshi" })
-        XCTAssertEqual(center.requests.first?.content.body, "Enabled second")
-        XCTAssertEqual(center.requests.first?.content.userInfo["source"] as? String, "note_rss")
-        XCTAssertEqual(center.requests.last?.content.body, "Enabled first")
+        // Requests are submitted oldest-to-newest so iOS places the newest
+        // delivery at the top of Notification Center.
+        XCTAssertEqual(center.requests.first?.content.subtitle, "Enabled first")
+        XCTAssertEqual(center.requests.first?.content.body, "Enabled first details")
+        XCTAssertEqual(center.requests.last?.content.subtitle, "Enabled second")
+        XCTAssertEqual(center.requests.last?.content.body, "Enabled second details")
+        XCTAssertEqual(center.requests.last?.content.userInfo["source"] as? String, "note_rss")
+        XCTAssertEqual(center.requests.last?.content.userInfo["item_title"] as? String, "Enabled second")
+        XCTAssertEqual(
+            (center.requests.last?.content.userInfo["preview_item"] as? [String: Any])?["content_text"] as? String,
+            "Enabled second details"
+        )
+        XCTAssertEqual(center.requests.last?.content.threadIdentifier, "oshireader-enabled oshi")
+        XCTAssertEqual(center.requests.last?.content.targetContentIdentifier, "note:enabled-2")
         XCTAssertNil(center.requests.first?.trigger)
     }
 
     @MainActor
-    func testBackendPushTermDoesNotAlsoScheduleLocalNotification() async {
+    func testLocalNotificationUsesPlusAlertLimitsAndSuppressesDuplicateBody() async throws {
+        let center = MockNotificationCenter(status: .authorized)
+        let manager = NotificationManager(center: center)
+        let term = WatchTerm(id: "layout", keyword: "Layout Oshi", notify_on_new: true)
+        let nowString = ISO8601DateFormatter().string(from: Date())
+        let longTitle = String(repeating: "T", count: 60)
+        let longBody = String(repeating: "B", count: 110)
+        let longItem = FeedItem(
+            id: "news:long-layout", platform: "news", url: "https://example.com/long-layout",
+            title: longTitle, content_text: longBody, author: nil, thumbnail_url: nil,
+            media_type: "article", published_at: nowString, watch_term_keyword: term.keyword,
+            fetched_at: nowString
+        )
+
+        await manager.notifyForNewItems([longItem], terms: [term], includeAttachments: false)
+
+        let content = try XCTUnwrap(center.requests.first?.content)
+        XCTAssertEqual(content.title, "Layout Oshi")
+        XCTAssertEqual(content.subtitle.count, 50)
+        XCTAssertTrue(content.subtitle.hasSuffix("..."))
+        XCTAssertEqual(content.body.count, 100)
+        XCTAssertTrue(content.body.hasSuffix("..."))
+        XCTAssertEqual(content.userInfo["item_title"] as? String, longTitle)
+        XCTAssertEqual(content.userInfo["item_content_text"] as? String, longBody)
+
+        let duplicateItem = FeedItem(
+            id: "news:duplicate-layout", platform: "news", url: "https://example.com/duplicate-layout",
+            title: "Same preview", content_text: "Same preview", author: nil, thumbnail_url: nil,
+            media_type: "article", published_at: nowString, watch_term_keyword: term.keyword,
+            fetched_at: nowString
+        )
+        await manager.notifyForNewItems([duplicateItem], terms: [term], includeAttachments: false)
+
+        XCTAssertEqual(center.requests.last?.content.subtitle, "Same preview")
+        XCTAssertEqual(center.requests.last?.content.body, "")
+    }
+
+    @MainActor
+    func testBackendPushTermFallsBackLocallyWhenAPNSIsNotRegistered() async {
         PlusStore.shared.setPushDeliveryStateForTesting(.active)
         defer { PlusStore.shared.setPushDeliveryStateForTesting(.inactive) }
         let center = MockNotificationCenter(status: .authorized)
@@ -722,7 +973,58 @@ final class FeedMergingTests: XCTestCase {
 
         await manager.notifyForNewItems([item], terms: [term])
 
-        XCTAssertTrue(center.requests.isEmpty)
+        XCTAssertEqual(center.requests.count, 1)
+    }
+
+    func testPaidNotificationOwnershipRequiresBindingActiveDeliveryAndRegisteredAPNS() {
+        let backendTerm = WatchTerm(
+            id: "backend-routing",
+            keyword: "Backend Oshi",
+            notify_on_new: true,
+            backendTermID: 44
+        )
+        let localTerm = WatchTerm(
+            id: "local-routing",
+            keyword: "Local Oshi",
+            notify_on_new: true
+        )
+        let mutedTerm = WatchTerm(
+            id: "muted-routing",
+            keyword: "Muted Oshi",
+            notify_on_new: false,
+            backendTermID: 45
+        )
+
+        XCTAssertFalse(NotificationManager.shouldScheduleLocalNotification(
+            for: backendTerm,
+            pushDeliveryState: .active,
+            hasRegisteredAPNSDevice: true
+        ))
+        XCTAssertTrue(NotificationManager.shouldScheduleLocalNotification(
+            for: backendTerm,
+            pushDeliveryState: .active,
+            hasRegisteredAPNSDevice: false
+        ))
+        XCTAssertTrue(NotificationManager.shouldScheduleLocalNotification(
+            for: backendTerm,
+            pushDeliveryState: .inactive,
+            hasRegisteredAPNSDevice: true
+        ))
+        XCTAssertTrue(NotificationManager.shouldScheduleLocalNotification(
+            for: backendTerm,
+            pushDeliveryState: .selectionRequired,
+            hasRegisteredAPNSDevice: true
+        ))
+        XCTAssertTrue(NotificationManager.shouldScheduleLocalNotification(
+            for: localTerm,
+            pushDeliveryState: .active,
+            hasRegisteredAPNSDevice: true
+        ))
+        XCTAssertFalse(NotificationManager.shouldScheduleLocalNotification(
+            for: mutedTerm,
+            pushDeliveryState: .inactive,
+            hasRegisteredAPNSDevice: false
+        ))
     }
 
     @MainActor
@@ -795,6 +1097,32 @@ final class FeedMergingTests: XCTestCase {
             watch_term_keyword: term.keyword,
             fetched_at: nowString,
             source: IngestionService.unverifiedDateGoogleNewsSource
+        )
+
+        await manager.notifyForNewItems([item], terms: [term])
+
+        XCTAssertTrue(center.requests.isEmpty)
+    }
+
+    @MainActor
+    func testFiveChThreadCreationFallbackItemsStayFeedOnly() async {
+        let center = MockNotificationCenter(status: .authorized)
+        let manager = NotificationManager(center: center)
+        let term = WatchTerm(id: "5ch-created", keyword: "Created Oshi", notify_on_new: true)
+        let nowString = ISO8601DateFormatter().string(from: Date())
+        let item = FeedItem(
+            id: "2ch.sc:toro.2ch.sc:nogizaka:1787000000",
+            platform: "5ch",
+            url: "https://toro.2ch.sc/test/read.cgi/nogizaka/1787000000/",
+            title: "Created Oshi thread",
+            content_text: nil,
+            author: nil,
+            thumbnail_url: nil,
+            media_type: "text",
+            published_at: nowString,
+            watch_term_keyword: term.keyword,
+            fetched_at: nowString,
+            source: IngestionService.fiveChThreadCreatedSource
         )
 
         await manager.notifyForNewItems([item], terms: [term])
@@ -997,6 +1325,217 @@ final class FeedMergingTests: XCTestCase {
     }
 
     @MainActor
+    func testVerifiedFiveChReplyUpdateNotifiesOnceWithoutIncreasingAddedCount() {
+        let formatter = ISO8601DateFormatter()
+        let oldDate = formatter.string(from: Date().addingTimeInterval(-3600))
+        let newDate = formatter.string(from: Date())
+        let existing = FeedItem(
+            id: "2ch.sc:toro.2ch.sc:nogizaka:1787000000",
+            platform: "5ch",
+            url: "https://toro.2ch.sc/test/read.cgi/nogizaka/1787000000/",
+            title: "Reply Oshi thread",
+            content_text: nil,
+            author: nil,
+            thumbnail_url: nil,
+            media_type: "text",
+            published_at: oldDate,
+            watch_term_keyword: "Reply Oshi",
+            fetched_at: oldDate,
+            source: IngestionService.fiveChVerifiedActivitySource
+        )
+        let updated = existing.with(
+            published_at: newDate,
+            fetched_at: newDate,
+            source: IngestionService.fiveChVerifiedActivitySource
+        )
+        db.setSubscribedPlatforms(platforms: ["5ch"])
+        db.feedItems = [existing]
+        var handedOffItems = [FeedItem]()
+
+        let first = db.mergeItemsResult(newItems: [updated], notificationHandler: { items, _ in
+            handedOffItems.append(contentsOf: items)
+        })
+        let second = db.mergeItemsResult(newItems: [updated], notificationHandler: { items, _ in
+            handedOffItems.append(contentsOf: items)
+        })
+
+        XCTAssertEqual(first.addedCount, 0)
+        XCTAssertTrue(first.didMutate)
+        XCTAssertEqual(second.addedCount, 0)
+        XCTAssertFalse(second.didMutate)
+        XCTAssertEqual(handedOffItems.map(\.id), [existing.id])
+        XCTAssertEqual(db.feedItems.first?.published_at, newDate)
+    }
+
+    @MainActor
+    func testVerifiedFiveChReplyUpdateRefreshesFeedAndNotificationPreview() {
+        let formatter = ISO8601DateFormatter()
+        let oldDate = formatter.string(from: Date().addingTimeInterval(-3600))
+        let newDate = formatter.string(from: Date())
+        let existing = FeedItem(
+            id: "2ch.sc:toro.2ch.sc:nogizaka:1787000001",
+            platform: "5ch",
+            url: "https://toro.2ch.sc/test/read.cgi/nogizaka/1787000001/",
+            title: "Preview Oshi original discussion title",
+            content_text: "Original preview",
+            author: "Original author",
+            thumbnail_url: "https://example.com/original.jpg",
+            media_type: "article",
+            published_at: oldDate,
+            watch_term_keyword: "Preview Oshi",
+            fetched_at: oldDate,
+            source: IngestionService.fiveChVerifiedActivitySource
+        )
+        let updated = existing.with(
+            url: "https://toro.2ch.sc/test/read.cgi/nogizaka/1787000001/latest",
+            title: "Preview Oshi updated",
+            content_text: "Latest reply preview",
+            author: "Updated author",
+            thumbnail_url: "https://example.com/updated.jpg",
+            media_type: "text",
+            published_at: newDate,
+            fetched_at: newDate,
+            source: IngestionService.fiveChVerifiedActivitySource
+        )
+        db.setSubscribedPlatforms(platforms: ["5ch"])
+        db.feedItems = [existing]
+        var handedOffItems = [FeedItem]()
+
+        let result = db.mergeItemsResult(newItems: [updated], notificationHandler: { items, _ in
+            handedOffItems = items
+        })
+
+        XCTAssertEqual(result.addedCount, 0)
+        XCTAssertTrue(result.didMutate)
+        let merged = db.feedItems.first
+        XCTAssertEqual(merged?.url, updated.url)
+        XCTAssertEqual(merged?.title, updated.title)
+        XCTAssertEqual(merged?.content_text, updated.content_text)
+        XCTAssertEqual(merged?.author, updated.author)
+        XCTAssertEqual(merged?.thumbnail_url, updated.thumbnail_url)
+        XCTAssertEqual(merged?.media_type, updated.media_type)
+        XCTAssertEqual(handedOffItems, merged.map { [$0] } ?? [])
+    }
+
+    @MainActor
+    func testFiveChReplyUpdateRejectsOlderAndUnverifiedActivityNotifications() {
+        let formatter = ISO8601DateFormatter()
+        let currentDate = formatter.string(from: Date())
+        let oldDate = formatter.string(from: Date().addingTimeInterval(-3600))
+        let futureDate = formatter.string(from: Date().addingTimeInterval(60))
+        let existing = FeedItem(
+            id: "2ch.sc:toro.2ch.sc:nogizaka:1787000000",
+            platform: "5ch",
+            url: "https://toro.2ch.sc/test/read.cgi/nogizaka/1787000000/",
+            title: "Quiet Oshi thread",
+            content_text: nil,
+            author: nil,
+            thumbnail_url: nil,
+            media_type: "text",
+            published_at: currentDate,
+            watch_term_keyword: "Quiet Oshi",
+            fetched_at: currentDate,
+            source: IngestionService.fiveChVerifiedActivitySource
+        )
+        db.setSubscribedPlatforms(platforms: ["5ch"])
+        db.feedItems = [existing]
+        var handedOffItems = [FeedItem]()
+
+        _ = db.mergeItemsResult(newItems: [existing.with(
+            published_at: oldDate,
+            fetched_at: oldDate,
+            source: IngestionService.fiveChVerifiedActivitySource
+        )], notificationHandler: { items, _ in
+            handedOffItems.append(contentsOf: items)
+        })
+        _ = db.mergeItemsResult(newItems: [existing.with(
+            published_at: futureDate,
+            fetched_at: currentDate,
+            source: IngestionService.fiveChThreadCreatedSource
+        )], notificationHandler: { items, _ in
+            handedOffItems.append(contentsOf: items)
+        })
+
+        XCTAssertTrue(handedOffItems.isEmpty)
+        XCTAssertEqual(db.feedItems.first?.published_at, futureDate)
+    }
+
+    @MainActor
+    func testVerifiedFiveChInitialLoadDoesNotNotify() {
+        let nowString = ISO8601DateFormatter().string(from: Date())
+        let item = FeedItem(
+            id: "2ch.sc:toro.2ch.sc:nogizaka:1787000000",
+            platform: "5ch",
+            url: "https://toro.2ch.sc/test/read.cgi/nogizaka/1787000000/",
+            title: "Initial Oshi thread",
+            content_text: nil,
+            author: nil,
+            thumbnail_url: nil,
+            media_type: "text",
+            published_at: nowString,
+            watch_term_keyword: "Initial Oshi",
+            fetched_at: nowString,
+            source: IngestionService.fiveChVerifiedActivitySource
+        )
+        db.setSubscribedPlatforms(platforms: ["5ch"])
+        var handedOffItems = [FeedItem]()
+
+        XCTAssertEqual(db.mergeItems(newItems: [item], notificationHandler: { items, _ in
+            handedOffItems.append(contentsOf: items)
+        }), 1)
+
+        XCTAssertTrue(handedOffItems.isEmpty)
+    }
+
+    @MainActor
+    func testPrunedFiveChReplyUpdateDoesNotNotify() {
+        let formatter = ISO8601DateFormatter()
+        let futureBase = Date().addingTimeInterval(30 * 86400)
+        let oldDate = formatter.string(from: Date().addingTimeInterval(-7200))
+        let updatedDate = formatter.string(from: Date().addingTimeInterval(-3600))
+        let targetID = "2ch.sc:toro.2ch.sc:nogizaka:1787000000"
+        let target = FeedItem(
+            id: targetID,
+            platform: "5ch",
+            url: "https://toro.2ch.sc/test/read.cgi/nogizaka/1787000000/",
+            title: "Pruned Oshi thread",
+            content_text: nil,
+            author: nil,
+            thumbnail_url: nil,
+            media_type: "text",
+            published_at: oldDate,
+            watch_term_keyword: "Pruned Oshi",
+            fetched_at: oldDate,
+            source: IngestionService.fiveChVerifiedActivitySource
+        )
+        db.setSubscribedPlatforms(platforms: ["5ch"])
+        db.feedItems = (0..<600).map { index in
+            let date = formatter.string(from: futureBase.addingTimeInterval(TimeInterval(-index)))
+            return FeedItem(
+                id: "5ch:newer:\(index)", platform: "5ch",
+                url: "https://example.com/5ch/\(index)", title: "Newer \(index)",
+                content_text: nil, author: nil, thumbnail_url: nil, media_type: "text",
+                published_at: date, watch_term_keyword: "Pruned Oshi", fetched_at: date,
+                source: IngestionService.fiveChVerifiedActivitySource
+            )
+        } + [target]
+        var handedOffItems = [FeedItem]()
+
+        let result = db.mergeItemsResult(newItems: [target.with(
+            published_at: updatedDate,
+            fetched_at: updatedDate,
+            source: IngestionService.fiveChVerifiedActivitySource
+        )], notificationHandler: { items, _ in
+            handedOffItems.append(contentsOf: items)
+        })
+
+        XCTAssertEqual(result.addedCount, 0)
+        XCTAssertTrue(result.didMutate)
+        XCTAssertFalse(db.feedItems.contains { $0.id == targetID })
+        XCTAssertTrue(handedOffItems.isEmpty)
+    }
+
+    @MainActor
     func testMergeResultReportsExistingItemMutationWithoutAddition() {
         let oldDate = "2026-08-13T10:00:00Z"
         let newDate = "2026-08-14T10:00:00Z"
@@ -1149,6 +1688,7 @@ private final class MockNotificationCenter: NotificationCenterClient {
     var onAuthorizationStatus: (() async -> Void)?
     private(set) var authorizationRequestCount = 0
     private(set) var requests: [UNNotificationRequest] = []
+    private(set) var categories: Set<UNNotificationCategory> = []
     private(set) var removedPendingIdentifiers: [[String]] = []
     private(set) var removedDeliveredIdentifiers: [[String]] = []
     private(set) var removeAllPendingCount = 0
@@ -1174,6 +1714,10 @@ private final class MockNotificationCenter: NotificationCenterClient {
 
     func add(_ request: UNNotificationRequest) async throws {
         requests.append(request)
+    }
+
+    func setNotificationCategories(_ categories: Set<UNNotificationCategory>) {
+        self.categories = categories
     }
 
     func removeAllPendingNotificationRequests() {

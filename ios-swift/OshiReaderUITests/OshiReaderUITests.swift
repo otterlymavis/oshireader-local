@@ -117,8 +117,13 @@ final class OshiReaderUITests: XCTestCase {
         app.buttons["feed.refreshButton"].tap()
 
         tapTab(index: 4, labels: ["Settings"])
-        let sourceSummary = app.buttons["settings.sourceStatus"]
-        XCTAssertTrue(sourceSummary.waitForExistence(timeout: 3))
+        let sourceSummary = waitForElement(
+            identifier: "settings.sourceStatus",
+            timeout: 1,
+            swipes: 5
+        )
+        XCTAssertTrue(sourceSummary.exists)
+        XCTAssertEqual(sourceSummary.elementType, .button)
         let summaryReady = XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "label CONTAINS[c] 'current'"),
             object: sourceSummary

@@ -22,6 +22,10 @@ private actor RequestCapture {
     func contains(_ predicate: (String) -> Bool) -> Bool {
         urls.contains(where: predicate)
     }
+
+    func count(containing fragment: String) -> Int {
+        urls.filter { $0.contains(fragment) }.count
+    }
 }
 
 private actor RequestPolicyCapture {
@@ -29,6 +33,80 @@ private actor RequestPolicyCapture {
 
     func record(_ request: URLRequest) {
         requests.append((request.url?.absoluteString ?? "", request.timeoutInterval))
+    }
+}
+
+private actor ConcurrentRequestCapture {
+    private var active = 0
+    private var started = 0
+    private(set) var maximumActive = 0
+
+    func begin() {
+        active += 1
+        started += 1
+        maximumActive = max(maximumActive, active)
+    }
+
+    func end() {
+        active -= 1
+    }
+
+    func startedCount() -> Int {
+        started
+    }
+
+    func waitUntilStarted(_ expectedCount: Int) async {
+        while started < expectedCount {
+            await Task.yield()
+        }
+    }
+}
+
+private struct RequestStartEvent: Sendable {
+    let url: String
+    let uptimeNanoseconds: UInt64
+}
+
+private actor RequestStartCapture {
+    private var events: [RequestStartEvent] = []
+    private var active = 0
+    private(set) var maximumActive = 0
+
+    func begin(_ url: String) {
+        events.append(RequestStartEvent(
+            url: url,
+            uptimeNanoseconds: DispatchTime.now().uptimeNanoseconds
+        ))
+        active += 1
+        maximumActive = max(maximumActive, active)
+    }
+
+    func end() {
+        active -= 1
+    }
+
+    func snapshot() -> [RequestStartEvent] {
+        events
+    }
+
+    func waitUntilCount(_ expectedCount: Int) async {
+        while events.count < expectedCount {
+            await Task.yield()
+        }
+    }
+}
+
+private actor PacingDelayCapture {
+    private var delays: [UInt64] = []
+
+    func record(_ delay: UInt64) {
+        delays.append(delay)
+    }
+
+    func waitUntilCount(_ expectedCount: Int) async {
+        while delays.count < expectedCount {
+            await Task.yield()
+        }
     }
 }
 
@@ -43,6 +121,39 @@ private actor RetryGate {
         while !entered {
             await Task.yield()
         }
+    }
+}
+
+private final class TestMonotonicClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: TimeInterval
+
+    init(_ value: TimeInterval) {
+        self.value = value
+    }
+
+    func now() -> TimeInterval {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+
+    func set(_ newValue: TimeInterval) {
+        lock.lock()
+        value = newValue
+        lock.unlock()
+    }
+}
+
+private actor AsyncCounter {
+    private var count = 0
+
+    func increment() {
+        count += 1
+    }
+
+    func value() -> Int {
+        count
     }
 }
 
@@ -90,8 +201,38 @@ private final class MockURLProtocol: URLProtocol {
     override func stopLoading() {}
 }
 
+private final class NonHTTPResponseURLProtocol: URLProtocol {
+    static var requestCount = 0
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        true
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        request
+    }
+
+    override func startLoading() {
+        Self.requestCount += 1
+        guard let url = request.url else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badURL))
+            return
+        }
+        let response = URLResponse(
+            url: url,
+            mimeType: "application/json",
+            expectedContentLength: 0,
+            textEncodingName: "utf-8"
+        )
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
+
 final class OshiReaderTests: XCTestCase {
-    
+
     private var db: LocalDB!
     
     override func setUpWithError() throws {
@@ -111,6 +252,120 @@ final class OshiReaderTests: XCTestCase {
     override func tearDownWithError() throws {
         db = nil
         try super.tearDownWithError()
+    }
+
+    func testAPNSEnvironmentNormalizationRejectsInvalidAndUnexpandedValues() {
+        XCTAssertEqual(BackendClient.normalizedAPNSEnvironment("development"), "sandbox")
+        XCTAssertEqual(BackendClient.normalizedAPNSEnvironment("SANDBOX"), "sandbox")
+        XCTAssertEqual(BackendClient.normalizedAPNSEnvironment("  Production  "), "production")
+        XCTAssertNil(BackendClient.normalizedAPNSEnvironment(""))
+        XCTAssertNil(BackendClient.normalizedAPNSEnvironment("invalid"))
+        XCTAssertNil(BackendClient.normalizedAPNSEnvironment("$(APNS_ENVIRONMENT)"))
+        XCTAssertNil(BackendClient.normalizedAPNSEnvironment(nil))
+    }
+
+    func testAPNSEnvironmentParsesEmbeddedProvisioningEntitlements() {
+        func profile(environment: String) -> Data {
+            Data("CMS-prefix\u{00ff}\n".utf8) + Data(
+                """
+                <plist version="1.0">
+                <dict>
+                  <key>Entitlements</key>
+                  <dict>
+                    <key>aps-environment</key>
+                    <string>\(environment)</string>
+                  </dict>
+                </dict>
+                </plist>
+                """.utf8
+            ) + Data("\nCMS-suffix".utf8)
+        }
+
+        XCTAssertEqual(
+            BackendClient.provisionedAPNSEnvironment(from: profile(environment: "development")),
+            "sandbox"
+        )
+        XCTAssertEqual(
+            BackendClient.provisionedAPNSEnvironment(from: profile(environment: "production")),
+            "production"
+        )
+        XCTAssertNil(BackendClient.provisionedAPNSEnvironment(from: profile(environment: "invalid")))
+        XCTAssertNil(BackendClient.provisionedAPNSEnvironment(from: Data("not a profile".utf8)))
+        XCTAssertNil(BackendClient.provisionedAPNSEnvironment(from: Data("<plist><dict>".utf8)))
+        XCTAssertNil(BackendClient.provisionedAPNSEnvironment(from: Data(
+            "<plist version=\"1.0\"><dict><key>Name</key><string>Missing entitlements</string></dict></plist>".utf8
+        )))
+        XCTAssertNil(BackendClient.provisionedAPNSEnvironment(from: nil))
+    }
+
+    func testAPNSEnvironmentResolutionUsesProvisioningThenConfigurationThenFallback() {
+        let productionProfile = Data(
+            """
+            prefix<plist version="1.0"><dict><key>Entitlements</key><dict>
+            <key>aps-environment</key><string>production</string>
+            </dict></dict></plist>suffix
+            """.utf8
+        )
+
+        XCTAssertEqual(
+            BackendClient.resolvedAPNSEnvironment(
+                provisionedData: productionProfile,
+                configuredValue: "development",
+                fallback: "sandbox"
+            ),
+            "production"
+        )
+        XCTAssertEqual(
+            BackendClient.resolvedAPNSEnvironment(
+                provisionedData: Data("malformed".utf8),
+                configuredValue: "development",
+                fallback: "production"
+            ),
+            "sandbox"
+        )
+        XCTAssertEqual(
+            BackendClient.resolvedAPNSEnvironment(
+                provisionedData: nil,
+                configuredValue: "$(APNS_ENVIRONMENT)",
+                fallback: "sandbox"
+            ),
+            "sandbox"
+        )
+        XCTAssertEqual(
+            BackendClient.resolvedAPNSEnvironment(
+                provisionedData: nil,
+                configuredValue: nil,
+                fallback: "production"
+            ),
+            "production"
+        )
+        XCTAssertEqual(
+            BackendClient.resolvedAPNSEnvironment(
+                provisionedData: nil,
+                configuredValue: nil,
+                fallback: "invalid"
+            ),
+            "production"
+        )
+    }
+
+    func testAPNSRegistrationAuthorityRequiresResolvedEnvironmentMatch() {
+        let originalToken = KeychainHelper.read(.apnsDeviceToken)
+        let originalEnvironment = KeychainHelper.read(.apnsDeviceEnvironment)
+        defer {
+            _ = KeychainHelper.save(.apnsDeviceToken, originalToken)
+            _ = KeychainHelper.save(.apnsDeviceEnvironment, originalEnvironment)
+        }
+        let client = BackendClient()
+        _ = KeychainHelper.save(.apnsDeviceToken, "cached-token")
+        _ = KeychainHelper.save(
+            .apnsDeviceEnvironment,
+            client.apnsEnvironment == "sandbox" ? "production" : "sandbox"
+        )
+        XCTAssertFalse(client.hasRegisteredAPNSDeviceForCurrentEnvironment)
+
+        _ = KeychainHelper.save(.apnsDeviceEnvironment, client.apnsEnvironment)
+        XCTAssertTrue(client.hasRegisteredAPNSDeviceForCurrentEnvironment)
     }
 
     func testBackendFeedClientDecodesHostedItemsAndQuery() async throws {
@@ -159,6 +414,2223 @@ final class OshiReaderTests: XCTestCase {
         XCTAssertEqual(items.first?.id, "youtube:1")
         XCTAssertEqual(items.first?.watch_term_keyword, "Aiko")
         XCTAssertEqual(items.first?.fetched_at, "2026-08-22T12:01:00Z")
+    }
+
+    func testHostedSourceHealthClientDecodesCompleteResponseAndPreservesOrder() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let client = BackendClient(session: session)
+        MockURLProtocol.handler = { request in
+            let components = try XCTUnwrap(URLComponents(url: try XCTUnwrap(request.url), resolvingAgainstBaseURL: false))
+            XCTAssertEqual(components.path, "/api/source-health")
+            XCTAssertEqual(request.timeoutInterval, 7, accuracy: 0.01)
+            XCTAssertNotNil(request.value(forHTTPHeaderField: "X-Device-Secret"))
+            return (
+                Data("""
+                {"sources":[
+                  {
+                    "platform":"youtube",
+                    "status":"success",
+                    "last_checked_at":"2026-08-26T10:00:00Z",
+                    "last_success_at":"2026-08-26T10:00:00Z",
+                    "last_item_count":4,
+                    "last_error":null,
+                    "consecutive_failures":0,
+                    "jina_checked_at":"2026-08-26T09:59:00Z",
+                    "jina_ok":false,
+                    "jina_error":"upstream timeout"
+                  },
+                  {
+                    "platform":"news",
+                    "status":"failure",
+                    "last_checked_at":"2026-08-26T09:00:00Z",
+                    "last_success_at":"2026-08-25T09:00:00Z",
+                    "last_item_count":0,
+                    "last_error":"rate limited",
+                    "consecutive_failures":3,
+                    "jina_checked_at":null,
+                    "jina_ok":null,
+                    "jina_error":null
+                  }
+                ]}
+                """.utf8),
+                try XCTUnwrap(HTTPURLResponse(url: try XCTUnwrap(request.url), statusCode: 200, httpVersion: nil, headerFields: nil))
+            )
+        }
+        defer {
+            MockURLProtocol.handler = nil
+            session.invalidateAndCancel()
+        }
+
+        let entries = try await client.fetchHostedSourceHealth(timeout: 7)
+
+        XCTAssertEqual(entries.map(\.platform), ["youtube", "news"])
+        XCTAssertEqual(entries[0].last_item_count, 4)
+        XCTAssertEqual(entries[0].jina_ok, false)
+        XCTAssertEqual(entries[0].jina_error, "upstream timeout")
+        XCTAssertEqual(entries[1].last_error, "rate limited")
+        XCTAssertEqual(entries[1].consecutive_failures, 3)
+    }
+
+    func testHostedSourceHealthClientAcceptsMissingOptionalAndLegacyFields() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let client = BackendClient(session: session)
+        MockURLProtocol.handler = { request in
+            (
+                Data(#"{"sources":[{"platform":"custom-source"}]}"#.utf8),
+                try XCTUnwrap(HTTPURLResponse(url: try XCTUnwrap(request.url), statusCode: 200, httpVersion: nil, headerFields: nil))
+            )
+        }
+        defer {
+            MockURLProtocol.handler = nil
+            session.invalidateAndCancel()
+        }
+
+        let entries = try await client.fetchHostedSourceHealth()
+        let entry = try XCTUnwrap(entries.first)
+
+        XCTAssertNil(entry.status)
+        XCTAssertNil(entry.last_checked_at)
+        XCTAssertNil(entry.last_item_count)
+        XCTAssertEqual(entry.consecutive_failures, 0)
+        XCTAssertNil(entry.jina_ok)
+    }
+
+    func testHostedSourceHealthPresentationMapsAllStatusesAndKeepsJinaIndependent() async throws {
+        let expected: [(String?, HostedSourceHealthBadgeKind, String)] = [
+            ("success", .success, "checkmark.circle.fill"),
+            ("empty", .empty, "circle.dashed"),
+            ("filtered", .filtered, "line.diagonal"),
+            ("failure", .failure, "exclamationmark.triangle.fill"),
+            ("new-status", .unknown, "questionmark.circle"),
+            (nil, .unknown, "questionmark.circle"),
+        ]
+        for (raw, kind, symbol) in expected {
+            let presentation = HostedSourceHealthPresentation(status: raw)
+            XCTAssertEqual(presentation.kind, kind)
+            XCTAssertEqual(presentation.symbolName, symbol)
+        }
+
+        let entry = try JSONDecoder().decode(
+            HostedSourceHealthEntry.self,
+            from: Data(#"{"platform":"youtube","status":"success","jina_ok":false}"#.utf8)
+        )
+        XCTAssertEqual(HostedSourceHealthPresentation(status: entry.status).kind, .success)
+        XCTAssertEqual(entry.jina_ok, false)
+    }
+
+    @MainActor
+    func testHostedSourceHealthViewModelPreservesEntriesAfterFailedReload() async throws {
+        let entry = try JSONDecoder().decode(
+            HostedSourceHealthEntry.self,
+            from: Data(#"{"platform":"youtube","status":"success","consecutive_failures":0}"#.utf8)
+        )
+        var attempt = 0
+        let model = HostedSourceHealthViewModel(
+            fetch: { _ in
+                attempt += 1
+                if attempt == 1 { return [entry] }
+                throw URLError(.notConnectedToInternet)
+            },
+            refreshEntitlement: {}
+        )
+
+        await model.load()
+        XCTAssertEqual(model.entries, [entry])
+        XCTAssertNil(model.loadFailure)
+
+        await model.load()
+        XCTAssertEqual(model.entries, [entry])
+        XCTAssertEqual(model.loadFailure, .requestFailed)
+        XCTAssertFalse(model.isLoading)
+    }
+
+    @MainActor
+    func testHostedSourceHealthViewModelRefreshesEntitlementForPaidAccessFailure() async {
+        var refreshedEntitlement = false
+        let model = HostedSourceHealthViewModel(
+            fetch: { _ in
+                throw BackendClientError.httpStatus(
+                    402,
+                    code: "paid_backend_required",
+                    message: "An active purchase is required"
+                )
+            },
+            refreshEntitlement: { refreshedEntitlement = true }
+        )
+
+        await model.load()
+
+        XCTAssertEqual(model.loadFailure, .accessUnavailable)
+        XCTAssertTrue(refreshedEntitlement)
+        XCTAssertTrue(model.entries.isEmpty)
+    }
+
+    func testHostedSourceStatusIsVisibleOnlyForConfiguredActivePaidUsers() {
+        XCTAssertTrue(SettingsView.shouldShowHostedSourceStatus(isPaidConfigured: true, hasActiveEntitlement: true))
+        XCTAssertFalse(SettingsView.shouldShowHostedSourceStatus(isPaidConfigured: true, hasActiveEntitlement: false))
+        XCTAssertFalse(SettingsView.shouldShowHostedSourceStatus(isPaidConfigured: false, hasActiveEntitlement: true))
+    }
+
+    func testClientDiagnosticRequestUsesDeviceAuthorizationAndSharedTransientRetry() async throws {
+        let originalToken = KeychainHelper.read(.apnsDeviceToken)
+        let originalEnvironment = KeychainHelper.read(.apnsDeviceEnvironment)
+        let originalSecret = KeychainHelper.read(.apnsDeviceSecret)
+        defer {
+            _ = KeychainHelper.save(.apnsDeviceToken, originalToken)
+            _ = KeychainHelper.save(.apnsDeviceEnvironment, originalEnvironment)
+            _ = KeychainHelper.save(.apnsDeviceSecret, originalSecret)
+        }
+        _ = KeychainHelper.save(.apnsDeviceToken, "diagnostic-token")
+        _ = KeychainHelper.save(.apnsDeviceEnvironment, "sandbox")
+        _ = KeychainHelper.save(.apnsDeviceSecret, "diagnostic-secret")
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let clock = TestMonotonicClock(100)
+        let client = BackendClient(session: session, monotonicNow: { clock.now() })
+        let report = ClientDiagnosticReport(
+            reason: "paid_hosted_operation_failed",
+            environment: "sandbox",
+            api_base: "hosted",
+            app_version: "1.2",
+            build: "34",
+            active_terms_count: 2,
+            subscribed_platforms: ["news", "youtube"],
+            cached_feed_count: 7,
+            events: [ClientDiagnosticEvent(
+                strategy: "hosted_feed_refresh",
+                status: "failed",
+                item_count: 0,
+                added_count: 0,
+                detail: "timeout"
+            )]
+        )
+        var requests: [URLRequest] = []
+        MockURLProtocol.handler = { request in
+            requests.append(request)
+            if requests.count == 1 {
+                clock.set(102)
+                throw URLError(.networkConnectionLost)
+            }
+            return (
+                Data(#"{"status":"received"}"#.utf8),
+                try XCTUnwrap(HTTPURLResponse(
+                    url: try XCTUnwrap(request.url),
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: nil
+                ))
+            )
+        }
+        defer {
+            MockURLProtocol.handler = nil
+            session.invalidateAndCancel()
+        }
+
+        try await client.submitClientDiagnostic(report, timeout: 12)
+
+        XCTAssertEqual(requests.count, 2)
+        XCTAssertEqual(requests[0].url?.path, "/api/client-diagnostics")
+        XCTAssertEqual(requests[0].httpMethod, "POST")
+        XCTAssertEqual(requests[0].timeoutInterval, 12, accuracy: 0.01)
+        XCTAssertEqual(requests[1].timeoutInterval, 10, accuracy: 0.01)
+        XCTAssertEqual(requests[0].value(forHTTPHeaderField: "X-Device-Secret"), "diagnostic-secret")
+        XCTAssertEqual(requests[0].value(forHTTPHeaderField: "X-Device-Token"), "diagnostic-token")
+        XCTAssertNil(requests[0].value(forHTTPHeaderField: "Authorization"))
+        let body = try XCTUnwrap(requests[0].httpBody)
+        let decoded = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        XCTAssertEqual(decoded["reason"] as? String, "paid_hosted_operation_failed")
+        XCTAssertEqual(decoded["api_base"] as? String, "hosted")
+        XCTAssertEqual(decoded["active_terms_count"] as? Int, 2)
+        let events = try XCTUnwrap(decoded["events"] as? [[String: Any]])
+        XCTAssertEqual(events.first?["detail"] as? String, "timeout")
+    }
+
+    func testClientDiagnosticRequestPreservesBackendErrorDetails() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let client = BackendClient(session: session)
+        MockURLProtocol.handler = { request in
+            (
+                Data(#"{"detail":{"code":"diagnostic_rejected","message":"Rejected"}}"#.utf8),
+                try XCTUnwrap(HTTPURLResponse(
+                    url: try XCTUnwrap(request.url),
+                    statusCode: 500,
+                    httpVersion: nil,
+                    headerFields: nil
+                ))
+            )
+        }
+        defer {
+            MockURLProtocol.handler = nil
+            session.invalidateAndCancel()
+        }
+        let report = ClientDiagnosticReport(
+            reason: "paid_hosted_operation_failed",
+            environment: "sandbox",
+            api_base: "hosted",
+            app_version: nil,
+            build: nil,
+            active_terms_count: 0,
+            subscribed_platforms: [],
+            cached_feed_count: 0,
+            events: []
+        )
+
+        do {
+            try await client.submitClientDiagnostic(report)
+            XCTFail("Expected diagnostic rejection")
+        } catch let BackendClientError.httpStatus(status, code, message) {
+            XCTAssertEqual(status, 500)
+            XCTAssertEqual(code, "diagnostic_rejected")
+            XCTAssertEqual(message, "Rejected")
+        }
+    }
+
+    @MainActor
+    func testAPNSRegistrationPersistsTokenOnlyAfterBackendVerification() async throws {
+        let originalToken = KeychainHelper.read(.apnsDeviceToken)
+        let originalEnvironment = KeychainHelper.read(.apnsDeviceEnvironment)
+        defer {
+            _ = KeychainHelper.save(.apnsDeviceToken, originalToken)
+            _ = KeychainHelper.save(.apnsDeviceEnvironment, originalEnvironment)
+        }
+        _ = KeychainHelper.save(.apnsDeviceToken, nil)
+        _ = KeychainHelper.save(.apnsDeviceEnvironment, nil)
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let client = BackendClient(session: session)
+        var requestCount = 0
+        MockURLProtocol.handler = { request in
+            requestCount += 1
+            XCTAssertEqual(request.url?.path, "/api/devices/apns-token")
+            XCTAssertEqual(request.httpMethod, "POST")
+            XCTAssertNotNil(request.value(forHTTPHeaderField: "X-Device-Secret"))
+            let body = try XCTUnwrap(request.httpBody)
+            let json = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+            XCTAssertEqual(json["token"] as? String, "aabb")
+            let verified = requestCount > 1
+            return (
+                Data("""
+                {"is_verified":\(verified),"verification_error":\(verified ? "null" : "\"temporary rejection\"")}
+                """.utf8),
+                try XCTUnwrap(HTTPURLResponse(url: try XCTUnwrap(request.url), statusCode: 200, httpVersion: nil, headerFields: nil))
+            )
+        }
+        defer {
+            MockURLProtocol.handler = nil
+            session.invalidateAndCancel()
+        }
+
+        do {
+            try await client.registerAPNSToken("aabb")
+            XCTFail("Expected unverified registration to fail")
+        } catch let BackendClientError.httpStatus(status, code, _) {
+            XCTAssertEqual(status, 409)
+            XCTAssertEqual(code, "apns_unverified")
+        }
+        XCTAssertNil(KeychainHelper.read(.apnsDeviceToken))
+        XCTAssertNil(KeychainHelper.read(.apnsDeviceEnvironment))
+
+        try await client.registerAPNSToken("aabb")
+        XCTAssertEqual(KeychainHelper.read(.apnsDeviceToken), "aabb")
+        XCTAssertEqual(KeychainHelper.read(.apnsDeviceEnvironment), client.apnsEnvironment)
+    }
+
+    func testAPNSUnregistrationAcceptsMissingServerRowsAndClearsLocalRegistration() async throws {
+        let originalToken = KeychainHelper.read(.apnsDeviceToken)
+        let originalEnvironment = KeychainHelper.read(.apnsDeviceEnvironment)
+        let originalSecret = KeychainHelper.read(.apnsDeviceSecret)
+        defer {
+            _ = KeychainHelper.save(.apnsDeviceToken, originalToken)
+            _ = KeychainHelper.save(.apnsDeviceEnvironment, originalEnvironment)
+            _ = KeychainHelper.save(.apnsDeviceSecret, originalSecret)
+        }
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let invalidations = AsyncCounter()
+        let client = BackendClient(
+            session: session,
+            invalidateAPNSRegistrationIfMatching: { _, _ in
+                await invalidations.increment()
+                _ = KeychainHelper.save(.apnsDeviceToken, nil)
+                _ = KeychainHelper.save(.apnsDeviceEnvironment, nil)
+                return true
+            }
+        )
+        let token = String(repeating: "a", count: 64)
+        _ = KeychainHelper.save(.apnsDeviceSecret, "device-secret")
+        var statuses = [204, 404]
+        var requests: [URLRequest] = []
+        MockURLProtocol.handler = { request in
+            requests.append(request)
+            return (
+                Data(),
+                try XCTUnwrap(HTTPURLResponse(
+                    url: try XCTUnwrap(request.url),
+                    statusCode: statuses.removeFirst(),
+                    httpVersion: nil,
+                    headerFields: nil
+                ))
+            )
+        }
+        defer {
+            MockURLProtocol.handler = nil
+            session.invalidateAndCancel()
+        }
+
+        for environment in ["wrong-environment", client.apnsEnvironment] {
+            _ = KeychainHelper.save(.apnsDeviceToken, token)
+            _ = KeychainHelper.save(.apnsDeviceEnvironment, environment)
+            try await client.unregisterAPNSToken(timeout: 7)
+            XCTAssertNil(KeychainHelper.read(.apnsDeviceToken))
+            XCTAssertNil(KeychainHelper.read(.apnsDeviceEnvironment))
+        }
+
+        XCTAssertEqual(requests.count, 2)
+        for request in requests {
+            XCTAssertEqual(request.url?.path, "/api/devices/apns-token/\(token)")
+            XCTAssertEqual(request.httpMethod, "DELETE")
+            XCTAssertEqual(request.timeoutInterval, 7, accuracy: 0.01)
+            XCTAssertEqual(request.value(forHTTPHeaderField: "X-Device-Secret"), "device-secret")
+            XCTAssertNil(request.value(forHTTPHeaderField: "X-Device-Token"))
+            XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+            XCTAssertNil(request.httpBody)
+        }
+        let invalidationCount = await invalidations.value()
+        XCTAssertEqual(invalidationCount, 2)
+    }
+
+    func testAPNSUnregistrationWithoutCachedTokenPerformsNoRequest() async throws {
+        let originalToken = KeychainHelper.read(.apnsDeviceToken)
+        let originalEnvironment = KeychainHelper.read(.apnsDeviceEnvironment)
+        defer {
+            _ = KeychainHelper.save(.apnsDeviceToken, originalToken)
+            _ = KeychainHelper.save(.apnsDeviceEnvironment, originalEnvironment)
+        }
+        _ = KeychainHelper.save(.apnsDeviceToken, nil)
+        _ = KeychainHelper.save(.apnsDeviceEnvironment, "stale-environment")
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let invalidations = AsyncCounter()
+        let client = BackendClient(
+            session: session,
+            invalidateAPNSRegistration: { await invalidations.increment() }
+        )
+        var requestCount = 0
+        MockURLProtocol.handler = { request in
+            requestCount += 1
+            return (
+                Data(),
+                try XCTUnwrap(HTTPURLResponse(url: try XCTUnwrap(request.url), statusCode: 204, httpVersion: nil, headerFields: nil))
+            )
+        }
+        defer {
+            MockURLProtocol.handler = nil
+            session.invalidateAndCancel()
+        }
+
+        try await client.unregisterAPNSToken(timeout: 7)
+
+        XCTAssertEqual(requestCount, 0)
+        let invalidationCount = await invalidations.value()
+        XCTAssertEqual(invalidationCount, 0)
+        XCTAssertEqual(KeychainHelper.read(.apnsDeviceEnvironment), "stale-environment")
+    }
+
+    func testAPNSUnregistrationRetriesConnectionLossWithinSharedDeadline() async throws {
+        let originalToken = KeychainHelper.read(.apnsDeviceToken)
+        let originalEnvironment = KeychainHelper.read(.apnsDeviceEnvironment)
+        defer {
+            _ = KeychainHelper.save(.apnsDeviceToken, originalToken)
+            _ = KeychainHelper.save(.apnsDeviceEnvironment, originalEnvironment)
+        }
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let clock = TestMonotonicClock(100)
+        let invalidations = AsyncCounter()
+        let client = BackendClient(
+            session: session,
+            monotonicNow: { clock.now() },
+            invalidateAPNSRegistrationIfMatching: { _, _ in
+                await invalidations.increment()
+                return true
+            }
+        )
+        let token = String(repeating: "b", count: 64)
+        _ = KeychainHelper.save(.apnsDeviceToken, token)
+        _ = KeychainHelper.save(.apnsDeviceEnvironment, "another-environment")
+        var requests: [URLRequest] = []
+        MockURLProtocol.handler = { request in
+            requests.append(request)
+            if requests.count == 1 {
+                clock.set(102)
+                throw URLError(.networkConnectionLost)
+            }
+            return (
+                Data(),
+                try XCTUnwrap(HTTPURLResponse(url: try XCTUnwrap(request.url), statusCode: 204, httpVersion: nil, headerFields: nil))
+            )
+        }
+        defer {
+            MockURLProtocol.handler = nil
+            session.invalidateAndCancel()
+        }
+
+        try await client.unregisterAPNSToken(timeout: 8)
+
+        XCTAssertEqual(requests.count, 2)
+        XCTAssertEqual(requests[0].url, requests[1].url)
+        XCTAssertEqual(requests[0].httpMethod, requests[1].httpMethod)
+        XCTAssertEqual(requests[0].timeoutInterval, 8, accuracy: 0.01)
+        XCTAssertEqual(requests[1].timeoutInterval, 6, accuracy: 0.01)
+        let invalidationCount = await invalidations.value()
+        XCTAssertEqual(invalidationCount, 1)
+    }
+
+    func testAPNSUnregistrationDoesNotInvalidateRegistrationThatChangedInFlight() async throws {
+        let originalToken = KeychainHelper.read(.apnsDeviceToken)
+        let originalEnvironment = KeychainHelper.read(.apnsDeviceEnvironment)
+        defer {
+            _ = KeychainHelper.save(.apnsDeviceToken, originalToken)
+            _ = KeychainHelper.save(.apnsDeviceEnvironment, originalEnvironment)
+        }
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let oldToken = String(repeating: "e", count: 64)
+        let newToken = String(repeating: "f", count: 64)
+        let oldEnvironment = "sandbox"
+        let newEnvironment = "production"
+        _ = KeychainHelper.save(.apnsDeviceToken, oldToken)
+        _ = KeychainHelper.save(.apnsDeviceEnvironment, oldEnvironment)
+        var invalidationTargets: [(String, String?)] = []
+        let client = BackendClient(
+            session: session,
+            invalidateAPNSRegistrationIfMatching: { token, environment in
+                invalidationTargets.append((token, environment))
+                guard KeychainHelper.read(.apnsDeviceToken) == token,
+                      KeychainHelper.read(.apnsDeviceEnvironment) == environment
+                else { return false }
+                _ = KeychainHelper.save(.apnsDeviceToken, nil)
+                _ = KeychainHelper.save(.apnsDeviceEnvironment, nil)
+                return true
+            }
+        )
+        MockURLProtocol.handler = { request in
+            _ = KeychainHelper.save(.apnsDeviceToken, newToken)
+            _ = KeychainHelper.save(.apnsDeviceEnvironment, newEnvironment)
+            return (
+                Data(),
+                try XCTUnwrap(HTTPURLResponse(
+                    url: try XCTUnwrap(request.url),
+                    statusCode: 204,
+                    httpVersion: nil,
+                    headerFields: nil
+                ))
+            )
+        }
+        defer {
+            MockURLProtocol.handler = nil
+            session.invalidateAndCancel()
+        }
+
+        try await client.unregisterAPNSToken(timeout: 8)
+
+        XCTAssertEqual(invalidationTargets.count, 1)
+        XCTAssertEqual(invalidationTargets.first?.0, oldToken)
+        XCTAssertEqual(invalidationTargets.first?.1, oldEnvironment)
+        XCTAssertEqual(KeychainHelper.read(.apnsDeviceToken), newToken)
+        XCTAssertEqual(KeychainHelper.read(.apnsDeviceEnvironment), newEnvironment)
+    }
+
+    @MainActor
+    func testAPNSUnregistrationDeadlineAndCancellationPreventRetry() async throws {
+        let originalToken = KeychainHelper.read(.apnsDeviceToken)
+        let originalEnvironment = KeychainHelper.read(.apnsDeviceEnvironment)
+        defer {
+            _ = KeychainHelper.save(.apnsDeviceToken, originalToken)
+            _ = KeychainHelper.save(.apnsDeviceEnvironment, originalEnvironment)
+        }
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let clock = TestMonotonicClock(100)
+        let invalidations = AsyncCounter()
+        let client = BackendClient(
+            session: session,
+            monotonicNow: { clock.now() },
+            invalidateAPNSRegistration: { await invalidations.increment() }
+        )
+        let token = String(repeating: "d", count: 64)
+        _ = KeychainHelper.save(.apnsDeviceToken, token)
+        _ = KeychainHelper.save(.apnsDeviceEnvironment, client.apnsEnvironment)
+        var requestCount = 0
+        MockURLProtocol.handler = { _ in
+            requestCount += 1
+            clock.set(109)
+            throw URLError(.networkConnectionLost)
+        }
+        defer {
+            MockURLProtocol.handler = nil
+            session.invalidateAndCancel()
+        }
+
+        do {
+            try await client.unregisterAPNSToken(timeout: 8)
+            XCTFail("Expected shared deadline expiry")
+        } catch let error as URLError {
+            XCTAssertEqual(error.code, .timedOut)
+        }
+        XCTAssertEqual(requestCount, 1)
+
+        requestCount = 0
+        clock.set(100)
+        let requestStarted = expectation(description: "APNs cleanup started")
+        MockURLProtocol.handler = { _ in
+            requestCount += 1
+            requestStarted.fulfill()
+            Thread.sleep(forTimeInterval: 0.2)
+            throw URLError(.networkConnectionLost)
+        }
+        let cancelled = Task { try await client.unregisterAPNSToken(timeout: 8) }
+        await fulfillment(of: [requestStarted], timeout: 1)
+        cancelled.cancel()
+        do {
+            try await cancelled.value
+            XCTFail("Expected cancellation")
+        } catch is CancellationError {
+            // Expected.
+        } catch let error as URLError {
+            XCTAssertEqual(error.code, .cancelled)
+        }
+
+        XCTAssertEqual(requestCount, 1)
+        XCTAssertEqual(KeychainHelper.read(.apnsDeviceToken), token)
+        let invalidationCount = await invalidations.value()
+        XCTAssertEqual(invalidationCount, 0)
+    }
+
+    func testAPNSUnregistrationFailuresRetainCachedRegistrationWithoutCredentialRecovery() async throws {
+        let originalToken = KeychainHelper.read(.apnsDeviceToken)
+        let originalEnvironment = KeychainHelper.read(.apnsDeviceEnvironment)
+        defer {
+            _ = KeychainHelper.save(.apnsDeviceToken, originalToken)
+            _ = KeychainHelper.save(.apnsDeviceEnvironment, originalEnvironment)
+        }
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let invalidations = AsyncCounter()
+        let client = BackendClient(
+            session: session,
+            invalidateAPNSRegistration: { await invalidations.increment() }
+        )
+        let token = String(repeating: "c", count: 64)
+        _ = KeychainHelper.save(.apnsDeviceToken, token)
+        _ = KeychainHelper.save(.apnsDeviceEnvironment, client.apnsEnvironment)
+        let statuses = [401, 402, 500]
+        var requestCount = 0
+        var paths: [String] = []
+        MockURLProtocol.handler = { request in
+            paths.append(request.url?.path ?? "")
+            requestCount += 1
+            if requestCount > statuses.count { throw URLError(.notConnectedToInternet) }
+            return (
+                Data(#"{"detail":{"code":"cleanup_failed","message":"Rejected"}}"#.utf8),
+                try XCTUnwrap(HTTPURLResponse(
+                    url: try XCTUnwrap(request.url),
+                    statusCode: statuses[requestCount - 1],
+                    httpVersion: nil,
+                    headerFields: nil
+                ))
+            )
+        }
+        defer {
+            MockURLProtocol.handler = nil
+            session.invalidateAndCancel()
+        }
+
+        for expectedStatus in statuses {
+            do {
+                try await client.unregisterAPNSToken(timeout: 8)
+                XCTFail("Expected HTTP \(expectedStatus)")
+            } catch let BackendClientError.httpStatus(status, code, message) {
+                XCTAssertEqual(status, expectedStatus)
+                XCTAssertEqual(code, "cleanup_failed")
+                XCTAssertEqual(message, "Rejected")
+            }
+        }
+        do {
+            try await client.unregisterAPNSToken(timeout: 8)
+            XCTFail("Expected transport failure")
+        } catch let error as URLError {
+            XCTAssertEqual(error.code, .notConnectedToInternet)
+        }
+
+        XCTAssertEqual(requestCount, 4)
+        XCTAssertFalse(paths.contains("/api/devices/apns-token"))
+        XCTAssertEqual(Set(paths), ["/api/devices/apns-token/\(token)"])
+        XCTAssertEqual(KeychainHelper.read(.apnsDeviceToken), token)
+        XCTAssertEqual(KeychainHelper.read(.apnsDeviceEnvironment), client.apnsEnvironment)
+        let invalidationCount = await invalidations.value()
+        XCTAssertEqual(invalidationCount, 0)
+    }
+
+    func testPaidBackendTransportRetriesDecodedVoidAndDeleteRequestsWithinSharedBudgets() async throws {
+        let originalToken = KeychainHelper.read(.apnsDeviceToken)
+        let originalEnvironment = KeychainHelper.read(.apnsDeviceEnvironment)
+        let originalSecret = KeychainHelper.read(.apnsDeviceSecret)
+        defer {
+            _ = KeychainHelper.save(.apnsDeviceToken, originalToken)
+            _ = KeychainHelper.save(.apnsDeviceEnvironment, originalEnvironment)
+            _ = KeychainHelper.save(.apnsDeviceSecret, originalSecret)
+        }
+        _ = KeychainHelper.save(.apnsDeviceToken, "device-token")
+        _ = KeychainHelper.save(.apnsDeviceEnvironment, "test-environment")
+        _ = KeychainHelper.save(.apnsDeviceSecret, "device-secret")
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let clock = TestMonotonicClock(100)
+        let client = BackendClient(session: session, monotonicNow: { clock.now() })
+        var attempts: [String: Int] = [:]
+        var requests: [URLRequest] = []
+        MockURLProtocol.handler = { request in
+            requests.append(request)
+            let key = "\(request.httpMethod ?? "") \(request.url?.path ?? "")"
+            attempts[key, default: 0] += 1
+            if attempts[key] == 1 {
+                clock.set(clock.now() + 2)
+                throw URLError(.networkConnectionLost)
+            }
+
+            let data: Data
+            let status: Int
+            switch key {
+            case "GET /api/source-health":
+                data = Data(#"{"sources":[]}"#.utf8)
+                status = 200
+            case "PATCH /api/watch-terms/42":
+                data = Data(#"{"id":42,"keyword":"Aiko","aliases":[],"collection_mode":"all_info","source_mode":"all","selected_platforms":[],"is_active":true,"notify_on_new":false,"refresh_tier":"standard","created_at":"2026-08-26T12:00:00Z"}"#.utf8)
+                status = 200
+            case "POST /api/feed/muted-items":
+                data = Data()
+                status = 204
+            case "DELETE /api/watch-terms/42":
+                data = Data()
+                status = 404
+            default:
+                XCTFail("Unexpected paid backend request: \(key)")
+                data = Data()
+                status = 500
+            }
+            return (
+                data,
+                try XCTUnwrap(HTTPURLResponse(
+                    url: try XCTUnwrap(request.url),
+                    statusCode: status,
+                    httpVersion: nil,
+                    headerFields: nil
+                ))
+            )
+        }
+        defer {
+            MockURLProtocol.handler = nil
+            session.invalidateAndCancel()
+        }
+
+        _ = try await client.fetchHostedSourceHealth(timeout: 8)
+        _ = try await client.updateBackendTerm(
+            id: 42,
+            term: WatchTerm(keyword: "Aiko"),
+            notifyOnNew: false
+        )
+        try await client.muteHostedFeedItem(
+            sourceItemID: "news:item-1",
+            watchTermID: 42,
+            timeout: 8
+        )
+        try await client.deletePushTerm(id: 42)
+
+        XCTAssertEqual(requests.count, 8)
+        for pairStart in stride(from: 0, to: requests.count, by: 2) {
+            let first = requests[pairStart]
+            let retry = requests[pairStart + 1]
+            XCTAssertEqual(first.url, retry.url)
+            XCTAssertEqual(first.httpMethod, retry.httpMethod)
+            XCTAssertEqual(first.httpBody, retry.httpBody)
+            XCTAssertEqual(
+                first.value(forHTTPHeaderField: "X-Device-Secret"),
+                retry.value(forHTTPHeaderField: "X-Device-Secret")
+            )
+            XCTAssertEqual(
+                first.value(forHTTPHeaderField: "X-Device-Token"),
+                retry.value(forHTTPHeaderField: "X-Device-Token")
+            )
+            XCTAssertNil(first.value(forHTTPHeaderField: "Authorization"))
+            XCTAssertLessThan(retry.timeoutInterval, first.timeoutInterval)
+            XCTAssertEqual(first.timeoutInterval - retry.timeoutInterval, 2, accuracy: 0.01)
+        }
+        XCTAssertEqual(attempts.values.sorted(), [2, 2, 2, 2])
+    }
+
+    func testPaidBackendTransportDoesNotRetryUnrelatedHTTPOrDecodeFailures() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let client = BackendClient(session: session)
+        var requestCount = 0
+        MockURLProtocol.handler = { request in
+            requestCount += 1
+            switch requestCount {
+            case 1:
+                throw URLError(.timedOut)
+            case 2:
+                return (
+                    Data(#"{"detail":{"code":"paid_backend_required","message":"Paid access required"}}"#.utf8),
+                    try XCTUnwrap(HTTPURLResponse(
+                        url: try XCTUnwrap(request.url),
+                        statusCode: 402,
+                        httpVersion: nil,
+                        headerFields: nil
+                    ))
+                )
+            default:
+                return (
+                    Data(#"{"unexpected":true}"#.utf8),
+                    try XCTUnwrap(HTTPURLResponse(
+                        url: try XCTUnwrap(request.url),
+                        statusCode: 200,
+                        httpVersion: nil,
+                        headerFields: nil
+                    ))
+                )
+            }
+        }
+        defer {
+            MockURLProtocol.handler = nil
+            session.invalidateAndCancel()
+        }
+
+        do {
+            _ = try await client.fetchHostedSourceHealth(timeout: 8)
+            XCTFail("Expected timeout")
+        } catch let error as URLError {
+            XCTAssertEqual(error.code, .timedOut)
+        }
+        do {
+            _ = try await client.fetchHostedSourceHealth(timeout: 8)
+            XCTFail("Expected paid access rejection")
+        } catch let BackendClientError.httpStatus(status, code, message) {
+            XCTAssertEqual(status, 402)
+            XCTAssertEqual(code, "paid_backend_required")
+            XCTAssertEqual(message, "Paid access required")
+        }
+        do {
+            _ = try await client.fetchHostedSourceHealth(timeout: 8)
+            XCTFail("Expected decoding failure")
+        } catch is DecodingError {
+            // Expected.
+        }
+        XCTAssertEqual(requestCount, 3)
+    }
+
+    func testPaidBackendTransportStopsAfterSecondConnectionLoss() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let client = BackendClient(session: session)
+        var requestCount = 0
+        MockURLProtocol.handler = { _ in
+            requestCount += 1
+            throw URLError(.networkConnectionLost)
+        }
+        defer {
+            MockURLProtocol.handler = nil
+            session.invalidateAndCancel()
+        }
+
+        do {
+            _ = try await client.fetchHostedSourceHealth(timeout: 8)
+            XCTFail("Expected the second connection loss to propagate")
+        } catch let error as URLError {
+            XCTAssertEqual(error.code, .networkConnectionLost)
+        }
+        XCTAssertEqual(requestCount, 2)
+    }
+
+    @MainActor
+    func testPaidBackendCredentialRecoveryRetriesDecodedVoidAndDeleteRequestsWithinSharedDeadline() async throws {
+        let originalToken = KeychainHelper.read(.apnsDeviceToken)
+        let originalEnvironment = KeychainHelper.read(.apnsDeviceEnvironment)
+        let originalSecret = KeychainHelper.read(.apnsDeviceSecret)
+        defer {
+            _ = KeychainHelper.save(.apnsDeviceToken, originalToken)
+            _ = KeychainHelper.save(.apnsDeviceEnvironment, originalEnvironment)
+            _ = KeychainHelper.save(.apnsDeviceSecret, originalSecret)
+        }
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let clock = TestMonotonicClock(100)
+        let invalidations = AsyncCounter()
+        let client = BackendClient(
+            session: session,
+            monotonicNow: { clock.now() },
+            invalidateAPNSRegistration: { await invalidations.increment() }
+        )
+        let token = String(repeating: "c", count: 64)
+        _ = KeychainHelper.save(.apnsDeviceToken, token)
+        _ = KeychainHelper.save(.apnsDeviceEnvironment, client.apnsEnvironment)
+        _ = KeychainHelper.save(.apnsDeviceSecret, "device-secret")
+
+        var operationAttempts: [String: Int] = [:]
+        var requests: [URLRequest] = []
+        MockURLProtocol.handler = { request in
+            requests.append(request)
+            let path = request.url?.path ?? ""
+            if path == "/api/devices/apns-token" {
+                clock.set(clock.now() + 2)
+                return (
+                    Data(#"{"is_verified":true,"verification_error":null}"#.utf8),
+                    try XCTUnwrap(HTTPURLResponse(
+                        url: try XCTUnwrap(request.url),
+                        statusCode: 201,
+                        httpVersion: nil,
+                        headerFields: nil
+                    ))
+                )
+            }
+
+            let key = "\(request.httpMethod ?? "") \(path)"
+            operationAttempts[key, default: 0] += 1
+            if operationAttempts[key] == 1 {
+                clock.set(clock.now() + 2)
+                return (
+                    Data(#"{"detail":{"code":"invalid_device","message":"Credential rejected"}}"#.utf8),
+                    try XCTUnwrap(HTTPURLResponse(
+                        url: try XCTUnwrap(request.url),
+                        statusCode: 401,
+                        httpVersion: nil,
+                        headerFields: nil
+                    ))
+                )
+            }
+
+            let data: Data
+            let status: Int
+            switch key {
+            case "GET /api/source-health":
+                data = Data(#"{"sources":[]}"#.utf8)
+                status = 200
+            case "POST /api/feed/muted-items":
+                data = Data()
+                status = 204
+            case "DELETE /api/watch-terms/42":
+                data = Data()
+                status = 204
+            default:
+                XCTFail("Unexpected paid backend request: \(key)")
+                data = Data()
+                status = 500
+            }
+            return (
+                data,
+                try XCTUnwrap(HTTPURLResponse(
+                    url: try XCTUnwrap(request.url),
+                    statusCode: status,
+                    httpVersion: nil,
+                    headerFields: nil
+                ))
+            )
+        }
+        defer {
+            MockURLProtocol.handler = nil
+            session.invalidateAndCancel()
+        }
+
+        _ = try await client.fetchHostedSourceHealth(timeout: 10)
+        try await client.muteHostedFeedItem(
+            sourceItemID: "news:item-1",
+            watchTermID: 42,
+            timeout: 10
+        )
+        try await client.deletePushTerm(id: 42)
+
+        XCTAssertEqual(requests.map { $0.url?.path ?? "" }, [
+            "/api/source-health", "/api/devices/apns-token", "/api/source-health",
+            "/api/feed/muted-items", "/api/devices/apns-token", "/api/feed/muted-items",
+            "/api/watch-terms/42", "/api/devices/apns-token", "/api/watch-terms/42",
+        ])
+        for start in stride(from: 0, to: requests.count, by: 3) {
+            let initial = requests[start]
+            let registration = requests[start + 1]
+            let retry = requests[start + 2]
+            XCTAssertEqual(initial.url, retry.url)
+            XCTAssertEqual(initial.httpMethod, retry.httpMethod)
+            XCTAssertEqual(initial.httpBody, retry.httpBody)
+            XCTAssertEqual(initial.value(forHTTPHeaderField: "X-Device-Secret"), "device-secret")
+            XCTAssertEqual(retry.value(forHTTPHeaderField: "X-Device-Secret"), "device-secret")
+            XCTAssertEqual(initial.value(forHTTPHeaderField: "X-Device-Token"), token)
+            XCTAssertEqual(retry.value(forHTTPHeaderField: "X-Device-Token"), token)
+            XCTAssertEqual(registration.url?.path, "/api/devices/apns-token")
+            XCTAssertEqual(initial.timeoutInterval - registration.timeoutInterval, 2, accuracy: 0.01)
+            XCTAssertEqual(registration.timeoutInterval - retry.timeoutInterval, 2, accuracy: 0.01)
+        }
+        XCTAssertEqual(operationAttempts.values.sorted(), [2, 2, 2])
+        let invalidationCount = await invalidations.value()
+        XCTAssertEqual(invalidationCount, 0)
+    }
+
+    func testPaidBackendCredentialRecoveryRequiresCurrentEnvironmentToken() async throws {
+        let originalToken = KeychainHelper.read(.apnsDeviceToken)
+        let originalEnvironment = KeychainHelper.read(.apnsDeviceEnvironment)
+        defer {
+            _ = KeychainHelper.save(.apnsDeviceToken, originalToken)
+            _ = KeychainHelper.save(.apnsDeviceEnvironment, originalEnvironment)
+        }
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let client = BackendClient(session: session)
+        var paths: [String] = []
+        MockURLProtocol.handler = { request in
+            paths.append(request.url?.path ?? "")
+            return (
+                Data(#"{"detail":"Unauthorized"}"#.utf8),
+                try XCTUnwrap(HTTPURLResponse(
+                    url: try XCTUnwrap(request.url),
+                    statusCode: 401,
+                    httpVersion: nil,
+                    headerFields: nil
+                ))
+            )
+        }
+        defer {
+            MockURLProtocol.handler = nil
+            session.invalidateAndCancel()
+        }
+
+        let states: [(String?, String?)] = [
+            (nil, nil),
+            ("", client.apnsEnvironment),
+            (String(repeating: "d", count: 64), "wrong-environment"),
+        ]
+        for (token, environment) in states {
+            _ = KeychainHelper.save(.apnsDeviceToken, token)
+            _ = KeychainHelper.save(.apnsDeviceEnvironment, environment)
+            do {
+                _ = try await client.fetchHostedSourceHealth(timeout: 8)
+                XCTFail("Expected unauthorized response")
+            } catch let BackendClientError.httpStatus(status, _, _) {
+                XCTAssertEqual(status, 401)
+            }
+        }
+
+        XCTAssertEqual(paths, Array(repeating: "/api/source-health", count: states.count))
+    }
+
+    @MainActor
+    func testAPNSRegistrationDoesNotRecursivelyRecoverFromUnauthorizedResponse() async throws {
+        let originalToken = KeychainHelper.read(.apnsDeviceToken)
+        let originalEnvironment = KeychainHelper.read(.apnsDeviceEnvironment)
+        defer {
+            _ = KeychainHelper.save(.apnsDeviceToken, originalToken)
+            _ = KeychainHelper.save(.apnsDeviceEnvironment, originalEnvironment)
+        }
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let client = BackendClient(session: session)
+        let token = String(repeating: "e", count: 64)
+        _ = KeychainHelper.save(.apnsDeviceToken, token)
+        _ = KeychainHelper.save(.apnsDeviceEnvironment, client.apnsEnvironment)
+        var requestCount = 0
+        MockURLProtocol.handler = { request in
+            requestCount += 1
+            XCTAssertEqual(request.url?.path, "/api/devices/apns-token")
+            return (
+                Data(#"{"detail":"Unauthorized"}"#.utf8),
+                try XCTUnwrap(HTTPURLResponse(
+                    url: try XCTUnwrap(request.url),
+                    statusCode: 401,
+                    httpVersion: nil,
+                    headerFields: nil
+                ))
+            )
+        }
+        defer {
+            MockURLProtocol.handler = nil
+            session.invalidateAndCancel()
+        }
+
+        do {
+            try await client.registerAPNSToken(token)
+            XCTFail("Expected unauthorized registration")
+        } catch let BackendClientError.httpStatus(status, _, _) {
+            XCTAssertEqual(status, 401)
+        }
+        XCTAssertEqual(requestCount, 1)
+    }
+
+    @MainActor
+    func testPaidBackendCredentialRecoveryInvalidatesRejectedButPreservesTransientRegistration() async throws {
+        let originalToken = KeychainHelper.read(.apnsDeviceToken)
+        let originalEnvironment = KeychainHelper.read(.apnsDeviceEnvironment)
+        defer {
+            _ = KeychainHelper.save(.apnsDeviceToken, originalToken)
+            _ = KeychainHelper.save(.apnsDeviceEnvironment, originalEnvironment)
+        }
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let invalidations = AsyncCounter()
+        let client = BackendClient(
+            session: session,
+            invalidateAPNSRegistration: {
+                await invalidations.increment()
+                _ = KeychainHelper.save(.apnsDeviceToken, nil)
+                _ = KeychainHelper.save(.apnsDeviceEnvironment, nil)
+            }
+        )
+        let token = String(repeating: "f", count: 64)
+        _ = KeychainHelper.save(.apnsDeviceToken, token)
+        _ = KeychainHelper.save(.apnsDeviceEnvironment, client.apnsEnvironment)
+
+        enum RecoveryScenario { case second401, unverified, transient }
+        var scenario = RecoveryScenario.second401
+        var originalAttempts = 0
+        MockURLProtocol.handler = { request in
+            let path = request.url?.path ?? ""
+            if path == "/api/devices/apns-token" {
+                switch scenario {
+                case .second401:
+                    return (
+                        Data(#"{"is_verified":true}"#.utf8),
+                        try XCTUnwrap(HTTPURLResponse(url: try XCTUnwrap(request.url), statusCode: 201, httpVersion: nil, headerFields: nil))
+                    )
+                case .unverified:
+                    return (
+                        Data(#"{"is_verified":false,"verification_error":"Rejected"}"#.utf8),
+                        try XCTUnwrap(HTTPURLResponse(url: try XCTUnwrap(request.url), statusCode: 200, httpVersion: nil, headerFields: nil))
+                    )
+                case .transient:
+                    throw URLError(.cannotConnectToHost)
+                }
+            }
+            originalAttempts += 1
+            return (
+                Data(#"{"detail":"Unauthorized"}"#.utf8),
+                try XCTUnwrap(HTTPURLResponse(url: try XCTUnwrap(request.url), statusCode: 401, httpVersion: nil, headerFields: nil))
+            )
+        }
+        defer {
+            MockURLProtocol.handler = nil
+            session.invalidateAndCancel()
+        }
+
+        for nextScenario in [RecoveryScenario.second401, .unverified, .transient] {
+            scenario = nextScenario
+            originalAttempts = 0
+            _ = KeychainHelper.save(.apnsDeviceToken, token)
+            _ = KeychainHelper.save(.apnsDeviceEnvironment, client.apnsEnvironment)
+            do {
+                _ = try await client.fetchHostedSourceHealth(timeout: 8)
+                XCTFail("Expected credential recovery failure")
+            } catch let BackendClientError.httpStatus(status, _, _) {
+                XCTAssertEqual(status, 401)
+            }
+            switch nextScenario {
+            case .second401:
+                XCTAssertEqual(originalAttempts, 2)
+                XCTAssertNil(KeychainHelper.read(.apnsDeviceToken))
+                XCTAssertNil(KeychainHelper.read(.apnsDeviceEnvironment))
+            case .unverified:
+                XCTAssertEqual(originalAttempts, 1)
+                XCTAssertNil(KeychainHelper.read(.apnsDeviceToken))
+                XCTAssertNil(KeychainHelper.read(.apnsDeviceEnvironment))
+            case .transient:
+                XCTAssertEqual(originalAttempts, 1)
+                XCTAssertEqual(KeychainHelper.read(.apnsDeviceToken), token)
+                XCTAssertEqual(KeychainHelper.read(.apnsDeviceEnvironment), client.apnsEnvironment)
+            }
+        }
+
+        let invalidationCount = await invalidations.value()
+        XCTAssertEqual(invalidationCount, 2)
+        XCTAssertEqual(KeychainHelper.read(.apnsDeviceToken), token)
+        XCTAssertEqual(KeychainHelper.read(.apnsDeviceEnvironment), client.apnsEnvironment)
+    }
+
+    @MainActor
+    func testPaidBackendCredentialRecoveryStagesRetainIndependentConnectionLossRetries() async throws {
+        let originalToken = KeychainHelper.read(.apnsDeviceToken)
+        let originalEnvironment = KeychainHelper.read(.apnsDeviceEnvironment)
+        defer {
+            _ = KeychainHelper.save(.apnsDeviceToken, originalToken)
+            _ = KeychainHelper.save(.apnsDeviceEnvironment, originalEnvironment)
+        }
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let clock = TestMonotonicClock(100)
+        let client = BackendClient(session: session, monotonicNow: { clock.now() })
+        let token = String(repeating: "a", count: 64)
+        _ = KeychainHelper.save(.apnsDeviceToken, token)
+        _ = KeychainHelper.save(.apnsDeviceEnvironment, client.apnsEnvironment)
+        var originalAttempts = 0
+        var registrationAttempts = 0
+        var timeouts: [TimeInterval] = []
+        MockURLProtocol.handler = { request in
+            timeouts.append(request.timeoutInterval)
+            clock.set(clock.now() + 1)
+            if request.url?.path == "/api/devices/apns-token" {
+                registrationAttempts += 1
+                if registrationAttempts == 1 { throw URLError(.networkConnectionLost) }
+                return (
+                    Data(#"{"is_verified":true}"#.utf8),
+                    try XCTUnwrap(HTTPURLResponse(url: try XCTUnwrap(request.url), statusCode: 201, httpVersion: nil, headerFields: nil))
+                )
+            }
+            originalAttempts += 1
+            switch originalAttempts {
+            case 1, 3:
+                throw URLError(.networkConnectionLost)
+            case 2:
+                return (
+                    Data(#"{"detail":"Unauthorized"}"#.utf8),
+                    try XCTUnwrap(HTTPURLResponse(url: try XCTUnwrap(request.url), statusCode: 401, httpVersion: nil, headerFields: nil))
+                )
+            default:
+                return (
+                    Data(#"{"sources":[]}"#.utf8),
+                    try XCTUnwrap(HTTPURLResponse(url: try XCTUnwrap(request.url), statusCode: 200, httpVersion: nil, headerFields: nil))
+                )
+            }
+        }
+        defer {
+            MockURLProtocol.handler = nil
+            session.invalidateAndCancel()
+        }
+
+        _ = try await client.fetchHostedSourceHealth(timeout: 10)
+
+        XCTAssertEqual(originalAttempts, 4)
+        XCTAssertEqual(registrationAttempts, 2)
+        XCTAssertEqual(timeouts.count, 6)
+        for index in 1..<timeouts.count {
+            XCTAssertEqual(timeouts[index - 1] - timeouts[index], 1, accuracy: 0.01)
+        }
+    }
+
+    @MainActor
+    func testPaidBackendCredentialRecoveryDeadlineAndCancellationPreventRegistration() async throws {
+        let originalToken = KeychainHelper.read(.apnsDeviceToken)
+        let originalEnvironment = KeychainHelper.read(.apnsDeviceEnvironment)
+        defer {
+            _ = KeychainHelper.save(.apnsDeviceToken, originalToken)
+            _ = KeychainHelper.save(.apnsDeviceEnvironment, originalEnvironment)
+        }
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let clock = TestMonotonicClock(100)
+        let invalidations = AsyncCounter()
+        let client = BackendClient(
+            session: session,
+            monotonicNow: { clock.now() },
+            invalidateAPNSRegistration: { await invalidations.increment() }
+        )
+        let token = String(repeating: "b", count: 64)
+        _ = KeychainHelper.save(.apnsDeviceToken, token)
+        _ = KeychainHelper.save(.apnsDeviceEnvironment, client.apnsEnvironment)
+        var requestCount = 0
+        MockURLProtocol.handler = { request in
+            requestCount += 1
+            clock.set(109)
+            return (
+                Data(#"{"detail":"Unauthorized"}"#.utf8),
+                try XCTUnwrap(HTTPURLResponse(url: try XCTUnwrap(request.url), statusCode: 401, httpVersion: nil, headerFields: nil))
+            )
+        }
+        defer {
+            MockURLProtocol.handler = nil
+            session.invalidateAndCancel()
+        }
+
+        do {
+            _ = try await client.fetchHostedSourceHealth(timeout: 8)
+            XCTFail("Expected shared deadline expiry")
+        } catch let error as URLError {
+            XCTAssertEqual(error.code, .timedOut)
+        }
+        XCTAssertEqual(requestCount, 1)
+
+        requestCount = 0
+        clock.set(100)
+        let requestStarted = expectation(description: "device-authorized request started")
+        MockURLProtocol.handler = { request in
+            requestCount += 1
+            requestStarted.fulfill()
+            Thread.sleep(forTimeInterval: 0.2)
+            return (
+                Data(#"{"detail":"Unauthorized"}"#.utf8),
+                try XCTUnwrap(HTTPURLResponse(url: try XCTUnwrap(request.url), statusCode: 401, httpVersion: nil, headerFields: nil))
+            )
+        }
+        let cancelled = Task {
+            try await client.fetchHostedSourceHealth(timeout: 8)
+        }
+        await fulfillment(of: [requestStarted], timeout: 1)
+        cancelled.cancel()
+        do {
+            _ = try await cancelled.value
+            XCTFail("Expected cancellation")
+        } catch is CancellationError {
+            // Expected.
+        } catch let error as URLError {
+            XCTAssertEqual(error.code, .cancelled)
+        }
+        XCTAssertEqual(requestCount, 1)
+        XCTAssertEqual(KeychainHelper.read(.apnsDeviceToken), token)
+        let invalidationCount = await invalidations.value()
+        XCTAssertEqual(invalidationCount, 0)
+    }
+
+    func testPaidBackendCredentialRecoveryDoesNotRunForOtherHTTPOrDecodeFailures() async throws {
+        let originalToken = KeychainHelper.read(.apnsDeviceToken)
+        let originalEnvironment = KeychainHelper.read(.apnsDeviceEnvironment)
+        defer {
+            _ = KeychainHelper.save(.apnsDeviceToken, originalToken)
+            _ = KeychainHelper.save(.apnsDeviceEnvironment, originalEnvironment)
+        }
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let client = BackendClient(session: session)
+        let token = String(repeating: "c", count: 64)
+        _ = KeychainHelper.save(.apnsDeviceToken, token)
+        _ = KeychainHelper.save(.apnsDeviceEnvironment, client.apnsEnvironment)
+        let statuses = [402, 403, 404, 500]
+        var requestCount = 0
+        var paths: [String] = []
+        MockURLProtocol.handler = { request in
+            paths.append(request.url?.path ?? "")
+            requestCount += 1
+            let status = requestCount <= statuses.count ? statuses[requestCount - 1] : 200
+            let data = status == 200
+                ? Data(#"{"unexpected":true}"#.utf8)
+                : Data(#"{"detail":{"code":"request_failed","message":"Rejected"}}"#.utf8)
+            return (
+                data,
+                try XCTUnwrap(HTTPURLResponse(url: try XCTUnwrap(request.url), statusCode: status, httpVersion: nil, headerFields: nil))
+            )
+        }
+        defer {
+            MockURLProtocol.handler = nil
+            session.invalidateAndCancel()
+        }
+
+        for expectedStatus in statuses {
+            do {
+                _ = try await client.fetchHostedSourceHealth(timeout: 8)
+                XCTFail("Expected HTTP \(expectedStatus)")
+            } catch let BackendClientError.httpStatus(status, code, message) {
+                XCTAssertEqual(status, expectedStatus)
+                XCTAssertEqual(code, "request_failed")
+                XCTAssertEqual(message, "Rejected")
+            }
+        }
+        do {
+            _ = try await client.fetchHostedSourceHealth(timeout: 8)
+            XCTFail("Expected decoding failure")
+        } catch is DecodingError {
+            // Expected.
+        }
+
+        XCTAssertEqual(requestCount, 5)
+        XCTAssertEqual(paths, Array(repeating: "/api/source-health", count: 5))
+    }
+
+    @MainActor
+    func testPaidBackendTransportDeadlineAndCancellationPreventRetry() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let clock = TestMonotonicClock(10)
+        let client = BackendClient(session: session, monotonicNow: { clock.now() })
+        var requestCount = 0
+        MockURLProtocol.handler = { _ in
+            requestCount += 1
+            clock.set(19)
+            throw URLError(.networkConnectionLost)
+        }
+        defer {
+            MockURLProtocol.handler = nil
+            session.invalidateAndCancel()
+        }
+
+        do {
+            _ = try await client.fetchHostedSourceHealth(timeout: 8)
+            XCTFail("Expected shared deadline expiry")
+        } catch let error as URLError {
+            XCTAssertEqual(error.code, .timedOut)
+        }
+        XCTAssertEqual(requestCount, 1)
+
+        requestCount = 0
+        clock.set(10)
+        let requestStarted = expectation(description: "paid backend request started")
+        MockURLProtocol.handler = { _ in
+            requestCount += 1
+            requestStarted.fulfill()
+            Thread.sleep(forTimeInterval: 0.2)
+            throw URLError(.networkConnectionLost)
+        }
+        let cancelled = Task {
+            try await client.fetchHostedSourceHealth(timeout: 8)
+        }
+        await fulfillment(of: [requestStarted], timeout: 1)
+        cancelled.cancel()
+        do {
+            _ = try await cancelled.value
+            XCTFail("Expected cancellation")
+        } catch is CancellationError {
+            // Expected.
+        } catch let error as URLError {
+            XCTAssertEqual(error.code, .cancelled)
+        }
+        XCTAssertEqual(requestCount, 1)
+    }
+
+    @MainActor
+    func testBackgroundPollRecoversRejectedCurrentEnvironmentTokenWithinSharedBudget() async throws {
+        let originalToken = KeychainHelper.read(.apnsDeviceToken)
+        let originalEnvironment = KeychainHelper.read(.apnsDeviceEnvironment)
+        let originalSecret = KeychainHelper.read(.apnsDeviceSecret)
+        defer {
+            _ = KeychainHelper.save(.apnsDeviceToken, originalToken)
+            _ = KeychainHelper.save(.apnsDeviceEnvironment, originalEnvironment)
+            _ = KeychainHelper.save(.apnsDeviceSecret, originalSecret)
+        }
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let clock = TestMonotonicClock(100)
+        let invalidations = AsyncCounter()
+        let client = BackendClient(
+            session: session,
+            monotonicNow: { clock.now() },
+            invalidateAPNSRegistration: { await invalidations.increment() }
+        )
+        let token = String(repeating: "a", count: 64)
+        _ = KeychainHelper.save(.apnsDeviceToken, token)
+        _ = KeychainHelper.save(.apnsDeviceEnvironment, client.apnsEnvironment)
+        _ = KeychainHelper.save(.apnsDeviceSecret, "device-secret")
+
+        var paths: [String] = []
+        var timeouts: [TimeInterval] = []
+        var backgroundRequestCount = 0
+        MockURLProtocol.handler = { request in
+            let path = request.url?.path ?? ""
+            paths.append(path)
+            timeouts.append(request.timeoutInterval)
+            XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+            XCTAssertEqual(request.httpMethod, "POST")
+            if path == "/api/devices/background-refresh" {
+                backgroundRequestCount += 1
+                let body = try XCTUnwrap(request.httpBody)
+                let json = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+                XCTAssertEqual(json["token"] as? String, token)
+                XCTAssertEqual(json["device_secret"] as? String, "device-secret")
+                clock.set(backgroundRequestCount == 1 ? 102 : 106)
+                return (
+                    backgroundRequestCount == 1
+                        ? Data(#"{"detail":{"code":"device_not_found","message":"Registration missing"}}"#.utf8)
+                        : Data(),
+                    try XCTUnwrap(HTTPURLResponse(
+                        url: try XCTUnwrap(request.url),
+                        statusCode: backgroundRequestCount == 1 ? 404 : 204,
+                        httpVersion: nil,
+                        headerFields: nil
+                    ))
+                )
+            }
+            XCTAssertEqual(path, "/api/devices/apns-token")
+            clock.set(105)
+            return (
+                Data(#"{"is_verified":true,"verification_error":null}"#.utf8),
+                try XCTUnwrap(HTTPURLResponse(
+                    url: try XCTUnwrap(request.url),
+                    statusCode: 201,
+                    httpVersion: nil,
+                    headerFields: nil
+                ))
+            )
+        }
+        defer {
+            MockURLProtocol.handler = nil
+            session.invalidateAndCancel()
+        }
+
+        try await client.triggerBackgroundPoll(timeout: 8)
+
+        XCTAssertEqual(paths, [
+            "/api/devices/background-refresh",
+            "/api/devices/apns-token",
+            "/api/devices/background-refresh",
+        ])
+        XCTAssertEqual(timeouts[0], 8, accuracy: 0.01)
+        XCTAssertEqual(timeouts[1], 6, accuracy: 0.01)
+        XCTAssertEqual(timeouts[2], 3, accuracy: 0.01)
+        let invalidationCount = await invalidations.value()
+        XCTAssertEqual(invalidationCount, 0)
+    }
+
+    func testBackgroundPollRetriesConnectionLostOnceWithRemainingDeadline() async throws {
+        let originalToken = KeychainHelper.read(.apnsDeviceToken)
+        let originalEnvironment = KeychainHelper.read(.apnsDeviceEnvironment)
+        defer {
+            _ = KeychainHelper.save(.apnsDeviceToken, originalToken)
+            _ = KeychainHelper.save(.apnsDeviceEnvironment, originalEnvironment)
+        }
+        _ = KeychainHelper.save(.apnsDeviceToken, nil)
+        _ = KeychainHelper.save(.apnsDeviceEnvironment, nil)
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let clock = TestMonotonicClock(100)
+        let client = BackendClient(session: session, monotonicNow: { clock.now() })
+        var bodies: [Data] = []
+        var timeouts: [TimeInterval] = []
+        var requestCount = 0
+        MockURLProtocol.handler = { request in
+            requestCount += 1
+            XCTAssertEqual(request.url?.path, "/api/devices/background-refresh")
+            XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+            bodies.append(try XCTUnwrap(request.httpBody))
+            timeouts.append(request.timeoutInterval)
+            if requestCount == 1 {
+                clock.set(102)
+                throw URLError(.networkConnectionLost)
+            }
+            return (
+                Data(),
+                try XCTUnwrap(HTTPURLResponse(
+                    url: try XCTUnwrap(request.url),
+                    statusCode: 204,
+                    httpVersion: nil,
+                    headerFields: nil
+                ))
+            )
+        }
+        defer {
+            MockURLProtocol.handler = nil
+            session.invalidateAndCancel()
+        }
+
+        try await client.triggerBackgroundPoll(timeout: 8)
+
+        XCTAssertEqual(requestCount, 2)
+        XCTAssertEqual(bodies.count, 2)
+        XCTAssertEqual(bodies[0], bodies[1])
+        XCTAssertEqual(timeouts[0], 8, accuracy: 0.01)
+        XCTAssertEqual(timeouts[1], 6, accuracy: 0.01)
+    }
+
+    func testBackgroundPollStopsAfterSecondConnectionLoss() async throws {
+        let originalToken = KeychainHelper.read(.apnsDeviceToken)
+        let originalEnvironment = KeychainHelper.read(.apnsDeviceEnvironment)
+        defer {
+            _ = KeychainHelper.save(.apnsDeviceToken, originalToken)
+            _ = KeychainHelper.save(.apnsDeviceEnvironment, originalEnvironment)
+        }
+        _ = KeychainHelper.save(.apnsDeviceToken, nil)
+        _ = KeychainHelper.save(.apnsDeviceEnvironment, nil)
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let client = BackendClient(session: session)
+        var requestCount = 0
+        MockURLProtocol.handler = { _ in
+            requestCount += 1
+            throw URLError(.networkConnectionLost)
+        }
+        defer {
+            MockURLProtocol.handler = nil
+            session.invalidateAndCancel()
+        }
+
+        do {
+            try await client.triggerBackgroundPoll(timeout: 8)
+            XCTFail("Expected the second connection loss to propagate")
+        } catch let error as URLError {
+            XCTAssertEqual(error.code, .networkConnectionLost)
+        }
+        XCTAssertEqual(requestCount, 2)
+    }
+
+    func testBackgroundPollDoesNotRetryOtherTransportFailures() async throws {
+        let originalToken = KeychainHelper.read(.apnsDeviceToken)
+        let originalEnvironment = KeychainHelper.read(.apnsDeviceEnvironment)
+        defer {
+            _ = KeychainHelper.save(.apnsDeviceToken, originalToken)
+            _ = KeychainHelper.save(.apnsDeviceEnvironment, originalEnvironment)
+        }
+        _ = KeychainHelper.save(.apnsDeviceToken, nil)
+        _ = KeychainHelper.save(.apnsDeviceEnvironment, nil)
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let client = BackendClient(session: session)
+        var requestCount = 0
+        let expectedErrors: [URLError.Code] = [.timedOut, .notConnectedToInternet, .badServerResponse]
+        var nextErrorIndex = 0
+        MockURLProtocol.handler = { _ in
+            requestCount += 1
+            defer { nextErrorIndex += 1 }
+            throw URLError(expectedErrors[nextErrorIndex])
+        }
+        defer {
+            MockURLProtocol.handler = nil
+            session.invalidateAndCancel()
+        }
+
+        for expected in expectedErrors {
+            do {
+                try await client.triggerBackgroundPoll(timeout: 8)
+                XCTFail("Expected transport failure \(expected)")
+            } catch let error as URLError {
+                XCTAssertEqual(error.code, expected)
+            }
+        }
+        XCTAssertEqual(requestCount, expectedErrors.count)
+    }
+
+    func testBackgroundPollDoesNotRetryNonHTTPResponse() async throws {
+        let originalToken = KeychainHelper.read(.apnsDeviceToken)
+        let originalEnvironment = KeychainHelper.read(.apnsDeviceEnvironment)
+        defer {
+            _ = KeychainHelper.save(.apnsDeviceToken, originalToken)
+            _ = KeychainHelper.save(.apnsDeviceEnvironment, originalEnvironment)
+        }
+        _ = KeychainHelper.save(.apnsDeviceToken, nil)
+        _ = KeychainHelper.save(.apnsDeviceEnvironment, nil)
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [NonHTTPResponseURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let client = BackendClient(session: session)
+        NonHTTPResponseURLProtocol.requestCount = 0
+        defer {
+            session.invalidateAndCancel()
+            NonHTTPResponseURLProtocol.requestCount = 0
+        }
+
+        do {
+            try await client.triggerBackgroundPoll(timeout: 8)
+            XCTFail("Expected a non-HTTP response to be rejected")
+        } catch BackendClientError.invalidResponse {
+            // Expected.
+        }
+        XCTAssertEqual(NonHTTPResponseURLProtocol.requestCount, 1)
+    }
+
+    @MainActor
+    func testBackgroundPollConnectionRetryStillRepairs404AndRetriesPostRegistrationLoss() async throws {
+        let originalToken = KeychainHelper.read(.apnsDeviceToken)
+        let originalEnvironment = KeychainHelper.read(.apnsDeviceEnvironment)
+        defer {
+            _ = KeychainHelper.save(.apnsDeviceToken, originalToken)
+            _ = KeychainHelper.save(.apnsDeviceEnvironment, originalEnvironment)
+        }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let clock = TestMonotonicClock(100)
+        let invalidations = AsyncCounter()
+        let client = BackendClient(
+            session: session,
+            monotonicNow: { clock.now() },
+            invalidateAPNSRegistration: { await invalidations.increment() }
+        )
+        _ = KeychainHelper.save(.apnsDeviceToken, "cached-token")
+        _ = KeychainHelper.save(.apnsDeviceEnvironment, client.apnsEnvironment)
+        var paths: [String] = []
+        var timeouts: [TimeInterval] = []
+        var backgroundCount = 0
+        MockURLProtocol.handler = { request in
+            let path = request.url?.path ?? ""
+            paths.append(path)
+            timeouts.append(request.timeoutInterval)
+            if path == "/api/devices/apns-token" {
+                clock.set(103)
+                return (
+                    Data(#"{"is_verified":true}"#.utf8),
+                    try XCTUnwrap(HTTPURLResponse(
+                        url: try XCTUnwrap(request.url),
+                        statusCode: 200,
+                        httpVersion: nil,
+                        headerFields: nil
+                    ))
+                )
+            }
+
+            backgroundCount += 1
+            switch backgroundCount {
+            case 1:
+                clock.set(101)
+                throw URLError(.networkConnectionLost)
+            case 2:
+                clock.set(102)
+                return (
+                    Data(#"{"detail":"Registration missing"}"#.utf8),
+                    try XCTUnwrap(HTTPURLResponse(
+                        url: try XCTUnwrap(request.url),
+                        statusCode: 404,
+                        httpVersion: nil,
+                        headerFields: nil
+                    ))
+                )
+            case 3:
+                clock.set(104)
+                throw URLError(.networkConnectionLost)
+            default:
+                return (
+                    Data(),
+                    try XCTUnwrap(HTTPURLResponse(
+                        url: try XCTUnwrap(request.url),
+                        statusCode: 204,
+                        httpVersion: nil,
+                        headerFields: nil
+                    ))
+                )
+            }
+        }
+        defer {
+            MockURLProtocol.handler = nil
+            session.invalidateAndCancel()
+        }
+
+        try await client.triggerBackgroundPoll(timeout: 8)
+
+        XCTAssertEqual(paths, [
+            "/api/devices/background-refresh",
+            "/api/devices/background-refresh",
+            "/api/devices/apns-token",
+            "/api/devices/background-refresh",
+            "/api/devices/background-refresh",
+        ])
+        XCTAssertEqual(timeouts[0], 8, accuracy: 0.01)
+        XCTAssertEqual(timeouts[1], 7, accuracy: 0.01)
+        XCTAssertEqual(timeouts[2], 6, accuracy: 0.01)
+        XCTAssertEqual(timeouts[3], 5, accuracy: 0.01)
+        XCTAssertEqual(timeouts[4], 4, accuracy: 0.01)
+        let invalidationCount = await invalidations.value()
+        XCTAssertEqual(invalidationCount, 0)
+    }
+
+    func testBackgroundPollConnectionRetryHonorsSharedDeadline() async throws {
+        let originalToken = KeychainHelper.read(.apnsDeviceToken)
+        let originalEnvironment = KeychainHelper.read(.apnsDeviceEnvironment)
+        defer {
+            _ = KeychainHelper.save(.apnsDeviceToken, originalToken)
+            _ = KeychainHelper.save(.apnsDeviceEnvironment, originalEnvironment)
+        }
+        _ = KeychainHelper.save(.apnsDeviceToken, nil)
+        _ = KeychainHelper.save(.apnsDeviceEnvironment, nil)
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let clock = TestMonotonicClock(10)
+        let client = BackendClient(session: session, monotonicNow: { clock.now() })
+        var requestCount = 0
+        MockURLProtocol.handler = { _ in
+            requestCount += 1
+            clock.set(19)
+            throw URLError(.networkConnectionLost)
+        }
+        defer {
+            MockURLProtocol.handler = nil
+            session.invalidateAndCancel()
+        }
+
+        do {
+            try await client.triggerBackgroundPoll(timeout: 8)
+            XCTFail("Expected shared deadline expiry")
+        } catch let error as URLError {
+            XCTAssertEqual(error.code, .timedOut)
+        }
+        XCTAssertEqual(requestCount, 1)
+    }
+
+    func testBackgroundPollDoesNotRecoverWithoutCurrentEnvironmentToken() async throws {
+        let originalToken = KeychainHelper.read(.apnsDeviceToken)
+        let originalEnvironment = KeychainHelper.read(.apnsDeviceEnvironment)
+        defer {
+            _ = KeychainHelper.save(.apnsDeviceToken, originalToken)
+            _ = KeychainHelper.save(.apnsDeviceEnvironment, originalEnvironment)
+        }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let invalidations = AsyncCounter()
+        let client = BackendClient(
+            session: session,
+            invalidateAPNSRegistration: { await invalidations.increment() }
+        )
+        var requestCount = 0
+        MockURLProtocol.handler = { request in
+            requestCount += 1
+            XCTAssertEqual(request.url?.path, "/api/devices/background-refresh")
+            let body = try XCTUnwrap(request.httpBody)
+            let json = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+            XCTAssertNil(json["token"])
+            XCTAssertNotNil(json["device_id"])
+            return (
+                Data(#"{"detail":"Device registration was not found"}"#.utf8),
+                try XCTUnwrap(HTTPURLResponse(
+                    url: try XCTUnwrap(request.url),
+                    statusCode: 404,
+                    httpVersion: nil,
+                    headerFields: nil
+                ))
+            )
+        }
+        defer {
+            MockURLProtocol.handler = nil
+            session.invalidateAndCancel()
+        }
+
+        for (token, environment) in [(nil, nil), ("cached-token", "other-environment")] {
+            _ = KeychainHelper.save(.apnsDeviceToken, token)
+            _ = KeychainHelper.save(.apnsDeviceEnvironment, environment)
+            do {
+                try await client.triggerBackgroundPoll(timeout: 8)
+                XCTFail("Expected missing device registration")
+            } catch let BackendClientError.httpStatus(status, code, message) {
+                XCTAssertEqual(status, 404)
+                XCTAssertNil(code)
+                XCTAssertEqual(message, "Device registration was not found")
+            }
+        }
+        XCTAssertEqual(requestCount, 2)
+        let invalidationCount = await invalidations.value()
+        XCTAssertEqual(invalidationCount, 0)
+    }
+
+    @MainActor
+    func testBackgroundPollDoesNotRetryPaidOrServerFailuresAndBoundsDetail() async throws {
+        let originalToken = KeychainHelper.read(.apnsDeviceToken)
+        let originalEnvironment = KeychainHelper.read(.apnsDeviceEnvironment)
+        defer {
+            _ = KeychainHelper.save(.apnsDeviceToken, originalToken)
+            _ = KeychainHelper.save(.apnsDeviceEnvironment, originalEnvironment)
+        }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let invalidations = AsyncCounter()
+        let client = BackendClient(
+            session: session,
+            invalidateAPNSRegistration: { await invalidations.increment() }
+        )
+        _ = KeychainHelper.save(.apnsDeviceToken, "cached-token")
+        _ = KeychainHelper.save(.apnsDeviceEnvironment, client.apnsEnvironment)
+        var requestCount = 0
+        MockURLProtocol.handler = { request in
+            requestCount += 1
+            let paidFailure = requestCount == 1
+            let message = paidFailure ? "Paid access required" : String(repeating: "x", count: 700)
+            let code = paidFailure ? "paid_backend_required" : "upstream_failure"
+            let data = try JSONSerialization.data(withJSONObject: [
+                "detail": ["code": code, "message": message],
+            ])
+            return (
+                data,
+                try XCTUnwrap(HTTPURLResponse(
+                    url: try XCTUnwrap(request.url),
+                    statusCode: paidFailure ? 402 : 500,
+                    httpVersion: nil,
+                    headerFields: nil
+                ))
+            )
+        }
+        defer {
+            MockURLProtocol.handler = nil
+            session.invalidateAndCancel()
+        }
+
+        do {
+            try await client.triggerBackgroundPoll(timeout: 8)
+            XCTFail("Expected paid access rejection")
+        } catch let BackendClientError.httpStatus(status, code, message) {
+            XCTAssertEqual(status, 402)
+            XCTAssertEqual(code, "paid_backend_required")
+            XCTAssertEqual(message, "Paid access required")
+        }
+        do {
+            try await client.triggerBackgroundPoll(timeout: 8)
+            XCTFail("Expected server failure")
+        } catch let BackendClientError.httpStatus(status, code, message) {
+            XCTAssertEqual(status, 500)
+            XCTAssertEqual(code, "upstream_failure")
+            XCTAssertEqual(message?.count, 512)
+        }
+        XCTAssertEqual(requestCount, 2)
+        let invalidationCount = await invalidations.value()
+        XCTAssertEqual(invalidationCount, 0)
+    }
+
+    @MainActor
+    func testBackgroundPollInvalidatesUnverifiedRegistrationButKeepsTransientFailure() async throws {
+        let originalToken = KeychainHelper.read(.apnsDeviceToken)
+        let originalEnvironment = KeychainHelper.read(.apnsDeviceEnvironment)
+        defer {
+            _ = KeychainHelper.save(.apnsDeviceToken, originalToken)
+            _ = KeychainHelper.save(.apnsDeviceEnvironment, originalEnvironment)
+        }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let invalidations = AsyncCounter()
+        let client = BackendClient(
+            session: session,
+            invalidateAPNSRegistration: {
+                await invalidations.increment()
+                _ = KeychainHelper.save(.apnsDeviceToken, nil)
+                _ = KeychainHelper.save(.apnsDeviceEnvironment, nil)
+            }
+        )
+        let token = "cached-token"
+        var registrationAttempt = 0
+        MockURLProtocol.handler = { request in
+            if request.url?.path == "/api/devices/background-refresh" {
+                return (
+                    Data(),
+                    try XCTUnwrap(HTTPURLResponse(
+                        url: try XCTUnwrap(request.url),
+                        statusCode: 404,
+                        httpVersion: nil,
+                        headerFields: nil
+                    ))
+                )
+            }
+            registrationAttempt += 1
+            if registrationAttempt == 1 {
+                return (
+                    Data(#"{"is_verified":false,"verification_error":"rejected"}"#.utf8),
+                    try XCTUnwrap(HTTPURLResponse(
+                        url: try XCTUnwrap(request.url),
+                        statusCode: 200,
+                        httpVersion: nil,
+                        headerFields: nil
+                    ))
+                )
+            }
+            return (
+                Data(#"{"detail":{"code":"temporary_failure","message":"Try later"}}"#.utf8),
+                try XCTUnwrap(HTTPURLResponse(
+                    url: try XCTUnwrap(request.url),
+                    statusCode: 503,
+                    httpVersion: nil,
+                    headerFields: nil
+                ))
+            )
+        }
+        defer {
+            MockURLProtocol.handler = nil
+            session.invalidateAndCancel()
+        }
+
+        _ = KeychainHelper.save(.apnsDeviceToken, token)
+        _ = KeychainHelper.save(.apnsDeviceEnvironment, client.apnsEnvironment)
+        do {
+            try await client.triggerBackgroundPoll(timeout: 8)
+            XCTFail("Expected unverified registration")
+        } catch let BackendClientError.httpStatus(status, code, _) {
+            XCTAssertEqual(status, 409)
+            XCTAssertEqual(code, "apns_unverified")
+        }
+        XCTAssertNil(KeychainHelper.read(.apnsDeviceToken))
+        let unverifiedInvalidationCount = await invalidations.value()
+        XCTAssertEqual(unverifiedInvalidationCount, 1)
+
+        _ = KeychainHelper.save(.apnsDeviceToken, token)
+        _ = KeychainHelper.save(.apnsDeviceEnvironment, client.apnsEnvironment)
+        do {
+            try await client.triggerBackgroundPoll(timeout: 8)
+            XCTFail("Expected transient registration failure")
+        } catch let BackendClientError.httpStatus(status, code, _) {
+            XCTAssertEqual(status, 503)
+            XCTAssertEqual(code, "temporary_failure")
+        }
+        XCTAssertEqual(KeychainHelper.read(.apnsDeviceToken), token)
+        let transientInvalidationCount = await invalidations.value()
+        XCTAssertEqual(transientInvalidationCount, 1)
+    }
+
+    @MainActor
+    func testBackgroundPollSecond404InvalidatesRegistrationAndPreservesInitialDetail() async throws {
+        let originalToken = KeychainHelper.read(.apnsDeviceToken)
+        let originalEnvironment = KeychainHelper.read(.apnsDeviceEnvironment)
+        defer {
+            _ = KeychainHelper.save(.apnsDeviceToken, originalToken)
+            _ = KeychainHelper.save(.apnsDeviceEnvironment, originalEnvironment)
+        }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let invalidations = AsyncCounter()
+        let client = BackendClient(
+            session: session,
+            invalidateAPNSRegistration: {
+                await invalidations.increment()
+                _ = KeychainHelper.save(.apnsDeviceToken, nil)
+                _ = KeychainHelper.save(.apnsDeviceEnvironment, nil)
+            }
+        )
+        _ = KeychainHelper.save(.apnsDeviceToken, "cached-token")
+        _ = KeychainHelper.save(.apnsDeviceEnvironment, client.apnsEnvironment)
+        var backgroundCount = 0
+        MockURLProtocol.handler = { request in
+            if request.url?.path == "/api/devices/apns-token" {
+                return (
+                    Data(#"{"is_verified":true}"#.utf8),
+                    try XCTUnwrap(HTTPURLResponse(
+                        url: try XCTUnwrap(request.url),
+                        statusCode: 200,
+                        httpVersion: nil,
+                        headerFields: nil
+                    ))
+                )
+            }
+            backgroundCount += 1
+            let message = backgroundCount == 1 ? "Initial rejection" : "Retry rejection"
+            return (
+                Data("{\"detail\":\"\(message)\"}".utf8),
+                try XCTUnwrap(HTTPURLResponse(
+                    url: try XCTUnwrap(request.url),
+                    statusCode: 404,
+                    httpVersion: nil,
+                    headerFields: nil
+                ))
+            )
+        }
+        defer {
+            MockURLProtocol.handler = nil
+            session.invalidateAndCancel()
+        }
+
+        do {
+            try await client.triggerBackgroundPoll(timeout: 8)
+            XCTFail("Expected repeated device rejection")
+        } catch let BackendClientError.httpStatus(status, _, message) {
+            XCTAssertEqual(status, 404)
+            XCTAssertEqual(message, "Initial rejection")
+        }
+        XCTAssertEqual(backgroundCount, 2)
+        let invalidationCount = await invalidations.value()
+        XCTAssertEqual(invalidationCount, 1)
+        XCTAssertNil(KeychainHelper.read(.apnsDeviceToken))
+    }
+
+    @MainActor
+    func testBackgroundPollDeadlineAndCancellationPreventRecoveryTransport() async throws {
+        let originalToken = KeychainHelper.read(.apnsDeviceToken)
+        let originalEnvironment = KeychainHelper.read(.apnsDeviceEnvironment)
+        defer {
+            _ = KeychainHelper.save(.apnsDeviceToken, originalToken)
+            _ = KeychainHelper.save(.apnsDeviceEnvironment, originalEnvironment)
+        }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let clock = TestMonotonicClock(10)
+        let client = BackendClient(session: session, monotonicNow: { clock.now() })
+        _ = KeychainHelper.save(.apnsDeviceToken, "cached-token")
+        _ = KeychainHelper.save(.apnsDeviceEnvironment, client.apnsEnvironment)
+        var requestCount = 0
+        MockURLProtocol.handler = { request in
+            requestCount += 1
+            clock.set(19)
+            return (
+                Data(),
+                try XCTUnwrap(HTTPURLResponse(
+                    url: try XCTUnwrap(request.url),
+                    statusCode: 404,
+                    httpVersion: nil,
+                    headerFields: nil
+                ))
+            )
+        }
+        defer {
+            MockURLProtocol.handler = nil
+            session.invalidateAndCancel()
+        }
+
+        do {
+            try await client.triggerBackgroundPoll(timeout: 8)
+            XCTFail("Expected shared deadline expiry")
+        } catch let error as URLError {
+            XCTAssertEqual(error.code, .timedOut)
+        }
+        XCTAssertEqual(requestCount, 1)
+
+        requestCount = 0
+        clock.set(10)
+        let requestStarted = expectation(description: "background request started")
+        MockURLProtocol.handler = { request in
+            requestCount += 1
+            requestStarted.fulfill()
+            Thread.sleep(forTimeInterval: 0.2)
+            return (
+                Data(),
+                try XCTUnwrap(HTTPURLResponse(
+                    url: try XCTUnwrap(request.url),
+                    statusCode: 404,
+                    httpVersion: nil,
+                    headerFields: nil
+                ))
+            )
+        }
+        let cancelled = Task {
+            try await client.triggerBackgroundPoll(timeout: 8)
+        }
+        await fulfillment(of: [requestStarted], timeout: 1)
+        cancelled.cancel()
+        do {
+            try await cancelled.value
+            XCTFail("Expected cancellation")
+        } catch is CancellationError {
+            // Expected.
+        } catch let error as URLError {
+            XCTAssertEqual(error.code, .cancelled)
+        }
+        XCTAssertEqual(requestCount, 1)
+    }
+
+    func testPaidPendingNotificationClientUsesAuthenticatedPostAndDeleteContracts() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let client = BackendClient(session: session)
+        var requestCount = 0
+        MockURLProtocol.handler = { request in
+            requestCount += 1
+            XCTAssertEqual(request.url?.path, "/api/watch-terms/42/notify")
+            XCTAssertEqual(request.timeoutInterval, 9, accuracy: 0.01)
+            XCTAssertNotNil(request.value(forHTTPHeaderField: "X-Device-Secret"))
+            if requestCount == 1 {
+                XCTAssertEqual(request.httpMethod, "POST")
+                return (
+                    Data(#"{"term_id":42,"keyword":"Aiko","count":3,"cleared":true}"#.utf8),
+                    try XCTUnwrap(HTTPURLResponse(url: try XCTUnwrap(request.url), statusCode: 200, httpVersion: nil, headerFields: nil))
+                )
+            }
+            XCTAssertEqual(request.httpMethod, "DELETE")
+            return (
+                Data(),
+                try XCTUnwrap(HTTPURLResponse(url: try XCTUnwrap(request.url), statusCode: 204, httpVersion: nil, headerFields: nil))
+            )
+        }
+        defer {
+            MockURLProtocol.handler = nil
+            session.invalidateAndCancel()
+        }
+
+        let delivery = try await client.triggerPendingNotification(backendTermID: 42, timeout: 9)
+        try await client.clearPendingNotification(backendTermID: 42, timeout: 9)
+
+        XCTAssertEqual(
+            delivery,
+            BackendNotificationDelivery(term_id: 42, keyword: "Aiko", count: 3, cleared: true)
+        )
+        XCTAssertEqual(requestCount, 2)
+    }
+
+    func testHostedFeedMuteClientUsesAuthenticatedJSONPostAndDecodesErrors() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let client = BackendClient(session: session)
+        var requestCount = 0
+        MockURLProtocol.handler = { request in
+            requestCount += 1
+            XCTAssertEqual(request.url?.path, "/api/feed/muted-items")
+            XCTAssertEqual(request.httpMethod, "POST")
+            XCTAssertEqual(request.timeoutInterval, 11, accuracy: 0.01)
+            XCTAssertNotNil(request.value(forHTTPHeaderField: "X-Device-Secret"))
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"), "application/json")
+            let body = try XCTUnwrap(request.httpBody)
+            let json = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+            XCTAssertEqual(json["source_item_id"] as? String, "news:hosted-1")
+            XCTAssertEqual(json["watch_term_id"] as? Int, 42)
+            if requestCount == 1 {
+                return (
+                    Data(),
+                    try XCTUnwrap(HTTPURLResponse(url: try XCTUnwrap(request.url), statusCode: 204, httpVersion: nil, headerFields: nil))
+                )
+            }
+            return (
+                Data(#"{"detail":{"code":"paid_backend_required","message":"Paid access required"}}"#.utf8),
+                try XCTUnwrap(HTTPURLResponse(url: try XCTUnwrap(request.url), statusCode: 402, httpVersion: nil, headerFields: nil))
+            )
+        }
+        defer {
+            MockURLProtocol.handler = nil
+            session.invalidateAndCancel()
+        }
+
+        try await client.muteHostedFeedItem(
+            sourceItemID: "news:hosted-1",
+            watchTermID: 42,
+            timeout: 11
+        )
+        do {
+            try await client.muteHostedFeedItem(
+                sourceItemID: "news:hosted-1",
+                watchTermID: 42,
+                timeout: 11
+            )
+            XCTFail("Expected paid access rejection")
+        } catch let BackendClientError.httpStatus(status, code, message) {
+            XCTAssertEqual(status, 402)
+            XCTAssertEqual(code, "paid_backend_required")
+            XCTAssertEqual(message, "Paid access required")
+        }
+        XCTAssertEqual(requestCount, 2)
     }
 
     func testBackendFeedClientDrainsSnapshotPagesBeforeAdvancing() async throws {
@@ -262,7 +2734,143 @@ final class OshiReaderTests: XCTestCase {
         XCTAssertEqual(cursorIDs[2], "21")
     }
 
-    func testBackendFeedClientDrainsMoreThanOneHundredContinuationPages() async throws {
+    func testBackendFeedPaginationUsesIndependentRetryBudgetForEachPage() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let clock = TestMonotonicClock(100)
+        let client = BackendClient(session: session, monotonicNow: { clock.now() })
+        var attempts: [String: Int] = [:]
+        var timeouts: [String: [TimeInterval]] = [:]
+        MockURLProtocol.handler = { request in
+            let components = try XCTUnwrap(URLComponents(
+                url: try XCTUnwrap(request.url),
+                resolvingAgainstBaseURL: false
+            ))
+            let cursor = components.queryItems?
+                .first(where: { $0.name == "scan_before_match_id" })?.value ?? "root"
+            attempts[cursor, default: 0] += 1
+            timeouts[cursor, default: []].append(request.timeoutInterval)
+            if attempts[cursor] == 1 {
+                clock.set(clock.now() + 2)
+                throw URLError(.networkConnectionLost)
+            }
+
+            let data: Data
+            let headers: [String: String]?
+            if cursor == "root" {
+                data = Data("""
+                [{
+                  "watch_term_keyword": "Aiko",
+                  "matched_at": "2026-08-22T12:01:00Z",
+                  "item": {
+                    "id": "news:retry-page",
+                    "platform": "news",
+                    "url": "https://example.com/retry-page",
+                    "title": "Aiko retry page",
+                    "content_text": null,
+                    "author": null,
+                    "thumbnail_url": null,
+                    "media_type": "article",
+                    "published_at": "2026-08-22T12:00:00Z",
+                    "source": "news"
+                  }
+                }]
+                """.utf8)
+                headers = [
+                    "X-OshiReader-Next-Published-At": "2026-08-22T11:00:00Z",
+                    "X-OshiReader-Next-Match-ID": "42",
+                ]
+            } else {
+                XCTAssertEqual(cursor, "42")
+                data = Data("[]".utf8)
+                headers = nil
+            }
+            return (
+                data,
+                try XCTUnwrap(HTTPURLResponse(
+                    url: try XCTUnwrap(request.url),
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: headers
+                ))
+            )
+        }
+        defer {
+            MockURLProtocol.handler = nil
+            session.invalidateAndCancel()
+        }
+
+        let items = try await client.fetchAllBackendFeed(
+            termIDs: [11],
+            pageSize: 2,
+            until: "2026-08-22T13:00:00Z"
+        )
+
+        XCTAssertEqual(items.map(\.id), ["news:retry-page"])
+        XCTAssertEqual(attempts, ["root": 2, "42": 2])
+        let rootTimeouts = try XCTUnwrap(timeouts["root"])
+        let continuationTimeouts = try XCTUnwrap(timeouts["42"])
+        XCTAssertEqual(rootTimeouts[0], 30, accuracy: 0.01)
+        XCTAssertEqual(rootTimeouts[1], 28, accuracy: 0.01)
+        XCTAssertEqual(continuationTimeouts[0], 30, accuracy: 0.01)
+        XCTAssertEqual(continuationTimeouts[1], 28, accuracy: 0.01)
+    }
+
+    func testBackendFeedClientRejectsFullPageWithoutScanContinuationContract() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let client = BackendClient(session: session)
+        MockURLProtocol.handler = { request in
+            let data = Data("""
+            [{
+              "watch_term_keyword": "Aiko",
+              "matched_at": "2026-08-22T12:01:00Z",
+              "item": {
+                "id": "news:legacy-page",
+                "platform": "news",
+                "url": "https://example.com/legacy-page",
+                "title": "Aiko legacy page",
+                "content_text": null,
+                "author": null,
+                "thumbnail_url": null,
+                "media_type": "article",
+                "published_at": "2026-08-22T12:00:00Z",
+                "source": "news"
+              }
+            }]
+            """.utf8)
+            return (
+                data,
+                try XCTUnwrap(HTTPURLResponse(
+                    url: try XCTUnwrap(request.url),
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: nil
+                ))
+            )
+        }
+        defer {
+            MockURLProtocol.handler = nil
+            session.invalidateAndCancel()
+        }
+
+        do {
+            _ = try await client.fetchAllBackendFeed(
+                termIDs: [11],
+                pageSize: 1,
+                until: "2026-08-22T13:00:00Z"
+            )
+            XCTFail("Expected a full page without scan continuation metadata to fail")
+        } catch BackendClientError.invalidResponse {
+            // Expected: the caller must not advance its refresh cutoff.
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
+    func testBackendFeedClientRejectsIncreasingMatchCursor() async throws {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [MockURLProtocol.self]
         let session = URLSession(configuration: configuration)
@@ -274,9 +2882,54 @@ final class OshiReaderTests: XCTestCase {
             let index = requestIndex
             requestIndex += 1
             lock.unlock()
-            let headers: [String: String]? = index < 101 ? [
+            let headers = [
+                "X-OshiReader-Next-Published-At": "2026-08-22T\(11 - index):00:00Z",
+                "X-OshiReader-Next-Match-ID": index == 0 ? "42" : "84",
+            ]
+            return (
+                Data("[]".utf8),
+                try XCTUnwrap(HTTPURLResponse(
+                    url: try XCTUnwrap(request.url),
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: headers
+                ))
+            )
+        }
+        defer {
+            MockURLProtocol.handler = nil
+            session.invalidateAndCancel()
+        }
+
+        do {
+            _ = try await client.fetchAllBackendFeed(
+                termIDs: [11],
+                pageSize: 1,
+                until: "2026-08-22T13:00:00Z"
+            )
+            XCTFail("Expected an increasing immutable match cursor to fail")
+        } catch BackendClientError.invalidResponse {
+            // Expected: continuation scans must move to lower match IDs.
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
+    func testBackendFeedClientRejectsLaterFullPageWithoutScanContinuationContract() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let client = BackendClient(session: session)
+        let lock = NSLock()
+        var requestIndex = 0
+        MockURLProtocol.handler = { request in
+            lock.lock()
+            let index = requestIndex
+            requestIndex += 1
+            lock.unlock()
+            let headers = index == 0 ? [
                 "X-OshiReader-Next-Published-At": "2026-08-22T12:00:00Z",
-                "X-OshiReader-Next-Match-ID": String(1_000 - index),
+                "X-OshiReader-Next-Match-ID": "42",
             ] : nil
             let data = Data("""
             [{
@@ -311,6 +2964,70 @@ final class OshiReaderTests: XCTestCase {
             session.invalidateAndCancel()
         }
 
+        do {
+            _ = try await client.fetchAllBackendFeed(
+                termIDs: [11],
+                pageSize: 1,
+                until: "2026-08-22T13:00:00Z"
+            )
+            XCTFail("Expected a later full page without scan continuation metadata to fail")
+        } catch BackendClientError.invalidResponse {
+            // Expected: every full scan page must carry continuation metadata.
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+        XCTAssertEqual(requestIndex, 2)
+    }
+
+    func testBackendFeedClientDrainsMoreThanOneHundredContinuationPages() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let client = BackendClient(session: session)
+        let lock = NSLock()
+        var requestIndex = 0
+        MockURLProtocol.handler = { request in
+            lock.lock()
+            let index = requestIndex
+            requestIndex += 1
+            lock.unlock()
+            let headers: [String: String]? = index < 102 ? [
+                "X-OshiReader-Next-Published-At": "2026-08-22T12:00:00Z",
+                "X-OshiReader-Next-Match-ID": String(1_000 - index),
+            ] : nil
+            let data = index < 102 ? Data("""
+            [{
+              "watch_term_keyword": "Aiko",
+              "matched_at": "2026-08-22T12:01:00Z",
+              "item": {
+                "id": "news:\(index)",
+                "platform": "news",
+                "url": "https://example.com/\(index)",
+                "title": "Aiko \(index)",
+                "content_text": null,
+                "author": null,
+                "thumbnail_url": null,
+                "media_type": "article",
+                "published_at": "2026-08-22T12:00:00Z",
+                "source": "news"
+              }
+            }]
+            """.utf8) : Data("[]".utf8)
+            return (
+                data,
+                try XCTUnwrap(HTTPURLResponse(
+                    url: try XCTUnwrap(request.url),
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: headers
+                ))
+            )
+        }
+        defer {
+            MockURLProtocol.handler = nil
+            session.invalidateAndCancel()
+        }
+
         let items = try await client.fetchAllBackendFeed(
             termIDs: [11],
             pageSize: 1,
@@ -318,7 +3035,7 @@ final class OshiReaderTests: XCTestCase {
         )
 
         XCTAssertEqual(items.count, 102)
-        XCTAssertEqual(requestIndex, 102)
+        XCTAssertEqual(requestIndex, 103)
     }
 
     func testBackendFeedClientSurfacesPaidAccessError() async throws {
@@ -478,7 +3195,7 @@ final class OshiReaderTests: XCTestCase {
         XCTAssertEqual(count, 1)
     }
 
-    func testPlatformRegistryContainsReferenceSourcesWithoutChangingDefaults() {
+    func testPlatformRegistryMatchesPlusSourceCatalogOrderAndDefaults() {
         let ids = Set(PlatformRegistry.all.map(\.id))
         XCTAssertTrue(ids.isSuperset(of: [
             "smartnews", "ameblo", "aera", "hochi", "sponichi", "livedoor",
@@ -491,9 +3208,15 @@ final class OshiReaderTests: XCTestCase {
         XCTAssertEqual(PlatformRegistry.definition(for: "natalie")?.googleNewsSite, "natalie.mu")
         XCTAssertNil(PlatformRegistry.definition(for: "twitter")?.googleNewsSite)
         XCTAssertEqual(PlatformRegistry.definition(for: "custom")?.googleNewsSite, nil)
+        XCTAssertEqual(Array(PlatformRegistry.all.prefix(5).map(\.id)), ["youtube", "niconico", "tver", "twitter", "note"])
+        XCTAssertEqual(PlatformRegistry.defaultSubscribedIDs, PlatformRegistry.all.map(\.id))
         XCTAssertEqual(PlatformRegistry.defaultSubscribedIDs.last, "custom")
-        XCTAssertFalse(PlatformRegistry.defaultSubscribedIDs.contains("twitter"))
-        XCTAssertFalse(PlatformRegistry.defaultSubscribedIDs.contains("soompi"))
+        XCTAssertTrue(PlatformRegistry.defaultSubscribedIDs.contains("twitter"))
+        XCTAssertTrue(PlatformRegistry.defaultSubscribedIDs.contains("soompi"))
+        XCTAssertEqual(PlatformRegistry.mediaPlatformIDs, Set(["youtube", "niconico", "tver"]))
+        XCTAssertEqual(PlatformRegistry.activityDateWindowPlatformIDs, Set(["5ch", "girlschannel"]))
+        XCTAssertEqual(PlatformRegistry.dateCutoffExemptPlatformIDs, Set(["5ch", "girlschannel"]))
+        XCTAssertEqual(PlatformRegistry.definition(for: "x")?.rawPlatformValues, Set(["twitter", "x"]))
     }
 
     func testPlatformRegistryExcludesRemovedTogetterSource() {
@@ -732,6 +3455,210 @@ final class OshiReaderTests: XCTestCase {
         )
     }
 
+    func testFiveChBBsmenuParserNormalizesAndDeduplicatesOnly2chBoards() {
+        let menu = """
+        <a href=\"http://toro.2ch.sc/nogizaka/\">Nogizaka</a>
+        <a href=\"https://TORO.2CH.SC/nogizaka/\">duplicate</a>
+        <a href=\"https://example.com/not-fivech/\">ignore</a>
+        <a href=\"http://menu.2ch.sc/bbsmenu.html\">ignore menu</a>
+        <a href=\"javascript:void(0)\">malformed</a>
+        """
+        XCTAssertEqual(
+            IngestionService.parseFiveChBBsmenu(menu),
+            ["https://toro.2ch.sc/nogizaka/"]
+        )
+    }
+
+    func testFiveChDirectScanDecodesShiftJISAndUsesLatestDatReplyDate() async throws {
+        let capture = RequestCapture()
+        let subject = try XCTUnwrap(
+            "1787000000.dat<>Oshi &amp; stage update (42)\n".data(using: .shiftJIS)
+        )
+        let unrelatedSubject = try XCTUnwrap(
+            "1787000001.dat<>Unrelated topic (3)\n".data(using: .shiftJIS)
+        )
+        let dat = try XCTUnwrap(
+            "name<>mail<>2026/08/25(火) 12:34:56.00 ID:test<>body<>title\n".data(using: .shiftJIS)
+        )
+        let fixedNow = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-25T12:00:00Z"))
+        let service = IngestionService(
+            requestExecutor: { request in
+                let url = try XCTUnwrap(request.url)
+                await capture.record(url.absoluteString)
+                let data: Data
+                if url.path.hasSuffix("/subject.txt") {
+                    data = url.host == "toro.2ch.sc" && url.path.contains("/nogizaka/")
+                        ? subject
+                        : unrelatedSubject
+                } else if url.path.hasSuffix("/dat/1787000000.dat") {
+                    data = dat
+                } else {
+                    throw URLError(.badServerResponse)
+                }
+                return (data, try XCTUnwrap(HTTPURLResponse(
+                    url: url, statusCode: 200, httpVersion: nil, headerFields: nil
+                )))
+            },
+            retrySleeper: { _ in },
+            now: { fixedNow }
+        )
+
+        let first = await service.ingestReport(
+            term: WatchTerm(keyword: "Oshi"),
+            platforms: ["5ch"]
+        )
+        let second = await service.ingestReport(
+            term: WatchTerm(keyword: "Oshi"),
+            platforms: ["5ch"]
+        )
+
+        XCTAssertEqual(first.items.count, 1)
+        XCTAssertEqual(first.items.first?.id, "2ch.sc:toro.2ch.sc:nogizaka:1787000000")
+        XCTAssertEqual(first.items.first?.title, "Oshi & stage update")
+        XCTAssertEqual(first.items.first?.url, "https://toro.2ch.sc/test/read.cgi/nogizaka/1787000000/")
+        XCTAssertEqual(first.items.first?.published_at, "2026-08-25T03:34:56Z")
+        XCTAssertEqual(first.items.first?.source, IngestionService.fiveChVerifiedActivitySource)
+        XCTAssertEqual(first.sourceStatuses.first?.outcome, .received)
+        XCTAssertEqual(second.items.map(\.id), first.items.map(\.id))
+        let subjectRequestCount = await capture.count(containing: "/subject.txt")
+        let datRequestCount = await capture.count(containing: "/dat/1787000000.dat")
+        XCTAssertEqual(subjectRequestCount, 44)
+        XCTAssertEqual(datRequestCount, 2)
+    }
+
+    func testFiveChDirectScanCapsResultsAndSubjectConcurrency() async throws {
+        let subjectText = (0..<30).map { index in
+            "178700\(String(format: "%04d", index)).dat<>Cap Oshi thread \(index) (\(index + 1))"
+        }.joined(separator: "\n")
+        let subject = try XCTUnwrap(subjectText.data(using: .shiftJIS))
+        let unrelated = try XCTUnwrap("1787999999.dat<>Other topic (1)\n".data(using: .shiftJIS))
+        let dat = try XCTUnwrap(
+            "name<>mail<>2026/08/25(火) 10:00:00.00 ID:test<>body<>title\n".data(using: .shiftJIS)
+        )
+        let concurrency = ConcurrentRequestCapture()
+        let fixedNow = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-25T12:00:00Z"))
+        let service = IngestionService(
+            requestExecutor: { request in
+                let url = try XCTUnwrap(request.url)
+                await concurrency.begin()
+                try? await Task.sleep(nanoseconds: 1_000_000)
+                await concurrency.end()
+                let data: Data
+                if url.path.hasSuffix("/subject.txt") {
+                    data = url.host == "toro.2ch.sc" && url.path.contains("/nogizaka/") ? subject : unrelated
+                } else if url.path.contains("/dat/") {
+                    data = dat
+                } else {
+                    throw URLError(.badServerResponse)
+                }
+                return (data, try XCTUnwrap(HTTPURLResponse(
+                    url: url, statusCode: 200, httpVersion: nil, headerFields: nil
+                )))
+            },
+            retrySleeper: { _ in },
+            now: { fixedNow }
+        )
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "Cap Oshi"),
+            platforms: ["5ch"]
+        )
+
+        XCTAssertEqual(report.items.count, 25)
+        XCTAssertEqual(Set(report.items.map(\.id)).count, 25)
+        let maximumActive = await concurrency.maximumActive
+        XCTAssertLessThanOrEqual(maximumActive, 4)
+    }
+
+    func testFiveChForegroundFallsBackToGoogleNewsWhenDirectScanIsEmpty() async throws {
+        let capture = RequestCapture()
+        let unrelated = try XCTUnwrap("1787000001.dat<>Unrelated topic (3)\n".data(using: .shiftJIS))
+        let rss = Data("""
+        <rss version="2.0"><channel><item>
+        <title>Fallback Oshi thread - 5ch</title>
+        <link>https://news.google.com/rss/articles/fivech-fallback</link>
+        <pubDate>Tue, 25 Aug 2026 08:00:00 GMT</pubDate>
+        </item></channel></rss>
+        """.utf8)
+        let service = IngestionService(
+            requestExecutor: { request in
+                let url = try XCTUnwrap(request.url)
+                await capture.record(url.absoluteString)
+                let data = url.host == "news.google.com" ? rss : unrelated
+                return (data, try XCTUnwrap(HTTPURLResponse(
+                    url: url, statusCode: 200, httpVersion: nil, headerFields: nil
+                )))
+            },
+            retrySleeper: { _ in }
+        )
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "Fallback Oshi"),
+            platforms: ["5ch"]
+        )
+
+        let directRequestCount = await capture.count(containing: "2ch.sc/")
+        let googleNewsRequestCount = await capture.count(containing: "news.google.com/")
+        XCTAssertGreaterThan(directRequestCount, 0)
+        XCTAssertGreaterThan(googleNewsRequestCount, 0)
+        XCTAssertEqual(report.items.first?.source, IngestionService.unverifiedDateGoogleNewsSource)
+    }
+
+    func testFiveChBackgroundScopeSkipsDirectBoardRequests() async throws {
+        let capture = RequestCapture()
+        let rss = Data("""
+        <rss version="2.0"><channel><item>
+        <title>Background Oshi thread - 5ch</title>
+        <link>https://news.google.com/rss/articles/fivech-background</link>
+        <pubDate>Tue, 25 Aug 2026 08:00:00 GMT</pubDate>
+        </item></channel></rss>
+        """.utf8)
+        let service = IngestionService(
+            requestExecutor: { request in
+                let url = try XCTUnwrap(request.url)
+                await capture.record(url.absoluteString)
+                return (rss, try XCTUnwrap(HTTPURLResponse(
+                    url: url, statusCode: 200, httpVersion: nil, headerFields: nil
+                )))
+            },
+            retrySleeper: { _ in }
+        )
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "Background Oshi"),
+            platforms: ["5ch"],
+            fetchScope: .background
+        )
+
+        let directRequestCount = await capture.count(containing: "2ch.sc/")
+        let googleNewsRequestCount = await capture.count(containing: "news.google.com/")
+        XCTAssertEqual(directRequestCount, 0)
+        XCTAssertGreaterThan(googleNewsRequestCount, 0)
+        XCTAssertEqual(report.items.first?.platform, "5ch")
+    }
+
+    func testFiveChExpiredDeadlineDoesNotStartDirectOrFallbackRequests() async throws {
+        let capture = RequestCapture()
+        let service = IngestionService(
+            requestExecutor: { request in
+                await capture.record(request.url?.absoluteString ?? "")
+                throw URLError(.timedOut)
+            },
+            retrySleeper: { _ in }
+        )
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "Deadline Oshi"),
+            platforms: ["5ch"],
+            requestDeadline: Date().addingTimeInterval(-1)
+        )
+
+        let requestCount = await capture.count()
+        XCTAssertEqual(requestCount, 0)
+        XCTAssertTrue(report.items.isEmpty)
+        XCTAssertEqual(report.sourceStatuses.first?.outcome, .failed(.timeout))
+    }
+
     func testNatalieDedicatedRSSProducesNatalieItemsAcrossBothFeeds() async {
         let rss = """
         <rss version="2.0"><channel><item>
@@ -857,7 +3784,7 @@ final class OshiReaderTests: XCTestCase {
         """.utf8)
         let service = IngestionService(
             requestExecutor: { request in
-                let data = request.url?.host == "barks.jp" ? newerRSS : olderRSS
+                let data = request.url?.absoluteString == "https://barks.jp/feed/" ? newerRSS : olderRSS
                 return (data, try XCTUnwrap(HTTPURLResponse(
                     url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
                 )))
@@ -876,7 +3803,7 @@ final class OshiReaderTests: XCTestCase {
         ])
     }
 
-    func testYouTubeSearchRequestsUploadDateOrderingAndDropsOldResults() async throws {
+    func testYouTubeInnertubeMatchesPlusRequestAndDropsOldResults() async throws {
         let response = Data("""
         {
           "contents": {
@@ -907,7 +3834,7 @@ final class OshiReaderTests: XCTestCase {
                 await capture.record(request.url?.absoluteString ?? "")
                 let body = try XCTUnwrap(request.httpBody)
                 let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
-                XCTAssertEqual(payload["params"] as? String, "CAI%3D")
+                XCTAssertNil(payload["params"])
                 return (response, try XCTUnwrap(HTTPURLResponse(
                     url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
                 )))
@@ -1082,7 +4009,7 @@ final class OshiReaderTests: XCTestCase {
         XCTAssertEqual(requestCount, 1)
     }
 
-    func testYouTubeScrapeRequestsUploadDateOrderingAndSkipsUndatedEscapedFallbackIDs() async throws {
+    func testYouTubeScrapeMatchesPlusRequestAndSkipsUndatedEscapedFallbackIDs() async throws {
         let capture = RequestCapture()
         let service = IngestionService(
             requestExecutor: { request in
@@ -1103,7 +4030,12 @@ final class OshiReaderTests: XCTestCase {
 
         let urls = await capture.urls
         XCTAssertTrue(urls.contains("https://www.youtube.com/youtubei/v1/search?prettyPrint=false"))
-        XCTAssertTrue(urls.contains { $0.hasPrefix("https://www.youtube.com/results?") && $0.contains("sp=CAI%253D") })
+        XCTAssertTrue(urls.contains { url in
+            guard let components = URLComponents(string: url) else { return false }
+            return components.path == "/results"
+                && components.queryItems?.first(where: { $0.name == "search_query" })?.value == "Fallback Oshi"
+                && components.queryItems?.contains(where: { $0.name == "sp" }) == false
+        })
         XCTAssertTrue(report.items.isEmpty)
     }
 
@@ -1230,7 +4162,7 @@ final class OshiReaderTests: XCTestCase {
         XCTAssertTrue(urls.contains { $0.contains("news.google.com") && $0.contains("site:natalie.mu") })
         XCTAssertEqual(report.sourceStatuses.first?.outcome, .received)
         XCTAssertEqual(report.items.first?.platform, "natalie")
-        XCTAssertEqual(report.items.first?.source, "google_news")
+        XCTAssertEqual(report.items.first?.source, IngestionService.unverifiedDateGoogleNewsSource)
     }
 
     func testDedicatedRSSFallsBackWhenOnePublisherFeedIsBlockedAndOthersAreEmpty() async {
@@ -1274,7 +4206,7 @@ final class OshiReaderTests: XCTestCase {
         XCTAssertTrue(urls.contains { $0.contains("natalie.mu/tv/feed/news") })
         XCTAssertTrue(urls.contains { $0.contains("news.google.com") && $0.contains("site:natalie.mu") })
         XCTAssertEqual(report.sourceStatuses.first?.outcome, .received)
-        XCTAssertEqual(report.items.first?.source, "google_news")
+        XCTAssertEqual(report.items.first?.source, IngestionService.unverifiedDateGoogleNewsSource)
     }
 
     func testKpopOfficialDedicatedRSSProducesKpopOfficialItems() async {
@@ -1307,6 +4239,161 @@ final class OshiReaderTests: XCTestCase {
         XCTAssertEqual(report.sourceStatuses.first?.outcome, .received)
         XCTAssertEqual(report.items.first?.platform, "kpopofficial")
         XCTAssertEqual(report.items.first?.source, "dedicated_rss")
+    }
+
+    func testKpopOfficialStaleRSSUsesFreshSiteFallback() async throws {
+        let staleRSS = Data("""
+        <rss version="2.0"><channel><item>
+        <title>BLACKPINK comeback archive</title>
+        <link>https://kpopofficial.com/blackpink-archive</link>
+        <description>BLACKPINK archived schedule</description>
+        <pubDate>Wed, 01 Jul 2026 08:00:00 GMT</pubDate>
+        </item></channel></rss>
+        """.utf8)
+        let freshGoogleNewsRSS = Data("""
+        <rss version="2.0"><channel><item>
+        <title>BLACKPINK comeback update - KPOP OFFICIAL</title>
+        <link>https://kpopofficial.com/blackpink-current</link>
+        <description>BLACKPINK current schedule</description>
+        <pubDate>Sat, 22 Aug 2026 08:00:00 GMT</pubDate>
+        </item></channel></rss>
+        """.utf8)
+        let capture = RequestCapture()
+        let now = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-23T08:00:00Z"))
+        let service = IngestionService(
+            requestExecutor: { request in
+                let url = request.url?.absoluteString ?? ""
+                await capture.record(url)
+                let body = url.contains("news.google.com") ? freshGoogleNewsRSS : staleRSS
+                return (body, try XCTUnwrap(HTTPURLResponse(
+                    url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                )))
+            },
+            retrySleeper: { _ in },
+            classifyFreshness: true,
+            now: { now }
+        )
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "BLACKPINK"),
+            platforms: ["kpopofficial"]
+        )
+
+        let urls = await capture.urls
+        XCTAssertTrue(urls.contains("https://kpopofficial.com/feed/"))
+        XCTAssertTrue(urls.contains { $0.contains("news.google.com") && $0.contains("site:kpopofficial.com") })
+        XCTAssertEqual(report.sourceStatuses.first?.outcome, .received)
+        XCTAssertEqual(report.items.first?.published_at, "2026-08-22T08:00:00Z")
+        XCTAssertEqual(
+            Set(report.items.compactMap(\.source)),
+            ["dedicated_rss", IngestionService.unverifiedDateGoogleNewsSource]
+        )
+    }
+
+    func testNiconicoSnapshotUsesPlusQueryAndTreatsValidEmptyAsAuthoritative() async throws {
+        let capture = RequestCapture()
+        let service = IngestionService(
+            requestExecutor: { request in
+                await capture.record(request.url?.absoluteString ?? "")
+                return (
+                    Data(#"{"data":[]}"#.utf8),
+                    try XCTUnwrap(HTTPURLResponse(
+                        url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                    ))
+                )
+            },
+            retrySleeper: { _ in }
+        )
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "Nico Oshi"),
+            platforms: ["niconico"]
+        )
+
+        let urls = await capture.urls
+        XCTAssertEqual(urls.count, 1)
+        let components = try XCTUnwrap(URLComponents(string: urls[0]))
+        XCTAssertEqual(components.queryItems?.first { $0.name == "targets" }?.value, "title")
+        XCTAssertEqual(components.queryItems?.first { $0.name == "_context" }?.value, "OshiReader")
+        XCTAssertTrue(report.items.isEmpty)
+        XCTAssertEqual(report.sourceStatuses.first?.outcome, .noResults)
+    }
+
+    func testNiconicoUnavailableSnapshotUsesPlusSearchAndTagRSSFallbacks() async throws {
+        let rss = Data("""
+        <rss version="2.0"><channel><item>
+        <title>Nico Oshi latest video</title>
+        <link>https://www.nicovideo.jp/watch/sm123456</link>
+        <pubDate>Sat, 22 Aug 2026 08:00:00 GMT</pubDate>
+        </item></channel></rss>
+        """.utf8)
+        let capture = RequestCapture()
+        let service = IngestionService(
+            requestExecutor: { request in
+                let url = request.url?.absoluteString ?? ""
+                await capture.record(url)
+                let body = url.contains("snapshot.search.nicovideo.jp") ? Data("malformed".utf8) : rss
+                return (
+                    body,
+                    try XCTUnwrap(HTTPURLResponse(
+                        url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                    ))
+                )
+            },
+            retrySleeper: { _ in }
+        )
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "Nico Oshi"),
+            platforms: ["niconico"]
+        )
+
+        let urls = await capture.urls
+        XCTAssertTrue(urls.contains { $0.contains("nicovideo.jp/search/") && $0.contains("rss=2.0") })
+        XCTAssertTrue(urls.contains { $0.contains("nicovideo.jp/tag/") && $0.contains("rss=2.0") })
+        XCTAssertFalse(urls.contains { $0.contains("news.google.com") })
+        XCTAssertEqual(report.items.map(\.id), ["niconico:sm123456"])
+        XCTAssertEqual(report.items.first?.source, "niconico_rss")
+    }
+
+    func testNiconicoUnusableSnapshotRowsFallBackAndEncodePathSeparators() async throws {
+        let rss = Data("""
+        <rss version="2.0"><channel><item>
+        <title>A/B latest video</title>
+        <link>https://www.nicovideo.jp/watch/sm654321</link>
+        <pubDate>Sat, 22 Aug 2026 08:00:00 GMT</pubDate>
+        </item></channel></rss>
+        """.utf8)
+        let capture = RequestCapture()
+        let service = IngestionService(
+            requestExecutor: { request in
+                let url = request.url?.absoluteString ?? ""
+                await capture.record(url)
+                let body = url.contains("snapshot.search.nicovideo.jp")
+                    ? Data(#"{"data":[{"title":"A/B unusable row"}]}"#.utf8)
+                    : rss
+                return (
+                    body,
+                    try XCTUnwrap(HTTPURLResponse(
+                        url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                    ))
+                )
+            },
+            retrySleeper: { _ in }
+        )
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "A/B"),
+            platforms: ["niconico"]
+        )
+
+        let urls = await capture.urls
+        let rssURLs = urls.filter { $0.contains("www.nicovideo.jp/search/") || $0.contains("www.nicovideo.jp/tag/") }
+        XCTAssertEqual(rssURLs.count, 2)
+        XCTAssertTrue(rssURLs.allSatisfy { $0.contains("A%2FB") })
+        XCTAssertFalse(urls.contains { $0.contains("news.google.com") })
+        XCTAssertEqual(report.items.map(\.id), ["niconico:sm654321"])
+        XCTAssertEqual(report.items.first?.source, "niconico_rss")
     }
 
     func testAtomUpdatedDateWinsOverPublishedDateForDedicatedRSS() async {
@@ -1427,9 +4514,10 @@ final class OshiReaderTests: XCTestCase {
         )
 
         let urls = await capture.urls
-        XCTAssertEqual(urls.count, 6)
+        XCTAssertEqual(urls.count, 8)
         XCTAssertTrue(urls.contains("https://dot.asahi.com/list/feed/rss4provider-all"))
         XCTAssertTrue(urls.contains("https://hochi.news/rss/index.xml"))
+        XCTAssertEqual(urls.filter { $0.hasPrefix("https://realsound.jp/?s=") }.count, 2)
         XCTAssertTrue(urls.contains("https://realsound.jp/atom.xml"))
         XCTAssertFalse(urls.contains { $0.contains("news.google.com") })
         XCTAssertEqual(Set(report.sourceStatuses.map(\.id)), Set(["aera", "hochi", "realsound"]))
@@ -1438,6 +4526,78 @@ final class OshiReaderTests: XCTestCase {
         XCTAssertEqual(report.items.filter { $0.platform == "hochi" }.count, 1)
         XCTAssertEqual(report.items.filter { $0.platform == "realsound" }.count, 1)
         XCTAssertTrue(report.items.allSatisfy { $0.watch_term_keyword == "Primary Oshi" })
+    }
+
+    func testRealSoundCorrectsJapanWallClockTimestampMarkedAsUTC() async throws {
+        let atom = Data("""
+        <feed xmlns="http://www.w3.org/2005/Atom"><entry>
+          <title>Timestamp Oshi Real Sound update</title>
+          <link rel="alternate" href="https://realsound.jp/2026/08/post-timestamp.html"/>
+          <published>2026-08-24T13:16:20Z</published>
+        </entry></feed>
+        """.utf8)
+        let now = try XCTUnwrap(parseISO8601Date("2026-08-24T04:20:00Z"))
+        let service = IngestionService(
+            requestExecutor: { request in
+                (atom, try XCTUnwrap(HTTPURLResponse(
+                    url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                )))
+            },
+            retrySleeper: { _ in },
+            classifyFreshness: true,
+            now: { now }
+        )
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "Timestamp Oshi"),
+            platforms: ["realsound"]
+        )
+
+        XCTAssertEqual(report.items.first?.published_at, "2026-08-24T04:16:20Z")
+        XCTAssertEqual(report.sourceStatuses.first?.outcome, .received)
+    }
+
+    func testRealSoundDirectSearchMatchesExcerptAndSkipsRSSFallback() async throws {
+        let html = Data(#"""
+        <html><body>
+          <article class="entry-summary">
+            <h3 class="entry-title"><a href="/2026/08/direct-match.html">Weekly music update</a></h3>
+            <div class="entry-excerpt">Direct Oshi appears in the interview excerpt.</div>
+            <time datetime="2026-08-23T12:30:00+09:00"></time>
+            <span class="entry-author">Real Sound Music</span>
+            <img src="/images/direct-match.jpg">
+          </article>
+        </body></html>
+        """#.utf8)
+        let capture = RequestCapture()
+        let referenceDate = try XCTUnwrap(parseISO8601Date("2026-08-24T04:00:00Z"))
+        let service = IngestionService(
+            requestExecutor: { request in
+                await capture.record(request.url?.absoluteString ?? "")
+                return (html, try XCTUnwrap(HTTPURLResponse(
+                    url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                )))
+            },
+            retrySleeper: { _ in },
+            classifyFreshness: true,
+            now: { referenceDate }
+        )
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "Direct Oshi"),
+            platforms: ["realsound"]
+        )
+
+        let urls = await capture.urls
+        XCTAssertEqual(urls.count, 1)
+        XCTAssertTrue(urls[0].hasPrefix("https://realsound.jp/?s="))
+        XCTAssertFalse(urls.contains("https://realsound.jp/atom.xml"))
+        XCTAssertEqual(report.items.map(\.url), ["https://realsound.jp/2026/08/direct-match.html"])
+        XCTAssertEqual(report.items.first?.content_text, "Direct Oshi appears in the interview excerpt.")
+        XCTAssertEqual(report.items.first?.author, "Real Sound Music")
+        XCTAssertEqual(report.items.first?.thumbnail_url, "https://realsound.jp/images/direct-match.jpg")
+        XCTAssertEqual(report.items.first?.published_at, "2026-08-23T03:30:00Z")
+        XCTAssertEqual(report.items.first?.source, "realsound_search")
     }
 
     func testSponichiRemainsOnGenericGoogleNewsFallback() async {
@@ -1482,6 +4642,180 @@ final class OshiReaderTests: XCTestCase {
         XCTAssertEqual(Set(report.items.map(\.title)), Set(["Suffix Oshi appears"]))
     }
 
+    func testGoogleNewsStartsArePacedAcrossSourcesAliasesAndTerms() async throws {
+        let rss = Data("""
+        <rss version="2.0"><channel><item>
+        <title>Primary Pace Alias Pace Second Pace update</title>
+        <link>https://example.com/paced-google-news</link>
+        <pubDate>Sun, 23 Aug 2026 08:00:00 GMT</pubDate>
+        </item></channel></rss>
+        """.utf8)
+        let capture = RequestStartCapture()
+        let service = IngestionService(requestExecutor: { request in
+            await capture.begin(request.url?.absoluteString ?? "")
+            try? await Task.sleep(nanoseconds: 20_000_000)
+            await capture.end()
+            return (
+                rss,
+                try XCTUnwrap(HTTPURLResponse(
+                    url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                ))
+            )
+        })
+
+        async let aliasedReport = service.ingestReport(
+            term: WatchTerm(keyword: "Primary Pace", aliases: ["Alias Pace"]),
+            platforms: ["sponichi"]
+        )
+        async let secondTermReport = service.ingestReport(
+            term: WatchTerm(keyword: "Second Pace"),
+            platforms: ["livedoor"]
+        )
+        _ = await (aliasedReport, secondTermReport)
+
+        let starts = await capture.snapshot().filter { $0.url.contains("news.google.com") }
+            .sorted { $0.uptimeNanoseconds < $1.uptimeNanoseconds }
+        XCTAssertEqual(starts.count, 3)
+        for pair in zip(starts, starts.dropFirst()) {
+            XCTAssertGreaterThanOrEqual(
+                pair.1.uptimeNanoseconds - pair.0.uptimeNanoseconds,
+                175_000_000
+            )
+        }
+        let maximumActive = await capture.maximumActive
+        XCTAssertLessThanOrEqual(maximumActive, 3)
+    }
+
+    func testHistoricalGoogleSharesPacerWhileBingRunsWithoutDelay() async throws {
+        let emptyRSS = Data("<rss version=\"2.0\"><channel></channel></rss>".utf8)
+        let bingRSS = Data("""
+        <rss version="2.0"><channel><item>
+        <title>Parallel Pace interview | Bing</title>
+        <link>https://example.com/parallel-pace</link>
+        <pubDate>Sun, 23 Aug 2026 08:00:00 GMT</pubDate>
+        </item></channel></rss>
+        """.utf8)
+        let capture = RequestStartCapture()
+        let service = IngestionService(requestExecutor: { request in
+            let url = request.url?.absoluteString ?? ""
+            await capture.begin(url)
+            await capture.end()
+            return (
+                request.url?.host == "www.bing.com" ? bingRSS : emptyRSS,
+                try XCTUnwrap(HTTPURLResponse(
+                    url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                ))
+            )
+        })
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "Parallel Pace"),
+            platforms: ["oricon"]
+        )
+
+        let starts = await capture.snapshot()
+        let googleStarts = starts.filter { $0.url.contains("news.google.com") }
+            .sorted { $0.uptimeNanoseconds < $1.uptimeNanoseconds }
+        let bingStart = try XCTUnwrap(starts.first { $0.url.contains("www.bing.com/news/search") })
+        XCTAssertEqual(googleStarts.count, 2)
+        XCTAssertGreaterThanOrEqual(
+            googleStarts[1].uptimeNanoseconds - googleStarts[0].uptimeNanoseconds,
+            175_000_000
+        )
+        XCTAssertLessThan(bingStart.uptimeNanoseconds, googleStarts[1].uptimeNanoseconds)
+        XCTAssertEqual(report.items.first?.source, "bing_news")
+    }
+
+    func testCancellationDuringGooglePacingPreventsRequestAndReleasesLimiter() async throws {
+        let rss = Data("""
+        <rss version="2.0"><channel><item>
+        <title>First Pace Second Pace Follow Up Pace update</title>
+        <link>https://example.com/cancelled-pacing</link>
+        <pubDate>Sun, 23 Aug 2026 08:00:00 GMT</pubDate>
+        </item></channel></rss>
+        """.utf8)
+        let requests = RequestStartCapture()
+        let delays = PacingDelayCapture()
+        let service = IngestionService(
+            requestExecutor: { request in
+                await requests.begin(request.url?.absoluteString ?? "")
+                await requests.end()
+                return (
+                    rss,
+                    try XCTUnwrap(HTTPURLResponse(
+                        url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                    ))
+                )
+            },
+            pacingSleeper: { delay in
+                await delays.record(delay)
+                try await Task.sleep(nanoseconds: delay)
+            }
+        )
+
+        _ = await service.ingestReport(
+            term: WatchTerm(keyword: "First Pace"),
+            platforms: ["sponichi"]
+        )
+        let cancelled = Task {
+            await service.ingestReport(
+                term: WatchTerm(keyword: "Second Pace"),
+                platforms: ["livedoor"]
+            )
+        }
+        await delays.waitUntilCount(1)
+        cancelled.cancel()
+        _ = await cancelled.value
+
+        let requestsAfterCancellation = await requests.snapshot()
+        XCTAssertEqual(requestsAfterCancellation.count, 1)
+
+        let followUpStartedAt = DispatchTime.now().uptimeNanoseconds
+        _ = await service.ingestReport(
+            term: WatchTerm(keyword: "Follow Up Pace"),
+            platforms: ["sponichi"]
+        )
+        let followUpElapsed = DispatchTime.now().uptimeNanoseconds - followUpStartedAt
+        let finalRequests = await requests.snapshot()
+        XCTAssertEqual(finalRequests.count, 2)
+        XCTAssertLessThan(followUpElapsed, 1_000_000_000)
+    }
+
+    func testDeadlineDuringGooglePacingExpiresWithoutStartingRequest() async throws {
+        let rss = Data("""
+        <rss version="2.0"><channel><item>
+        <title>Deadline First Deadline Second update</title>
+        <link>https://example.com/deadline-pacing</link>
+        <pubDate>Sun, 23 Aug 2026 08:00:00 GMT</pubDate>
+        </item></channel></rss>
+        """.utf8)
+        let requests = RequestStartCapture()
+        let service = IngestionService(requestExecutor: { request in
+            await requests.begin(request.url?.absoluteString ?? "")
+            await requests.end()
+            return (
+                rss,
+                try XCTUnwrap(HTTPURLResponse(
+                    url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                ))
+            )
+        })
+
+        _ = await service.ingestReport(
+            term: WatchTerm(keyword: "Deadline First"),
+            platforms: ["sponichi"]
+        )
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "Deadline Second"),
+            platforms: ["livedoor"],
+            requestDeadline: Date().addingTimeInterval(0.03)
+        )
+
+        let capturedRequests = await requests.snapshot()
+        XCTAssertEqual(capturedRequests.count, 1)
+        XCTAssertEqual(report.sourceStatuses.first?.outcome, .failed(.timeout))
+    }
+
     func testJapaneseDedicatedRSSMediaOnlySkipsAllRequests() async {
         let capture = RequestCapture()
         let service = IngestionService(requestExecutor: { request in
@@ -1513,6 +4847,11 @@ final class OshiReaderTests: XCTestCase {
                     )))
                 }
                 if request.url?.host == "news.google.com" {
+                    return (Data("<rss version=\"2.0\"><channel></channel></rss>".utf8), try XCTUnwrap(HTTPURLResponse(
+                        url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                    )))
+                }
+                if request.url?.host == "www.bing.com" {
                     return (Data("<rss version=\"2.0\"><channel></channel></rss>".utf8), try XCTUnwrap(HTTPURLResponse(
                         url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
                     )))
@@ -1602,6 +4941,61 @@ final class OshiReaderTests: XCTestCase {
         XCTAssertEqual(report.items.first { $0.platform == "billboardjapan" }?.url, billboardURL)
     }
 
+    func testBillboardDedicatedRSSMatchesStructuredArtistAndPreservesAuthor() async {
+        let rss = Data("""
+        <rss version="2.0"><channel><item>
+          <title>Weekly chart update</title>
+          <link>https://www.billboard-japan.com/d_news/detail/artist-match</link>
+          <description>Chart details</description>
+          <artist>Alias Oshi</artist>
+          <pubDate>Sat, 22 Aug 2026 08:00:00 GMT</pubDate>
+        </item></channel></rss>
+        """.utf8)
+        let service = IngestionService(
+            requestExecutor: { request in
+                (rss, try XCTUnwrap(HTTPURLResponse(
+                    url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                )))
+            },
+            retrySleeper: { _ in }
+        )
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "Alias Oshi"),
+            platforms: ["billboardjapan"]
+        )
+
+        XCTAssertEqual(report.items.map(\.id).count, 1)
+        XCTAssertEqual(report.items.first?.author, "Alias Oshi")
+        XCTAssertEqual(report.items.first?.source, "dedicated_rss")
+    }
+
+    func testNoteStripsHTMLFromPreviewText() async {
+        let rss = Data("""
+        <rss version="2.0"><channel><item>
+          <title>Alias Oshi update</title>
+          <link>https://note.com/example/n/html-preview</link>
+          <description><![CDATA[<p>Hello <b>Alias Oshi</b> &amp; friends</p>]]></description>
+          <pubDate>Sat, 22 Aug 2026 08:00:00 GMT</pubDate>
+        </item></channel></rss>
+        """.utf8)
+        let service = IngestionService(
+            requestExecutor: { request in
+                (rss, try XCTUnwrap(HTTPURLResponse(
+                    url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                )))
+            },
+            retrySleeper: { _ in }
+        )
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "Alias Oshi"),
+            platforms: ["note"]
+        )
+
+        XCTAssertEqual(report.items.first?.content_text, "Hello Alias Oshi & friends")
+    }
+
     func testCinemaCafeAndBillboardMediaOnlySkipRequests() async {
         let capture = RequestCapture()
         let service = IngestionService(requestExecutor: { request in
@@ -1635,6 +5029,11 @@ final class OshiReaderTests: XCTestCase {
                         url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
                     )))
                 }
+                if request.url?.host == "www.bing.com" {
+                    return (Data("<rss version=\"2.0\"><channel></channel></rss>".utf8), try XCTUnwrap(HTTPURLResponse(
+                        url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                    )))
+                }
                 return (billboardRSS, try XCTUnwrap(HTTPURLResponse(
                     url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
                 )))
@@ -1652,7 +5051,7 @@ final class OshiReaderTests: XCTestCase {
         XCTAssertEqual(report.items.first?.platform, "billboardjapan")
     }
 
-    func testDeferredJapaneseSourcesRemainOnGoogleNewsFallback() async {
+    func testDeferredJapaneseSourcesUseDirectNewsSearchFallbacks() async {
         let capture = RequestCapture()
         let service = IngestionService(requestExecutor: { request in
             await capture.record(request.url?.absoluteString ?? "")
@@ -1669,8 +5068,10 @@ final class OshiReaderTests: XCTestCase {
         }
 
         let urls = await capture.urls
-        XCTAssertEqual(urls.count, 3)
-        XCTAssertTrue(urls.allSatisfy { $0.contains("news.google.com") })
+        XCTAssertEqual(urls.count, 9)
+        XCTAssertEqual(urls.filter { $0.contains("news.google.com") }.count, 6)
+        XCTAssertEqual(urls.filter { $0.contains("www.bing.com/news/search") }.count, 3)
+        XCTAssertEqual(urls.filter { $0.contains("when:10y") }.count, 3)
     }
 
     func testDedicatedRSSMatchesAliasAndFiltersNonmatchingEntries() async {
@@ -1707,7 +5108,7 @@ final class OshiReaderTests: XCTestCase {
         XCTAssertTrue(report.items.allSatisfy { $0.watch_term_keyword == "Primary Oshi" })
     }
 
-    func testDedicatedRSSRejectsDescriptionOnlyMatches() async {
+    func testDedicatedRSSAcceptsDescriptionOnlyMatchesFromPublisherFeed() async {
         let rss = """
         <rss version="2.0"><channel><item>
         <title>Unrelated headline</title>
@@ -1733,7 +5134,8 @@ final class OshiReaderTests: XCTestCase {
             platforms: ["natalie"]
         )
 
-        XCTAssertTrue(report.items.isEmpty)
+        XCTAssertEqual(report.items.count, 1)
+        XCTAssertEqual(report.items.first?.url, "https://natalie.mu/music/news/summary-only")
     }
 
     func testDedicatedRSSNoResultsAndMediaOnlyAvoidsRequests() async {
@@ -1770,7 +5172,7 @@ final class OshiReaderTests: XCTestCase {
         XCTAssertEqual(afterMediaOnly, beforeMediaOnly)
     }
 
-    func testAmebloRemainsOnGenericGoogleNewsFallback() async {
+    func testAmebloEmptyDirectSearchFallsBackToGoogleNews() async {
         let capture = RequestCapture()
         let service = IngestionService { request in
             await capture.record(request.url?.absoluteString ?? "")
@@ -1791,9 +5193,101 @@ final class OshiReaderTests: XCTestCase {
         )
 
         let usedGoogleNews = await capture.contains { $0.contains("news.google.com") }
-        let usedAmeblo = await capture.contains { $0.contains("ameblo.jp") }
+        let usedAmeblo = await capture.contains { $0.contains("search.ameba.jp/search/") }
         XCTAssertTrue(usedGoogleNews)
         XCTAssertTrue(usedAmeblo)
+    }
+
+    func testAmebloDirectSearchParsesStateAndMatchesEntryContent() async throws {
+        let html = Data(#"""
+        <html><script>
+        window.__STATE__={"blogEntry":{"blogEntryMap":{"entry-key":{
+          "entryId":"12345",
+          "amebaId":"example-blog",
+          "entryTitle":"Daily update",
+          "entryContent":"A/B appears in this post",
+          "blogTitle":"Example Blog",
+          "entryUpdatedDatetime":1787452200000,
+          "firstImageUrl":"https://stat.ameba.jp/image.jpg"
+        }}}};window.afterState=true;
+        </script></html>
+        """#.utf8)
+        let capture = RequestCapture()
+        let service = IngestionService(
+            requestExecutor: { request in
+                await capture.record(request.url?.absoluteString ?? "")
+                return (html, try XCTUnwrap(HTTPURLResponse(
+                    url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                )))
+            },
+            retrySleeper: { _ in }
+        )
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "A/B"),
+            platforms: ["ameblo"]
+        )
+
+        let urls = await capture.urls
+        XCTAssertEqual(urls, ["https://search.ameba.jp/search/A%2FB.html"])
+        XCTAssertEqual(report.items.map(\.id), ["ameblo:12345"])
+        XCTAssertEqual(report.items.first?.url, "https://ameblo.jp/example-blog/entry-12345.html")
+        XCTAssertEqual(report.items.first?.title, "Daily update - A/B appears in this post")
+        XCTAssertEqual(report.items.first?.content_text, "A/B appears in this post")
+        XCTAssertEqual(report.items.first?.author, "Example Blog")
+        XCTAssertEqual(report.items.first?.source, "ameba_search")
+    }
+
+    func testAmebloStaleDirectSearchUsesFreshFallback() async throws {
+        let staleHTML = Data(#"""
+        <html><script>
+        window.__STATE__={"blogEntry":{"blogEntryMap":{"stale-entry":{
+          "entryId":"stale-1",
+          "amebaId":"stale-blog",
+          "entryTitle":"Fallback Oshi archive",
+          "entryUpdatedDatetime":"2026-06-01T08:00:00Z"
+        },"future-entry":{
+          "entryId":"future-1",
+          "amebaId":"future-blog",
+          "entryTitle":"Fallback Oshi future timestamp",
+          "entryUpdatedDatetime":"2026-08-27T08:00:00Z"
+        }}}};
+        </script></html>
+        """#.utf8)
+        let freshRSS = Data("""
+        <rss version="2.0"><channel><item>
+        <title>Fallback Oshi current article - Google</title>
+        <link>https://ameblo.jp/current-blog/entry-current.html</link>
+        <pubDate>Mon, 24 Aug 2026 08:00:00 GMT</pubDate>
+        </item></channel></rss>
+        """.utf8)
+        let capture = RequestCapture()
+        let referenceDate = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-25T08:00:00Z"))
+        let service = IngestionService(
+            requestExecutor: { request in
+                let url = request.url?.absoluteString ?? ""
+                await capture.record(url)
+                let body = url.contains("search.ameba.jp") ? staleHTML : freshRSS
+                return (body, try XCTUnwrap(HTTPURLResponse(
+                    url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                )))
+            },
+            retrySleeper: { _ in },
+            classifyFreshness: true,
+            now: { referenceDate }
+        )
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "Fallback Oshi"),
+            platforms: ["ameblo"]
+        )
+
+        let urls = await capture.urls
+        XCTAssertTrue(urls.contains { $0.contains("search.ameba.jp") })
+        XCTAssertTrue(urls.contains { $0.contains("news.google.com") })
+        XCTAssertEqual(report.items.map(\.url), ["https://ameblo.jp/current-blog/entry-current.html"])
+        XCTAssertEqual(report.items.first?.source, IngestionService.unverifiedDateGoogleNewsSource)
+        XCTAssertEqual(report.sourceStatuses.first?.outcome, .received)
     }
 
     func testAmebloBlogNormalizesURLAndBuildsOfficialRSSURL() {
@@ -2019,6 +5513,39 @@ final class OshiReaderTests: XCTestCase {
         XCTAssertTrue(report.items.isEmpty)
     }
 
+    func testNewsRejectsResultsOlderThanFreshnessWindow() async throws {
+        let oldRSS = Data("""
+        <rss version="2.0"><channel><item>
+        <title>Status Oshi article from 2025</title>
+        <link>https://example.com/status-oshi-2025</link>
+        <description>Status Oshi archive</description>
+        <pubDate>Wed, 01 Jan 2025 08:00:00 GMT</pubDate>
+        </item></channel></rss>
+        """.utf8)
+        let referenceDate = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-23T08:00:00Z"))
+        let service = IngestionService(
+            requestExecutor: { request in
+                (
+                    oldRSS,
+                    try XCTUnwrap(HTTPURLResponse(
+                        url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                    ))
+                )
+            },
+            retrySleeper: { _ in },
+            classifyFreshness: true,
+            now: { referenceDate }
+        )
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "Status Oshi"),
+            platforms: ["news"]
+        )
+
+        XCTAssertTrue(report.items.isEmpty)
+        XCTAssertEqual(report.sourceStatuses.first?.outcome, .noResults)
+    }
+
     func testRecentLookupFallsBackToHistoricalWithoutDroppingOlderItems() async throws {
         let emptyRSS = Data("<rss version=\"2.0\"><channel></channel></rss>".utf8)
         let historicalRSS = Data("""
@@ -2035,7 +5562,7 @@ final class OshiReaderTests: XCTestCase {
                 let url = request.url?.absoluteString ?? ""
                 await capture.record(url)
                 return (
-                    url.contains("when:10d") ? emptyRSS : historicalRSS,
+                    url.contains("when:10y") ? historicalRSS : emptyRSS,
                     try XCTUnwrap(HTTPURLResponse(
                         url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
                     ))
@@ -2056,7 +5583,7 @@ final class OshiReaderTests: XCTestCase {
         XCTAssertEqual(report.sourceStatuses.first?.outcome, .stale)
         let urls = await capture.urls
         XCTAssertEqual(urls.filter { $0.contains("news.google.com") }.count, 2)
-        XCTAssertTrue(urls.contains { $0.contains("when:10d") })
+        XCTAssertTrue(urls.contains { $0.contains("when:10y") })
     }
 
     func testFailedRecentLookupDoesNotMisreportHistoricalItemsAsStale() async throws {
@@ -2070,11 +5597,11 @@ final class OshiReaderTests: XCTestCase {
         let referenceDate = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-12T09:00:00Z"))
         let service = IngestionService(
             requestExecutor: { request in
-                let isRecent = request.url?.absoluteString.contains("when:10d") == true
+                let isInitial = request.url?.absoluteString.contains("when:") == false
                 return (
-                    isRecent ? Data() : historicalRSS,
+                    isInitial ? Data() : historicalRSS,
                     try XCTUnwrap(HTTPURLResponse(
-                        url: request.url!, statusCode: isRecent ? 500 : 200, httpVersion: nil, headerFields: nil
+                        url: request.url!, statusCode: isInitial ? 500 : 200, httpVersion: nil, headerFields: nil
                     ))
                 )
             },
@@ -2088,7 +5615,7 @@ final class OshiReaderTests: XCTestCase {
             platforms: ["oricon"]
         )
 
-        XCTAssertEqual(report.items.count, 1)
+        XCTAssertTrue(report.items.isEmpty)
         XCTAssertEqual(report.sourceStatuses.first?.outcome, .failed(.httpFailure))
     }
 
@@ -2195,7 +5722,7 @@ final class OshiReaderTests: XCTestCase {
         XCTAssertFalse(urls.contains { $0.contains("news.google.com") })
     }
 
-    func testRecentLookupMergesHistoricalItemsWhenCurrentItemsExist() async throws {
+    func testCurrentLookupSkipsHistoricalWideningWhenRelevantItemsExist() async throws {
         let recentRSS = Data("""
         <rss version="2.0"><channel><item>
         <title>Status Oshi current article - ModelPress</title>
@@ -2223,7 +5750,7 @@ final class OshiReaderTests: XCTestCase {
             requestExecutor: { request in
                 await capture.record(request.url?.absoluteString ?? "")
                 return (
-                    request.url?.absoluteString.contains("when:10d") == true ? recentRSS : historicalRSS,
+                    request.url?.absoluteString.contains("when:10y") == true ? historicalRSS : recentRSS,
                     try XCTUnwrap(HTTPURLResponse(
                         url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
                     ))
@@ -2239,15 +5766,11 @@ final class OshiReaderTests: XCTestCase {
             platforms: ["oricon"]
         )
 
-        XCTAssertEqual(report.items.count, 2)
-        XCTAssertEqual(Set(report.items.map(\.url)), [
-            "https://mdpr.jp/news/current-status-oshi",
-            "https://mdpr.jp/news/older-status-oshi",
-        ])
+        XCTAssertEqual(report.items.map(\.url), ["https://mdpr.jp/news/current-status-oshi"])
         XCTAssertEqual(report.sourceStatuses.first?.outcome, .received)
         let urls = await capture.urls
-        XCTAssertEqual(urls.filter { $0.contains("news.google.com") }.count, 2)
-        XCTAssertTrue(urls.contains { $0.contains("when:10d") })
+        XCTAssertEqual(urls.filter { $0.contains("news.google.com") }.count, 1)
+        XCTAssertFalse(urls.contains { $0.contains("when:10y") })
     }
 
     func testRecentLookupSkipsHistoricalRequestWhenRecentResultsFillLimit() async throws {
@@ -2286,7 +5809,7 @@ final class OshiReaderTests: XCTestCase {
         XCTAssertEqual(report.items.count, 20)
         let urls = await capture.urls
         XCTAssertEqual(urls.filter { $0.contains("news.google.com") }.count, 1)
-        XCTAssertTrue(urls.first?.contains("when:10d") == true)
+        XCTAssertTrue(urls.first?.contains("when:") == false)
     }
 
     func testGoogleNewsQueryEscapesKeywordParameterDelimiters() async throws {
@@ -2312,7 +5835,7 @@ final class OshiReaderTests: XCTestCase {
         )
 
         let urls = await capture.urls
-        XCTAssertEqual(urls.count, 2)
+        XCTAssertEqual(urls.count, 3)
         for rawURL in urls {
             let components = try XCTUnwrap(URLComponents(string: rawURL))
             XCTAssertEqual(
@@ -2322,6 +5845,79 @@ final class OshiReaderTests: XCTestCase {
             XCTAssertFalse(rawURL.contains("?q=&TEAM"))
             XCTAssertTrue(rawURL.contains("%26TEAM"))
         }
+        XCTAssertEqual(urls.filter { $0.contains("news.google.com") }.count, 2)
+        XCTAssertEqual(urls.filter { $0.contains("www.bing.com/news/search") }.count, 1)
+    }
+
+    func testGoogleNewsFallsBackToDirectBingRSSAndUnwrapsPublisherURL() async throws {
+        let emptyRSS = Data("<rss version=\"2.0\"><channel></channel></rss>".utf8)
+        let bingRSS = Data(#"""
+        <rss version="2.0"><channel>
+        <item>
+        <title>Status Oshi interview - ORICON NEWS | Bing</title>
+        <link>https://www.bing.com/news/apiclick.aspx?ref=example&amp;url=https%3A%2F%2Foricon.co.jp%2Fnews%2F123%3Futm_source%3Dbing</link>
+        <description>Status Oshi talks about the new release.</description>
+        <pubDate>Sun, 23 Aug 2026 08:00:00 GMT</pubDate>
+        </item>
+        <item>
+        <title>Status Oshi archive - ORICON NEWS</title>
+        <link>https://oricon.co.jp/news/archive</link>
+        <pubDate>Wed, 01 Jul 2026 08:00:00 GMT</pubDate>
+        </item>
+        <item>
+        <title>Unrelated current story - ORICON NEWS</title>
+        <link>https://oricon.co.jp/news/unrelated</link>
+        <pubDate>Sun, 23 Aug 2026 09:00:00 GMT</pubDate>
+        </item>
+        </channel></rss>
+        """#.utf8)
+        let capture = RequestCapture()
+        let referenceDate = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-24T08:00:00Z"))
+        let service = IngestionService(
+            requestExecutor: { request in
+                let url = request.url?.absoluteString ?? ""
+                await capture.record(url)
+                let body = request.url?.host == "www.bing.com" ? bingRSS : emptyRSS
+                return (
+                    body,
+                    try XCTUnwrap(HTTPURLResponse(
+                        url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                    ))
+                )
+            },
+            retrySleeper: { _ in },
+            classifyFreshness: true,
+            now: { referenceDate }
+        )
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "Status Oshi"),
+            platforms: ["oricon"]
+        )
+
+        XCTAssertEqual(report.items.count, 1)
+        XCTAssertEqual(report.items.first?.url, "https://oricon.co.jp/news/123?utm_source=bing")
+        XCTAssertEqual(report.items.first?.title, "Status Oshi interview")
+        XCTAssertEqual(report.items.first?.content_text, "Status Oshi talks about the new release.")
+        XCTAssertEqual(report.items.first?.author, "ORICON NEWS")
+        XCTAssertEqual(report.items.first?.source, "bing_news")
+        XCTAssertEqual(report.sourceStatuses.first?.outcome, .received)
+        let urls = await capture.urls
+        XCTAssertEqual(urls.filter { $0.contains("news.google.com") }.count, 2)
+        XCTAssertEqual(urls.filter { $0.contains("www.bing.com/news/search") }.count, 1)
+        let bingURL = try XCTUnwrap(urls.first { $0.contains("www.bing.com/news/search") })
+        let components = try XCTUnwrap(URLComponents(string: bingURL))
+        XCTAssertEqual(components.queryItems?.first { $0.name == "q" }?.value, "Status Oshi site:oricon.co.jp")
+        XCTAssertEqual(components.queryItems?.first { $0.name == "format" }?.value, "rss")
+        XCTAssertEqual(components.queryItems?.first { $0.name == "mkt" }?.value, "ja-JP")
+    }
+
+    func testBingRedirectUnwrapKeepsUnsafeOrUnrelatedURLsUntouched() {
+        let unsafe = "https://www.bing.com/news/apiclick.aspx?url=javascript%3Aalert(1)"
+        let unrelated = "https://example.com/news/apiclick.aspx?url=https%3A%2F%2Foricon.co.jp%2Fnews%2F1"
+
+        XCTAssertEqual(IngestionService.unwrapBingNewsURL(unsafe), unsafe)
+        XCTAssertEqual(IngestionService.unwrapBingNewsURL(unrelated), unrelated)
     }
 
     func testTVerDoesNotInventCurrentDateForUndatedResults() async throws {
@@ -2355,6 +5951,315 @@ final class OshiReaderTests: XCTestCase {
 
         XCTAssertEqual(report.items.map(\.id), ["tver:dated"])
         XCTAssertEqual(report.sourceStatuses.first?.outcome, .received)
+    }
+
+    func testTVerUsesEpisodeDetailForDescriptionOnlyMatchAndMissingDate() async throws {
+        let createResponse = Data(#"{"result":{"platform_uid":"test-uid","platform_token":"test-token"}}"#.utf8)
+        let searchResponse = Data(#"""
+        {"result":{"episodes":{"contents":[
+          {"content":{"id":"detail-match","title":"Unrelated episode","description":"List summary"}}
+        ]}}}
+        """#.utf8)
+        let detailResponse = Data(#"""
+        {"description":"Guest Detail Oshi appears","broadcastDate":"2026-08-11T07:00:00Z","broadcastProviderLabel":"TVer Provider"}
+        """#.utf8)
+        let capture = RequestCapture()
+        let referenceDate = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-12T09:00:00Z"))
+        let service = IngestionService(
+            requestExecutor: { request in
+                let url = request.url?.absoluteString ?? ""
+                await capture.record(url)
+                let data: Data
+                if request.url?.path.contains("/browser/create") == true {
+                    data = createResponse
+                } else if request.url?.host == "statics.tver.jp" {
+                    data = detailResponse
+                } else {
+                    data = searchResponse
+                }
+                return (data, try XCTUnwrap(HTTPURLResponse(
+                    url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                )))
+            },
+            retrySleeper: { _ in },
+            classifyFreshness: true,
+            now: { referenceDate }
+        )
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "Detail Oshi"),
+            platforms: ["tver"]
+        )
+
+        XCTAssertEqual(report.items.map(\.id), ["tver:detail-match"])
+        XCTAssertEqual(report.items.first?.content_text, "Guest Detail Oshi appears")
+        XCTAssertEqual(report.items.first?.author, "TVer Provider")
+        let urls = await capture.urls
+        XCTAssertTrue(urls.contains("https://statics.tver.jp/content/episode/detail-match.json"))
+    }
+
+    func testTVerBoundsConcurrentEpisodeDetailRequests() async throws {
+        let createResponse = Data(#"{"result":{"platform_uid":"test-uid","platform_token":"test-token"}}"#.utf8)
+        let episodes = (0..<8).map { index in
+            #"{"content":{"id":"episode-\#(index)","title":"Unrelated \#(index)","broadcastDate":"2026-08-11T07:00:00Z"}}"#
+        }.joined(separator: ",")
+        let searchResponse = Data("{\"result\":{\"episodes\":{\"contents\":[\(episodes)]}}}".utf8)
+        let detailResponse = Data(#"{"description":"TVer Oshi guest appearance"}"#.utf8)
+        let concurrency = ConcurrentRequestCapture()
+        let referenceDate = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-12T09:00:00Z"))
+        let service = IngestionService(
+            requestExecutor: { request in
+                let data: Data
+                if request.url?.path.contains("/browser/create") == true {
+                    data = createResponse
+                } else if request.url?.host == "statics.tver.jp" {
+                    await concurrency.begin()
+                    try? await Task.sleep(nanoseconds: 20_000_000)
+                    await concurrency.end()
+                    data = detailResponse
+                } else {
+                    data = searchResponse
+                }
+                return (data, try XCTUnwrap(HTTPURLResponse(
+                    url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                )))
+            },
+            retrySleeper: { _ in },
+            classifyFreshness: true,
+            now: { referenceDate }
+        )
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "TVer Oshi"),
+            platforms: ["tver"]
+        )
+
+        XCTAssertEqual(report.items.count, 8)
+        let maximumActive = await concurrency.maximumActive
+        XCTAssertGreaterThan(maximumActive, 1)
+        XCTAssertLessThanOrEqual(maximumActive, 4)
+    }
+
+    func testTVerSharesDetailLimitAcrossTermsAndAliases() async throws {
+        let createResponse = Data(#"{"result":{"platform_uid":"test-uid","platform_token":"test-token"}}"#.utf8)
+        let episodes = (0..<6).map { index in
+            "{\"content\":{\"id\":\"shared-\(index)\",\"title\":\"Unrelated \(index)\",\"broadcastDate\":\"2026-08-11T07:00:00Z\"}}"
+        }.joined(separator: ",")
+        let searchResponse = Data("{\"result\":{\"episodes\":{\"contents\":[\(episodes)]}}}".utf8)
+        let detailResponse = Data(#"{"description":"Primary TVer Alias TVer Second TVer guest appearance"}"#.utf8)
+        let concurrency = ConcurrentRequestCapture()
+        let referenceDate = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-12T09:00:00Z"))
+        let service = IngestionService(
+            requestExecutor: { request in
+                let data: Data
+                if request.url?.path.contains("/browser/create") == true {
+                    data = createResponse
+                } else if request.url?.host == "statics.tver.jp" {
+                    await concurrency.begin()
+                    try? await Task.sleep(nanoseconds: 20_000_000)
+                    await concurrency.end()
+                    data = detailResponse
+                } else {
+                    data = searchResponse
+                }
+                return (data, try XCTUnwrap(HTTPURLResponse(
+                    url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                )))
+            },
+            retrySleeper: { _ in },
+            classifyFreshness: true,
+            now: { referenceDate }
+        )
+
+        async let aliasedReport = service.ingestReport(
+            term: WatchTerm(keyword: "Primary TVer", aliases: ["Alias TVer"]),
+            platforms: ["tver"]
+        )
+        async let secondReport = service.ingestReport(
+            term: WatchTerm(keyword: "Second TVer"),
+            platforms: ["tver"]
+        )
+        let (first, second) = await (aliasedReport, secondReport)
+
+        XCTAssertEqual(first.items.count, 6)
+        XCTAssertEqual(second.items.count, 6)
+        let started = await concurrency.startedCount()
+        let maximumActive = await concurrency.maximumActive
+        XCTAssertEqual(started, 18)
+        XCTAssertGreaterThan(maximumActive, 1)
+        XCTAssertLessThanOrEqual(maximumActive, 4)
+    }
+
+    func testTVerListCompleteCandidatesSkipOccupiedDetailLimiterAndKeepOrder() async throws {
+        let createResponse = Data(#"{"result":{"platform_uid":"test-uid","platform_token":"test-token"}}"#.utf8)
+        let detailCandidates = (0..<4).map { index in
+            "{\"content\":{\"id\":\"detail-\(index)\",\"title\":\"Unrelated \(index)\",\"broadcastDate\":\"2026-08-11T07:00:00Z\"}}"
+        }
+        let listCandidates = (0..<4).map { index in
+            "{\"content\":{\"id\":\"list-\(index)\",\"title\":\"Mixed TVer list match \(index)\",\"broadcastDate\":\"2026-08-11T07:00:00Z\"}}"
+        }
+        let searchResponse = Data(
+            "{\"result\":{\"episodes\":{\"contents\":[\((detailCandidates + listCandidates).joined(separator: ","))]}}}".utf8
+        )
+        let detailResponse = Data(#"{"description":"Mixed TVer detail match"}"#.utf8)
+        let detailURLs = RequestCapture()
+        let concurrency = ConcurrentRequestCapture()
+        let referenceDate = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-12T09:00:00Z"))
+        let service = IngestionService(
+            requestExecutor: { request in
+                let data: Data
+                if request.url?.path.contains("/browser/create") == true {
+                    data = createResponse
+                } else if request.url?.host == "statics.tver.jp" {
+                    await detailURLs.record(request.url?.absoluteString ?? "")
+                    await concurrency.begin()
+                    try? await Task.sleep(nanoseconds: 40_000_000)
+                    await concurrency.end()
+                    data = detailResponse
+                } else {
+                    data = searchResponse
+                }
+                return (data, try XCTUnwrap(HTTPURLResponse(
+                    url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                )))
+            },
+            retrySleeper: { _ in },
+            classifyFreshness: true,
+            now: { referenceDate }
+        )
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "Mixed TVer"),
+            platforms: ["tver"]
+        )
+
+        XCTAssertEqual(
+            report.items.map(\.id),
+            (0..<4).map { "tver:detail-\($0)" } + (0..<4).map { "tver:list-\($0)" }
+        )
+        let urls = await detailURLs.urls
+        XCTAssertEqual(urls.count, 4)
+        XCTAssertFalse(urls.contains { $0.contains("/list-") })
+        let maximumActive = await concurrency.maximumActive
+        XCTAssertEqual(maximumActive, 4)
+    }
+
+    func testTVerCancellationDropsQueuedDetailsAndReleasesSharedCapacity() async throws {
+        let createResponse = Data(#"{"result":{"platform_uid":"test-uid","platform_token":"test-token"}}"#.utf8)
+        let cancelEpisodes = (0..<12).map { index in
+            "{\"content\":{\"id\":\"cancel-\(index)\",\"title\":\"Unrelated \(index)\",\"broadcastDate\":\"2026-08-11T07:00:00Z\"}}"
+        }.joined(separator: ",")
+        let cancelSearch = Data("{\"result\":{\"episodes\":{\"contents\":[\(cancelEpisodes)]}}}".utf8)
+        let followSearch = Data(#"{"result":{"episodes":{"contents":[{"content":{"id":"follow-0","title":"Unrelated follow","broadcastDate":"2026-08-11T07:00:00Z"}}]}}}"#.utf8)
+        let detailResponse = Data(#"{"description":"Cancel TVer Follow TVer guest appearance"}"#.utf8)
+        let concurrency = ConcurrentRequestCapture()
+        let referenceDate = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-12T09:00:00Z"))
+        let service = IngestionService(
+            requestExecutor: { request in
+                let data: Data
+                if request.url?.path.contains("/browser/create") == true {
+                    data = createResponse
+                } else if request.url?.host == "statics.tver.jp" {
+                    await concurrency.begin()
+                    if request.url?.path.contains("/cancel-") == true {
+                        do {
+                            try await Task.sleep(nanoseconds: 30_000_000_000)
+                        } catch {
+                            await concurrency.end()
+                            throw error
+                        }
+                    }
+                    await concurrency.end()
+                    data = detailResponse
+                } else {
+                    let keyword = URLComponents(
+                        url: request.url!, resolvingAgainstBaseURL: false
+                    )?.queryItems?.first { $0.name == "keyword" }?.value
+                    data = keyword == "Follow TVer" ? followSearch : cancelSearch
+                }
+                return (data, try XCTUnwrap(HTTPURLResponse(
+                    url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                )))
+            },
+            retrySleeper: { _ in },
+            classifyFreshness: true,
+            now: { referenceDate }
+        )
+
+        let cancelled = Task {
+            await service.ingestReport(
+                term: WatchTerm(keyword: "Cancel TVer"),
+                platforms: ["tver"]
+            )
+        }
+        await concurrency.waitUntilStarted(4)
+        cancelled.cancel()
+        _ = await cancelled.value
+
+        let startsAfterCancellation = await concurrency.startedCount()
+        XCTAssertEqual(startsAfterCancellation, 4)
+
+        let followUp = await service.ingestReport(
+            term: WatchTerm(keyword: "Follow TVer"),
+            platforms: ["tver"]
+        )
+        XCTAssertEqual(followUp.items.map(\.id), ["tver:follow-0"])
+        let finalStarts = await concurrency.startedCount()
+        XCTAssertEqual(finalStarts, 5)
+    }
+
+    func testTVerQueuedDetailDoesNotStartAfterRefreshDeadline() async throws {
+        let createResponse = Data(#"{"result":{"platform_uid":"test-uid","platform_token":"test-token"}}"#.utf8)
+        let blockingEpisodes = (0..<4).map { index in
+            "{\"content\":{\"id\":\"blocking-\(index)\",\"title\":\"Unrelated \(index)\",\"broadcastDate\":\"2026-08-11T07:00:00Z\"}}"
+        }.joined(separator: ",")
+        let blockingSearch = Data("{\"result\":{\"episodes\":{\"contents\":[\(blockingEpisodes)]}}}".utf8)
+        let expiredSearch = Data(#"{"result":{"episodes":{"contents":[{"content":{"id":"expired-0","title":"Unrelated expired","broadcastDate":"2026-08-11T07:00:00Z"}}]}}}"#.utf8)
+        let detailResponse = Data(#"{"description":"Blocking TVer Expired TVer guest appearance"}"#.utf8)
+        let concurrency = ConcurrentRequestCapture()
+        let referenceDate = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-12T09:00:00Z"))
+        let service = IngestionService(
+            requestExecutor: { request in
+                let data: Data
+                if request.url?.path.contains("/browser/create") == true {
+                    data = createResponse
+                } else if request.url?.host == "statics.tver.jp" {
+                    await concurrency.begin()
+                    try? await Task.sleep(nanoseconds: 80_000_000)
+                    await concurrency.end()
+                    data = detailResponse
+                } else {
+                    let keyword = URLComponents(
+                        url: request.url!, resolvingAgainstBaseURL: false
+                    )?.queryItems?.first { $0.name == "keyword" }?.value
+                    data = keyword == "Expired TVer" ? expiredSearch : blockingSearch
+                }
+                return (data, try XCTUnwrap(HTTPURLResponse(
+                    url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                )))
+            },
+            retrySleeper: { _ in },
+            classifyFreshness: true,
+            now: { referenceDate }
+        )
+
+        let blocking = Task {
+            await service.ingestReport(
+                term: WatchTerm(keyword: "Blocking TVer"),
+                platforms: ["tver"]
+            )
+        }
+        await concurrency.waitUntilStarted(4)
+        let expired = await service.ingestReport(
+            term: WatchTerm(keyword: "Expired TVer"),
+            platforms: ["tver"],
+            requestDeadline: Date().addingTimeInterval(0.02)
+        )
+        _ = await blocking.value
+
+        XCTAssertTrue(expired.items.isEmpty)
+        let totalStarted = await concurrency.startedCount()
+        XCTAssertEqual(totalStarted, 4)
     }
 
     func testTypedTransportFailuresMapTimeoutNetworkAndHTTPStatuses() async {
@@ -2530,9 +6435,10 @@ final class OshiReaderTests: XCTestCase {
         )
         let limitedRequestCount = await limitedCapture.count()
         let limitedURLs = await limitedCapture.urls
-        XCTAssertEqual(limitedRequestCount, 4)
+        XCTAssertEqual(limitedRequestCount, 6)
         XCTAssertEqual(limitedURLs.filter { $0 == "https://barks.jp/feed/" }.count, 2)
         XCTAssertEqual(limitedURLs.filter { $0.contains("news.google.com") }.count, 2)
+        XCTAssertEqual(limitedURLs.filter { $0.contains("www.bing.com/news/search") }.count, 2)
         XCTAssertEqual(limited.sourceStatuses.first?.outcome, .failed(.rateLimited))
     }
 
@@ -2571,9 +6477,10 @@ final class OshiReaderTests: XCTestCase {
         )
         let malformedRequestCount = await malformedCapture.count()
         let malformedURLs = await malformedCapture.urls
-        XCTAssertEqual(malformedRequestCount, 2)
+        XCTAssertEqual(malformedRequestCount, 3)
         XCTAssertEqual(malformedURLs.filter { $0 == "https://barks.jp/feed/" }.count, 1)
         XCTAssertEqual(malformedURLs.filter { $0.contains("news.google.com") }.count, 1)
+        XCTAssertEqual(malformedURLs.filter { $0.contains("www.bing.com/news/search") }.count, 1)
         XCTAssertEqual(malformed.sourceStatuses.first?.outcome, .failed(.invalidPayload))
     }
 
@@ -3666,7 +7573,8 @@ final class OshiReaderTests: XCTestCase {
             requestExecutor: { request in
                 (rss, try XCTUnwrap(HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)))
             },
-            retrySleeper: { _ in }
+            retrySleeper: { _ in },
+            pacingSleeper: { _ in }
         )
         let allPlatformIDs = Set(PlatformRegistry.all.map(\.id)).subtracting(["custom"])
         let term = WatchTerm(keyword: "Perf Oshi")
