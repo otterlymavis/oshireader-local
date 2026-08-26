@@ -85,6 +85,8 @@
 	</array>
 	<key>PushSubscriptionProductIDs</key>
 	<string>$(PUSH_SUBSCRIPTION_PRODUCT_IDS)</string>
+	<key>OshiReaderAPNSEnvironment</key>
+	<string>$(APNS_ENVIRONMENT)</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

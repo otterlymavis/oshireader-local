@@ -195,11 +195,11 @@ struct FeedView: View {
             result = result.filter { Self.matchesPlatform($0, platformId: platform) }
         }
         if mediaFilter == "media_only" {
-            let mediaPlatforms: Set<String> = ["youtube", "niconico", "tver"]
+            let mediaPlatformIDs = PlatformRegistry.mediaPlatformIDs
             result = result.filter {
                 $0.media_type == "video" ||
                     $0.media_type == "image" ||
-                    mediaPlatforms.contains(PlatformRegistry.normalizeID($0.platform))
+                    mediaPlatformIDs.contains(PlatformRegistry.normalizeID($0.platform))
             }
         }
         return result
@@ -262,6 +262,7 @@ struct FeedView: View {
                 }
             }
         }
+        .accessibilityIdentifier("feed.screen")
     }
     
     private var mainContentColumn: some View {
@@ -873,6 +874,7 @@ struct FeedView: View {
         if clearSelection, selectedItem?.id == item.id {
             selectedItem = nil
         }
+        Task { await PaidBackendFeedCoordinator.shared.muteHiddenItem(item) }
     }
 
     private func confirmHidePost() {

@@ -34,11 +34,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
     ) {
         Task {
-            do { try await BackendClient.shared.registerAPNSToken(deviceToken) }
-            catch {
-                PushSyncCoordinator.shared.recordAPNSRegistrationFailure(error)
-                AppLogger.network.warning("APNs registration failed: \(error.localizedDescription)")
-            }
+            await NotificationManager.shared.handleRegisteredDeviceToken(deviceToken)
         }
     }
 
@@ -46,12 +42,15 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         _ application: UIApplication,
         didFailToRegisterForRemoteNotificationsWithError error: Error
     ) {
-        PushSyncCoordinator.shared.recordAPNSRegistrationFailure(error)
+        NotificationManager.shared.handleRemoteNotificationRegistrationFailed(error)
         AppLogger.network.warning("System APNs registration failed: \(error.localizedDescription)")
     }
 
     func applicationDidBecomeActive(_ application: UIApplication) {
         if PlusStore.shouldSyncBackend {
+            if PlusStore.shared.hasActiveEntitlement {
+                NotificationManager.shared.registerForRemoteNotificationsForDeviceAuthentication()
+            }
             Task {
                 await PushSyncCoordinator.shared.reconcile()
                 await PaidBackendFeedCoordinator.shared.synchronizeTerms()
@@ -76,6 +75,32 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
             case .newData: completionHandler(.newData)
             case .noData: completionHandler(.noData)
             case .failed: completionHandler(.failed)
+            }
+        }
+    }
+
+    func application(
+        _ application: UIApplication,
+        didReceiveRemoteNotification userInfo: [AnyHashable: Any],
+        fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
+    ) {
+        guard PlusStore.shouldSyncBackend else {
+            completionHandler(.noData)
+            return
+        }
+        AppLogger.network.notice("Paid silent push requested a background refresh")
+        Task { @MainActor in
+            let hasPreview = userInfo["preview_item"] != nil || userInfo["item_id"] != nil
+            let mergedPreview = hasPreview && NotificationNavigationManager.shared.mergeNotificationItem(userInfo: userInfo)
+            let outcome = await BackgroundRefreshManager.shared.refreshNow()
+            LocalDB.shared.flushPendingWrites()
+            switch outcome {
+            case .newData:
+                completionHandler(.newData)
+            case .noData:
+                completionHandler(mergedPreview ? .newData : .noData)
+            case .failed:
+                completionHandler(mergedPreview ? .newData : .failed)
             }
         }
     }

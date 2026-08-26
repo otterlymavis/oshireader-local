@@ -196,6 +196,96 @@ class I18nManager: ObservableObject {
             "zh-TW": "來源狀態",
             "zh-CN": "来源状态"
         ],
+        "hostedSourceStatus": [
+            "en": "Hosted Source Status",
+            "ja": "ホスト型ソースの状態",
+            "zh-TW": "託管來源狀態",
+            "zh-CN": "托管来源状态"
+        ],
+        "hostedSourceStatusEmpty": [
+            "en": "No hosted source status yet. Check back after the next server refresh.",
+            "ja": "ホスト型ソースの状態はまだありません。次回のサーバー更新後に確認してください。",
+            "zh-TW": "尚無託管來源狀態，請於下次伺服器更新後查看。",
+            "zh-CN": "暂无托管来源状态，请在下次服务器刷新后查看。"
+        ],
+        "hostedSourceStatusLoadError": [
+            "en": "Couldn't load hosted source status. Pull to refresh to try again.",
+            "ja": "ホスト型ソースの状態を読み込めませんでした。下に引っ張って再試行してください。",
+            "zh-TW": "無法載入託管來源狀態，請下拉重新整理再試一次。",
+            "zh-CN": "无法加载托管来源状态，请下拉刷新重试。"
+        ],
+        "hostedSourceStatusAccessUnavailable": [
+            "en": "Hosted source status requires an active paid plan.",
+            "ja": "ホスト型ソースの状態を確認するには有効な有料プランが必要です。",
+            "zh-TW": "查看託管來源狀態需要有效的付費方案。",
+            "zh-CN": "查看托管来源状态需要有效的付费方案。"
+        ],
+        "hostedSourceLastChecked": [
+            "en": "Checked {time}",
+            "ja": "確認 {time}",
+            "zh-TW": "檢查於 {time}",
+            "zh-CN": "检查于 {time}"
+        ],
+        "hostedSourceRecentItems": [
+            "en": "Recent items: {count}",
+            "ja": "最近の項目: {count}件",
+            "zh-TW": "近期項目：{count}",
+            "zh-CN": "近期项目：{count}"
+        ],
+        "hostedSourceConsecutiveFailures": [
+            "en": "Consecutive failures: {count}",
+            "ja": "連続失敗: {count}回",
+            "zh-TW": "連續失敗：{count}",
+            "zh-CN": "连续失败：{count}"
+        ],
+        "hostedSourceJinaDegraded": [
+            "en": "Google News fallback (Jina) is degraded",
+            "ja": "Google Newsのフォールバック（Jina）が低下しています",
+            "zh-TW": "Google 新聞備援（Jina）狀態不佳",
+            "zh-CN": "Google 新闻备用通道（Jina）状态不佳"
+        ],
+        "paidDiagnosticsToggle": [
+            "en": "Share hosted failure diagnostics",
+            "ja": "ホスト機能の障害診断を共有",
+            "zh-TW": "分享託管功能失敗診斷",
+            "zh-CN": "分享托管功能失败诊断"
+        ],
+        "paidDiagnosticsFooter": [
+            "en": "Optional and off by default. Sends bounded app, source, count, and error-category metadata only after paid hosted failures. Keywords, URLs, feed items, and credentials are never included.",
+            "ja": "任意で、初期設定はオフです。有料ホスト機能の障害時のみ、アプリ・ソース・件数・エラー分類の限定的な情報を送信します。キーワード、URL、フィード項目、認証情報は含まれません。",
+            "zh-TW": "此功能為選用且預設關閉。僅在付費託管功能失敗時傳送有限的 app、來源、數量與錯誤分類資訊，絕不包含關鍵字、網址、動態項目或憑證。",
+            "zh-CN": "此功能为可选且默认关闭。仅在付费托管功能失败时发送有限的 app、来源、数量与错误分类信息，绝不包含关键字、网址、动态项目或凭证。"
+        ],
+        "sourceStatusBadgeOK": [
+            "en": "Working",
+            "ja": "正常",
+            "zh-TW": "正常",
+            "zh-CN": "正常"
+        ],
+        "sourceStatusBadgeEmpty": [
+            "en": "No results yet",
+            "ja": "まだ結果なし",
+            "zh-TW": "尚無結果",
+            "zh-CN": "暂无结果"
+        ],
+        "sourceStatusBadgeFiltered": [
+            "en": "Filtered out",
+            "ja": "フィルターで除外",
+            "zh-TW": "已被篩選",
+            "zh-CN": "已被过滤"
+        ],
+        "sourceStatusBadgeFailed": [
+            "en": "Failed",
+            "ja": "失敗",
+            "zh-TW": "失敗",
+            "zh-CN": "失败"
+        ],
+        "sourceStatusBadgeUnknown": [
+            "en": "Unknown",
+            "ja": "不明",
+            "zh-TW": "未知",
+            "zh-CN": "未知"
+        ],
         "noSourceHistoryYet": [
             "en": "No source history yet",
             "ja": "ソース履歴はまだありません",
@@ -556,35 +646,11 @@ class I18nManager: ObservableObject {
             "zh-TW": "圖片",
             "zh-CN": "图片"
         ],
-        "shareImage": [
-            "en": "Share Image",
-            "ja": "画像を共有",
-            "zh-TW": "分享圖片",
-            "zh-CN": "分享图片"
-        ],
         "share": [
             "en": "Share",
             "ja": "共有",
             "zh-TW": "分享",
             "zh-CN": "分享"
-        ],
-        "saveImage": [
-            "en": "Save Image",
-            "ja": "画像を保存",
-            "zh-TW": "儲存圖片",
-            "zh-CN": "保存图片"
-        ],
-        "openImage": [
-            "en": "Open Image",
-            "ja": "画像を開く",
-            "zh-TW": "開啟圖片",
-            "zh-CN": "打开图片"
-        ],
-        "imageLoadError": [
-            "en": "Could not read this image.",
-            "ja": "画像を読み込めませんでした。",
-            "zh-TW": "無法讀取此圖片。",
-            "zh-CN": "无法读取此图片。"
         ],
         "imageReadFailed": [
             "en": "Could not read this image.",
@@ -597,18 +663,6 @@ class I18nManager: ObservableObject {
             "ja": "画像を保存するには写真へのアクセスが必要です。",
             "zh-TW": "需要相簿存取權限才能儲存圖片。",
             "zh-CN": "需要照片访问权限才能保存图片。"
-        ],
-        "imageSavedToPhotos": [
-            "en": "Saved to Photos.",
-            "ja": "写真に保存しました。",
-            "zh-TW": "已儲存到相簿。",
-            "zh-CN": "已保存到照片。"
-        ],
-        "imageSaveError": [
-            "en": "Could not save this image.",
-            "ja": "画像を保存できませんでした。",
-            "zh-TW": "無法儲存此圖片。",
-            "zh-CN": "无法保存此图片。"
         ],
         "imageSaveFailed": [
             "en": "Could not save this image.",
@@ -930,6 +984,54 @@ class I18nManager: ObservableObject {
             "zh-TW": "本機通知測試失敗，請檢查 iOS 通知設定。",
             "zh-CN": "本地通知测试失败，请检查 iOS 通知设置。"
         ],
+        "paidPushNotifyNow": [
+            "en": "Notify Now",
+            "ja": "今すぐ通知",
+            "zh-TW": "立即通知",
+            "zh-CN": "立即通知"
+        ],
+        "paidPushClearPending": [
+            "en": "Clear Notification",
+            "ja": "通知をクリア",
+            "zh-TW": "清除通知",
+            "zh-CN": "清除通知"
+        ],
+        "paidPushNothingPending": [
+            "en": "No new hosted items are waiting to be notified.",
+            "ja": "通知待ちの新しいホスト型項目はありません。",
+            "zh-TW": "目前沒有等待通知的新託管項目。",
+            "zh-CN": "目前没有等待通知的新托管项目。"
+        ],
+        "paidPushDeliveryUnavailable": [
+            "en": "Guaranteed push is paused. Check your paid plan and term limit.",
+            "ja": "確実なプッシュ通知は一時停止中です。有料プランとキーワード上限を確認してください。",
+            "zh-TW": "保證推播已暫停，請檢查付費方案與關鍵字上限。",
+            "zh-CN": "保证推送已暂停，请检查付费方案和关键字上限。"
+        ],
+        "paidPushRegistrationUnavailable": [
+            "en": "Push registration could not be verified. Please try again.",
+            "ja": "プッシュ登録を確認できませんでした。もう一度お試しください。",
+            "zh-TW": "無法驗證推播註冊，請再試一次。",
+            "zh-CN": "无法验证推送注册，请重试。"
+        ],
+        "paidPushTermStale": [
+            "en": "This guaranteed-push term is no longer available on the server. Sync it again.",
+            "ja": "この確実なプッシュ通知キーワードはサーバーにありません。もう一度同期してください。",
+            "zh-TW": "伺服器上已無此保證推播關鍵字，請重新同步。",
+            "zh-CN": "服务器上已无此保证推送关键字，请重新同步。"
+        ],
+        "paidPushTermDisabled": [
+            "en": "Guaranteed push is not enabled for this term.",
+            "ja": "このキーワードでは確実なプッシュ通知が有効ではありません。",
+            "zh-TW": "此關鍵字尚未啟用保證推播。",
+            "zh-CN": "此关键字尚未启用保证推送。"
+        ],
+        "paidPushActionFailed": [
+            "en": "The hosted notification action failed. Please try again.",
+            "ja": "ホスト型通知の操作に失敗しました。もう一度お試しください。",
+            "zh-TW": "託管通知操作失敗，請再試一次。",
+            "zh-CN": "托管通知操作失败，请重试。"
+        ],
         "notificationStatusEnabled": [
             "en": "Enabled",
             "ja": "有効",
@@ -1148,6 +1250,12 @@ class I18nManager: ObservableObject {
             "zh-TW": "來源選擇",
             "zh-CN": "来源选择"
         ],
+        "searchStickersButton": [
+            "en": "Search Stickers",
+            "ja": "スタンプを検索",
+            "zh-TW": "搜尋貼圖",
+            "zh-CN": "搜索贴图"
+        ],
         "allSources": [
             "en": "All sources",
             "ja": "すべてのソース",
@@ -1293,10 +1401,10 @@ class I18nManager: ObservableObject {
             "zh-CN": "为提供功能而发送的数据"
         ],
         "privacySentBody": [
-            "en": "When you add watch keywords, refresh feeds, search stickers, translate sticker queries, or open articles, related keywords, search text, URLs, and article requests may be sent to Google services, Irasutoya/Blogger feeds, news feeds, and the websites you choose to open.",
-            "ja": "キーワードの追加、フィード更新、ステッカー検索、ステッカー検索語の翻訳、記事の表示を行うと、関連するキーワード、検索テキスト、URL、記事リクエストが、Googleサービス、いらすとや/Bloggerフィード、ニュースフィード、または開くことを選んだWebサイトへ送信される場合があります。",
-            "zh-TW": "當你新增追蹤關鍵字、重新整理動態、搜尋貼紙、翻譯貼紙搜尋詞或開啟文章時，相關關鍵字、搜尋文字、網址與文章請求可能會傳送至 Google 服務、Irasutoya/Blogger feeds、新聞 feeds，以及你選擇開啟的網站。",
-            "zh-CN": "当你添加追踪关键字、刷新动态、搜索贴纸、翻译贴纸搜索词或打开文章时，相关关键字、搜索文本、网址和文章请求可能会发送到 Google 服务、Irasutoya/Blogger feeds、新闻 feeds，以及你选择打开的网站。"
+            "en": "When you add watch keywords, refresh feeds, search stickers, translate sticker queries, or open articles, related keywords, search text, URLs, and article requests may be sent to Google services, Irasutoya/Blogger feeds, news feeds, and the websites you choose to open. Paid users can separately opt in to sharing bounded hosted-failure metadata; those reports exclude keywords, URLs, feed items, and credentials.",
+            "ja": "キーワードの追加、フィード更新、ステッカー検索、ステッカー検索語の翻訳、記事の表示を行うと、関連するキーワード、検索テキスト、URL、記事リクエストが、Googleサービス、いらすとや/Bloggerフィード、ニュースフィード、または開くことを選んだWebサイトへ送信される場合があります。有料ユーザーは、限定的なホスト障害情報の共有を別途選択できます。レポートにキーワード、URL、フィード項目、認証情報は含まれません。",
+            "zh-TW": "當你新增追蹤關鍵字、重新整理動態、搜尋貼紙、翻譯貼紙搜尋詞或開啟文章時，相關關鍵字、搜尋文字、網址與文章請求可能會傳送至 Google 服務、Irasutoya/Blogger feeds、新聞 feeds，以及你選擇開啟的網站。付費使用者可另行選擇分享有限的託管失敗資訊；報告不包含關鍵字、網址、動態項目或憑證。",
+            "zh-CN": "当你添加追踪关键字、刷新动态、搜索贴纸、翻译贴纸搜索词或打开文章时，相关关键字、搜索文本、网址和文章请求可能会发送到 Google 服务、Irasutoya/Blogger feeds、新闻 feeds，以及你选择打开的网站。付费用户可另行选择分享有限的托管失败信息；报告不包含关键字、网址、动态项目或凭证。"
         ],
         "privacyTrackingTitle": [
             "en": "Tracking and Advertising",
@@ -1636,11 +1744,23 @@ class I18nManager: ObservableObject {
             "zh-TW": "選取圖片",
             "zh-CN": "选择图片"
         ],
+        "selectMultipleImages": [
+            "en": "Select Multiple Images",
+            "ja": "複数の画像を選択",
+            "zh-TW": "選取多張圖片",
+            "zh-CN": "选择多张图片"
+        ],
         "saveAllImages": [
             "en": "Save All Images",
             "ja": "すべての画像を保存",
             "zh-TW": "儲存所有圖片",
             "zh-CN": "保存所有图片"
+        ],
+        "imageNoLargeImages": [
+            "en": "No large images found on this page.",
+            "ja": "このページに大きな画像が見つかりませんでした。",
+            "zh-TW": "此頁面未找到大圖片。",
+            "zh-CN": "此页面未找到大图片。"
         ],
         "back": [
             "en": "Back",
@@ -1869,6 +1989,30 @@ class I18nManager: ObservableObject {
             "ja": "復元用ステージングデータが不完全です。",
             "zh-TW": "還原暫存資料不完整。",
             "zh-CN": "恢复暂存数据不完整。"
+        ],
+        "searchSavedUrls": [
+            "en": "Saved URLs",
+            "ja": "保存済みURL",
+            "zh-TW": "已儲存的URL",
+            "zh-CN": "已保存的URL"
+        ],
+        "searchEnterKeyword": [
+            "en": "Enter keyword",
+            "ja": "キーワードを入力",
+            "zh-TW": "輸入關鍵字",
+            "zh-CN": "输入关键字"
+        ],
+        "searchEmptyKeywordBody": [
+            "en": "Type a keyword or choose one of your saved keywords above.",
+            "ja": "キーワードを入力するか、上の保存済みキーワードを選択してください。",
+            "zh-TW": "請輸入關鍵字，或選擇上方已儲存的關鍵字。",
+            "zh-CN": "请输入关键字，或选择上方已保存的关键字。"
+        ],
+        "searchAddKeywordHint": [
+            "en": "Add watch keywords in Settings, or type a keyword here.",
+            "ja": "設定で追跡キーワードを追加するか、ここでキーワードを入力してください。",
+            "zh-TW": "請在設定中新增追蹤關鍵字，或在此輸入關鍵字。",
+            "zh-CN": "请在设置中添加追踪关键词，或在此输入关键词。"
         ],
         "searchGroupNews": [
             "en": "News",

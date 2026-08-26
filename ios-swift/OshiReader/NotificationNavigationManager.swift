@@ -48,6 +48,27 @@ final class NotificationNavigationManager: ObservableObject {
         }
     }
 
+    /// Makes a compact APNs preview visible immediately while the hosted feed
+    /// catches up. Merging without a notification handler prevents a second
+    /// local alert for the same server-delivered item.
+    @discardableResult
+    func mergeNotificationItem(userInfo: [AnyHashable: Any]) -> Bool {
+        guard let payload = notificationPayload(from: userInfo) else { return false }
+        let item = Self.preferredNotificationItem(
+            payload.item,
+            cachedItems: LocalDB.shared.feedItems,
+            hasPlatform: payload.hasPlatform,
+            hasMediaType: payload.hasMediaType,
+            hasPublishedAt: payload.hasPublishedAt,
+            hasWatchTermKeyword: payload.hasWatchTermKeyword
+        )
+        _ = LocalDB.shared.mergeItems(newItems: [item])
+        return LocalDB.shared.feedItems.contains {
+            $0.id == item.id &&
+                (item.watch_term_keyword.isEmpty || $0.watch_term_keyword == item.watch_term_keyword)
+        }
+    }
+
     static func preferredNotificationItem(
         _ notificationItem: FeedItem,
         cachedItems: [FeedItem],

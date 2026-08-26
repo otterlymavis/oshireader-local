@@ -2,6 +2,79 @@ import Foundation
 import StoreKit
 import UIKit
 
+struct PaidEntitlementRequestGate {
+    private(set) var latestGeneration: UInt64 = 0
+
+    mutating func beginRequest() -> UInt64 {
+        latestGeneration &+= 1
+        return latestGeneration
+    }
+
+    func isCurrent(_ generation: UInt64) -> Bool {
+        generation == latestGeneration
+    }
+}
+
+@MainActor
+final class PaidAPNSLifecycleCoordinator {
+    private let hasCachedRegistration: () -> Bool
+    private let unregister: (TimeInterval) async throws -> Void
+    private let register: @MainActor () -> Void
+    private var cleanupTask: Task<Void, Error>?
+    private var shouldMaintainRegistration = false
+
+    init(
+        hasCachedRegistration: @escaping () -> Bool = {
+            guard let token = KeychainHelper.read(.apnsDeviceToken) else { return false }
+            return !token.isEmpty
+        },
+        unregister: @escaping (TimeInterval) async throws -> Void = { timeout in
+            try await BackendClient.shared.unregisterAPNSToken(timeout: timeout)
+        },
+        register: @escaping @MainActor () -> Void = {
+            NotificationManager.shared.registerForRemoteNotificationsForDeviceAuthentication()
+        }
+    ) {
+        self.hasCachedRegistration = hasCachedRegistration
+        self.unregister = unregister
+        self.register = register
+    }
+
+    func reconcile(
+        isEntitlementActive: Bool,
+        isPushEligible: Bool = false,
+        timeout: TimeInterval = 15
+    ) async {
+        shouldMaintainRegistration = isEntitlementActive && isPushEligible
+        if shouldMaintainRegistration {
+            register()
+            // A DELETE that has already reached the server cannot be reliably
+            // cancelled. Its owner repairs registration after it completes.
+            return
+        }
+
+        guard !isEntitlementActive, hasCachedRegistration() else { return }
+        if let cleanupTask {
+            _ = try? await cleanupTask.value
+            return
+        }
+
+        let task = Task { try await unregister(timeout) }
+        cleanupTask = task
+        do {
+            try await task.value
+        } catch {
+            AppLogger.network.warning(
+                "Paid APNs registration cleanup failed; cached registration retained"
+            )
+        }
+        cleanupTask = nil
+        if shouldMaintainRegistration {
+            register()
+        }
+    }
+}
+
 @MainActor
 final class PlusStore: ObservableObject {
     static let shared = PlusStore()
@@ -40,6 +113,8 @@ final class PlusStore: ObservableObject {
     @Published var errorMessage: String?
 
     private var updatesTask: Task<Void, Never>?
+    private let apnsLifecycle = PaidAPNSLifecycleCoordinator()
+    private var entitlementRequestGate = PaidEntitlementRequestGate()
 
     private init() {
         guard !Self.isTesting, Self.isPaidPushConfigured else { return }
@@ -100,14 +175,22 @@ final class PlusStore: ObservableObject {
     }
 
     func refreshStatus() async {
-        do { apply(try await BackendClient.shared.entitlementStatus()) }
+        let generation = entitlementRequestGate.beginRequest()
+        do {
+            let status = try await BackendClient.shared.entitlementStatus()
+            guard entitlementRequestGate.isCurrent(generation) else { return }
+            await apply(status)
+        }
         catch { AppLogger.network.warning("Push entitlement refresh failed: \(error.localizedDescription)") }
     }
 
     private func handle(_ result: VerificationResult<Transaction>) async {
+        let generation = entitlementRequestGate.beginRequest()
         do {
             let status = try await BackendClient.shared.verifyTransaction(result.jwsRepresentation)
-            apply(status)
+            if entitlementRequestGate.isCurrent(generation) {
+                await apply(status)
+            }
             switch result {
             case .verified(let transaction), .unverified(let transaction, _): await transaction.finish()
             }
@@ -137,14 +220,17 @@ final class PlusStore: ObservableObject {
         for result in current { await handle(result) }
     }
 
-    private func apply(_ status: EntitlementStatus) {
+    private func apply(_ status: EntitlementStatus) async {
         hasActiveEntitlement = status.is_active
         pushTermLimit = status.is_active ? status.push_term_limit : 0
         pushTermCount = status.push_term_count
         pushDeliveryState = status.push_delivery_state
         currentProductID = status.product_id
         expiresAt = status.expires_at.flatMap { ISO8601DateFormatter().date(from: $0) }
-        if pushTermLimit > 0 { UIApplication.shared.registerForRemoteNotifications() }
+        await apnsLifecycle.reconcile(
+            isEntitlementActive: status.is_active,
+            isPushEligible: pushTermLimit > 0
+        )
     }
 
     func setPushDeliveryStateForTesting(_ state: PushDeliveryState) {

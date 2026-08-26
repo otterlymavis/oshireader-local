@@ -1,12 +1,52 @@
 import Foundation
 import UIKit
 
+enum PaidNotificationControlPolicy {
+    static func showsPendingActions(backendTermID: Int?) -> Bool {
+        backendTermID != nil
+    }
+}
+
 @MainActor
 final class PushSyncCoordinator: ObservableObject {
     static let shared = PushSyncCoordinator()
     @Published private(set) var termBeingUpdated: String?
+    @Published private(set) var manualOperationTermID: String?
     @Published var errorMessage: String?
-    private let registry = PushTermRegistry.shared
+    private let registry: PushTermRegistry
+    private let triggerPending: (Int, TimeInterval) async throws -> BackendNotificationDelivery
+    private let clearPending: (Int, TimeInterval) async throws -> Void
+    private let ensureRemoteRegistration: (TimeInterval) async -> Bool
+    private let hasActiveEntitlement: () -> Bool
+    private let pushDeliveryState: () -> PushDeliveryState
+    private let refreshEntitlement: () async -> Void
+
+    init(
+        registry: PushTermRegistry = .shared,
+        triggerPending: ((Int, TimeInterval) async throws -> BackendNotificationDelivery)? = nil,
+        clearPending: ((Int, TimeInterval) async throws -> Void)? = nil,
+        ensureRemoteRegistration: ((TimeInterval) async -> Bool)? = nil,
+        hasActiveEntitlement: (() -> Bool)? = nil,
+        pushDeliveryState: (() -> PushDeliveryState)? = nil,
+        refreshEntitlement: (() async -> Void)? = nil
+    ) {
+        self.registry = registry
+        self.triggerPending = triggerPending ?? { id, timeout in
+            try await BackendClient.shared.triggerPendingNotification(backendTermID: id, timeout: timeout)
+        }
+        self.clearPending = clearPending ?? { id, timeout in
+            try await BackendClient.shared.clearPendingNotification(backendTermID: id, timeout: timeout)
+        }
+        self.ensureRemoteRegistration = ensureRemoteRegistration ?? { timeout in
+            await NotificationManager.shared.ensureRemoteNotificationsRegistered(
+                timeout: timeout,
+                forceRefresh: true
+            )
+        }
+        self.hasActiveEntitlement = hasActiveEntitlement ?? { PlusStore.shared.hasActiveEntitlement }
+        self.pushDeliveryState = pushDeliveryState ?? { PlusStore.shared.pushDeliveryState }
+        self.refreshEntitlement = refreshEntitlement ?? { await PlusStore.shared.refreshStatus() }
+    }
 
     func setPushEnabled(_ enabled: Bool, for term: WatchTerm) async {
         guard termBeingUpdated == nil else { return }
@@ -83,6 +123,47 @@ final class PushSyncCoordinator: ObservableObject {
         await retryPendingOperations()
     }
 
+    func notifyPendingNow(for term: WatchTerm, timeout: TimeInterval = 30) async {
+        guard manualOperationTermID == nil else { return }
+        guard let backendTermID = term.backendTermID else {
+            errorMessage = I18nManager.shared.t("paidPushTermStale")
+            return
+        }
+        manualOperationTermID = term.id
+        errorMessage = nil
+        defer { manualOperationTermID = nil }
+
+        guard hasActiveEntitlement(), pushDeliveryState() == .active else {
+            errorMessage = I18nManager.shared.t("paidPushDeliveryUnavailable")
+            return
+        }
+        guard await ensureRemoteRegistration(min(timeout, 12)) else {
+            errorMessage = I18nManager.shared.t("paidPushRegistrationUnavailable")
+            return
+        }
+        do {
+            _ = try await triggerPending(backendTermID, timeout)
+        } catch {
+            await handleManualOperationError(error)
+        }
+    }
+
+    func clearPendingNotification(for term: WatchTerm, timeout: TimeInterval = 30) async {
+        guard manualOperationTermID == nil else { return }
+        guard let backendTermID = term.backendTermID else {
+            errorMessage = I18nManager.shared.t("paidPushTermStale")
+            return
+        }
+        manualOperationTermID = term.id
+        errorMessage = nil
+        defer { manualOperationTermID = nil }
+        do {
+            try await clearPending(backendTermID, timeout)
+        } catch {
+            await handleManualOperationError(error)
+        }
+    }
+
     func retryPendingOperations() async {
         for operation in registry.pendingOperations {
             do {
@@ -124,18 +205,34 @@ final class PushSyncCoordinator: ObservableObject {
         await PlusStore.shared.refreshStatus()
     }
 
-    func recordAPNSRegistrationFailure(_ error: Error) {
-        errorMessage = "Push registration failed: \(error.localizedDescription)"
+    private func ensureAPNSRegistration(timeout: TimeInterval = 12) async -> Bool {
+        await ensureRemoteRegistration(timeout)
     }
 
-    private func ensureAPNSRegistration(timeout: TimeInterval = 12) async -> Bool {
-        if BackendClient.shared.hasRegisteredAPNSDeviceForCurrentEnvironment { return true }
-        UIApplication.shared.registerForRemoteNotifications()
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
-            if BackendClient.shared.hasRegisteredAPNSDeviceForCurrentEnvironment { return true }
-            try? await Task.sleep(nanoseconds: 200_000_000)
+    private func handleManualOperationError(_ error: Error) async {
+        if case BackendClientError.httpStatus(_, let code, _) = error,
+           code == "paid_backend_required" {
+            await refreshEntitlement()
         }
-        return false
+        errorMessage = I18nManager.shared.t(Self.manualOperationErrorKey(for: error))
+    }
+
+    static func manualOperationErrorKey(for error: Error) -> String {
+        guard case BackendClientError.httpStatus(let status, let code, _) = error else {
+            return "paidPushActionFailed"
+        }
+        if status == 404 { return "paidPushTermStale" }
+        switch code {
+        case "no_pending_content":
+            return "paidPushNothingPending"
+        case "paid_backend_required", "push_delivery_paused":
+            return "paidPushDeliveryUnavailable"
+        case "notifications_disabled":
+            return "paidPushTermDisabled"
+        case "apns_unverified", "apns_registration_unverified":
+            return "paidPushRegistrationUnavailable"
+        default:
+            return "paidPushActionFailed"
+        }
     }
 }
