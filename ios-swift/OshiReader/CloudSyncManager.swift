@@ -43,6 +43,11 @@ final class CloudSyncManager: ObservableObject {
     private static let enabledKey = "icloud_sync_enabled"
     private static let lastSyncedAtKey = "icloud_sync_last_synced_at"
     private static let lastPushedRevisionKey = "icloud_sync_last_pushed_revision"
+    /// The `updatedAt` of the newest remote snapshot this device has already
+    /// seen (imported or written). Freshness must be judged against this, not
+    /// against `lastSyncedAt` (a local wall clock) — comparing another device's
+    /// clock to ours means clock skew can make us skip a genuinely newer pull.
+    private static let lastSeenRemoteUpdatedAtKey = "icloud_sync_last_seen_remote_updated_at"
 
     // Lazy and untouched until a sync actually runs (always gated behind
     // `isEnabled` — see `syncNow()`): CKContainer.default() reads the app's
@@ -141,6 +146,15 @@ final class CloudSyncManager: ObservableObject {
         defaults.set(pushedRevision, forKey: Self.lastPushedRevisionKey)
     }
 
+    private var lastSeenRemoteUpdatedAt: Date? {
+        let timestamp = UserDefaults.standard.double(forKey: Self.lastSeenRemoteUpdatedAtKey)
+        return timestamp > 0 ? Date(timeIntervalSince1970: timestamp) : nil
+    }
+
+    private func setLastSeenRemoteUpdatedAt(_ date: Date) {
+        UserDefaults.standard.set(date.timeIntervalSince1970, forKey: Self.lastSeenRemoteUpdatedAtKey)
+    }
+
     private func recordID() -> CKRecord.ID {
         CKRecord.ID(recordName: Self.recordName)
     }
@@ -161,10 +175,11 @@ final class CloudSyncManager: ObservableObject {
               let remoteUpdatedAt = record["updatedAt"] as? Date else {
             return false
         }
-        if let lastSyncedAt, remoteUpdatedAt <= lastSyncedAt { return false }
+        if let lastSeen = lastSeenRemoteUpdatedAt, remoteUpdatedAt <= lastSeen { return false }
 
         let data = try Data(contentsOf: fileURL)
-        try LocalDB.shared.importBackupData(data)
+        try await LocalDB.shared.importBackupDataOffMain(data)
+        setLastSeenRemoteUpdatedAt(remoteUpdatedAt)
         return true
     }
 
@@ -181,17 +196,32 @@ final class CloudSyncManager: ObservableObject {
 
         let record = (try? await fetchRemoteRecord()) ?? CKRecord(recordType: Self.recordType, recordID: recordID())
         record["data"] = CKAsset(fileURL: tempURL)
-        record["updatedAt"] = Date()
+        var pushedAt = Date()
+        record["updatedAt"] = pushedAt
 
         do {
             _ = try await database.save(record)
+            setLastSeenRemoteUpdatedAt(pushedAt)
         } catch let error as CKError where error.code == .serverRecordChanged {
-            // Someone else pushed between our fetch and save — retry once
-            // against the freshest record rather than clobbering it outright.
+            // Someone else pushed between our fetch and save. If their write is
+            // genuinely newer than anything we've seen, adopt it and leave our
+            // local changes pending for the next cycle rather than overwriting
+            // theirs. Only overwrite when we've already seen their version.
             guard let latest = try await fetchRemoteRecord() else { throw error }
+            if let latestUpdatedAt = latest["updatedAt"] as? Date,
+               lastSeenRemoteUpdatedAt.map({ latestUpdatedAt > $0 }) ?? true,
+               let latestAsset = latest["data"] as? CKAsset,
+               let latestURL = latestAsset.fileURL {
+                let latestData = try Data(contentsOf: latestURL)
+                try await LocalDB.shared.importBackupDataOffMain(latestData)
+                setLastSeenRemoteUpdatedAt(latestUpdatedAt)
+                return
+            }
             latest["data"] = CKAsset(fileURL: tempURL)
-            latest["updatedAt"] = Date()
+            pushedAt = Date()
+            latest["updatedAt"] = pushedAt
             _ = try await database.save(latest)
+            setLastSeenRemoteUpdatedAt(pushedAt)
         }
     }
 

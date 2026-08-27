@@ -167,6 +167,13 @@ final class PaidBackendFeedCoordinator: ObservableObject {
     @Published var errorMessage: String?
 
     private var scheduledSync: Task<Void, Never>?
+    /// Single-flight guard for `synchronizeActiveProfileTerms()`. Without it,
+    /// two overlapping runs (e.g. `refresh()` racing `scheduleSynchronization()`
+    /// or `AppDelegate.applicationDidBecomeActive`) both see "no backend row
+    /// for keyword X" and both call `createBackendTerm`, producing duplicate
+    /// server rows. Keyed by profile so a run started before a profile switch
+    /// is never reused for the new profile.
+    private var activeTermSync: (profileID: UUID, task: Task<[Int], Error>)?
     private var backendTermIDsByProfile: [UUID: [String: Int]] = [:]
     private var hostedMutesInFlight = Set<HostedMuteKey>()
     private let incrementalOverlap: TimeInterval = 15 * 60
@@ -366,7 +373,17 @@ final class PaidBackendFeedCoordinator: ObservableObject {
         if let synchronizeHostedTerms {
             return try await synchronizeHostedTerms()
         }
-        let profileID = LocalProfileStore.shared.activeProfileID
+        let profileID = LocalProfileStore.shared.currentProfileIDThreadSafe
+        if let activeTermSync, activeTermSync.profileID == profileID {
+            return try await activeTermSync.task.value
+        }
+        let task = Task { try await self.performActiveProfileTermSync(profileID: profileID) }
+        activeTermSync = (profileID, task)
+        defer { activeTermSync = nil }
+        return try await task.value
+    }
+
+    private func performActiveProfileTermSync(profileID: UUID) async throws -> [Int] {
         let pushBoundLocalIDs = Set(
             PushTermRegistry.shared.bindings(for: profileID).map(\.localTermID)
         )

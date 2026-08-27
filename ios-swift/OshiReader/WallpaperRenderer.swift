@@ -9,6 +9,8 @@ enum WallpaperRenderer {
     /// The editor canvas is a 300×300 logical space with a 90pt base layer size.
     private static let canvasSize: CGFloat = 300
     private static let baseSize: Double = 90
+    private static let layerDownloadTimeout: TimeInterval = 10
+    private static let maximumLayerImageBytes = 12 * 1024 * 1024
 
     /// Filename prefix under Documents. Storing the bare name keeps it valid
     /// across launches/updates, since the container path can change.
@@ -23,8 +25,15 @@ enum WallpaperRenderer {
         let loaded = await withTaskGroup(of: (layer: AvatarLayer, image: UIImage)?.self) { group in
             for layer in layers {
                 group.addTask {
-                    guard let url = URL(string: layer.imageUrl),
-                          let (data, _) = try? await URLSession.shared.data(from: url),
+                    guard let url = URL(string: layer.imageUrl) else { return nil }
+                    var request = URLRequest(url: url)
+                    request.timeoutInterval = Self.layerDownloadTimeout
+                    guard let (data, response) = try? await URLSession.shared.data(for: request),
+                          let http = response as? HTTPURLResponse,
+                          (200...299).contains(http.statusCode),
+                          http.expectedContentLength <= 0
+                            || http.expectedContentLength <= Self.maximumLayerImageBytes,
+                          data.count <= Self.maximumLayerImageBytes,
                           let image = UIImage(data: data) else { return nil }
                     return (layer: layer, image: image)
                 }

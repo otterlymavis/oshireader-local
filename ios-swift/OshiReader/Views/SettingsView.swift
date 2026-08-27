@@ -617,6 +617,7 @@ struct SettingsView: View {
                 }
             }
             .fileImporter(isPresented: $showingBackupImporter, allowedContentTypes: [.json]) { result in
+                let data: Data
                 do {
                     let url = try result.get()
                     let didAccess = url.startAccessingSecurityScopedResource()
@@ -630,13 +631,24 @@ struct SettingsView: View {
                         showingBackupMessage = true
                         return
                     }
-                    let data = try Data(contentsOf: url, options: [.mappedIfSafe])
-                    try db.importBackupData(data)
-                    backupMessage = i18n.t("backupImported")
+                    // Read eagerly (not mapped) so the buffer stays valid after
+                    // the security-scoped access ends and the decode/normalize
+                    // work can move off the main thread below.
+                    data = try Data(contentsOf: url)
                 } catch {
                     backupMessage = localizedBackupMessage(error)
+                    showingBackupMessage = true
+                    return
                 }
-                showingBackupMessage = true
+                Task {
+                    do {
+                        try await db.importBackupDataOffMain(data)
+                        backupMessage = i18n.t("backupImported")
+                    } catch {
+                        backupMessage = localizedBackupMessage(error)
+                    }
+                    showingBackupMessage = true
+                }
             }
             .fileExporter(
                 isPresented: $showingEncryptedBackupExporter,
@@ -1109,7 +1121,7 @@ struct SettingsView: View {
                         try EncryptedBackupCodec.decrypt(data, password: password)
                     }.value
                     guard !Task.isCancelled else { return }
-                    try db.importBackupData(plaintext)
+                    try await db.importBackupDataOffMain(plaintext)
                     encryptedBackupOperation = nil
                     encryptedBackupPassword = ""
                     pendingEncryptedBackupData = nil

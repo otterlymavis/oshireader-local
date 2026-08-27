@@ -13,6 +13,11 @@ final class PushSyncCoordinator: ObservableObject {
     @Published private(set) var termBeingUpdated: String?
     @Published private(set) var manualOperationTermID: String?
     @Published var errorMessage: String?
+    /// Single-flight guard for `retryPendingOperations()` — it is reachable
+    /// from several `@MainActor` paths (`setPushEnabled`, `removeLocalTerm`,
+    /// `disable`, `reconcile`, …) that `await` mid-loop, so without this two
+    /// invocations can interleave and double-`deletePushTerm` the same id.
+    private var pendingRetryTask: Task<Void, Never>?
     private let registry: PushTermRegistry
     private let triggerPending: (Int, TimeInterval) async throws -> BackendNotificationDelivery
     private let clearPending: (Int, TimeInterval) async throws -> Void
@@ -165,6 +170,17 @@ final class PushSyncCoordinator: ObservableObject {
     }
 
     func retryPendingOperations() async {
+        if let pendingRetryTask {
+            await pendingRetryTask.value
+            return
+        }
+        let task = Task { await self.performRetryPendingOperations() }
+        pendingRetryTask = task
+        defer { pendingRetryTask = nil }
+        await task.value
+    }
+
+    private func performRetryPendingOperations() async {
         for operation in registry.pendingOperations {
             do {
                 try await BackendClient.shared.deletePushTerm(id: operation.backendTermID)

@@ -1132,7 +1132,7 @@ final class IngestionService {
         var seen = Set<String>()
         var hits = [FiveChSubjectEntry]()
 
-        let profileID = LocalProfileStore.shared.activeProfileID
+        let profileID = LocalProfileStore.shared.currentProfileIDThreadSafe
         let indexed = await FiveChIndexStore.shared.indexedEntries(for: profileID)
         let catalog = await FiveChIndexStore.shared.catalog(for: profileID)
         let indexedBoards = catalog.boards.compactMap(URL.init(string:))

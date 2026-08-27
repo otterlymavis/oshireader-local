@@ -207,6 +207,14 @@ final class LocalRefreshCoordinator: ObservableObject {
                 _ = await activeTask.value
                 return await refresh(request)
             }
+            // A single-source (.platform) tap must actually fetch that source.
+            // Coalescing it onto an unrelated in-flight refresh silently drops
+            // it — the user taps a chip and nothing ever loads for it. Wait for
+            // the active work to finish, then run this request's own pass.
+            if case .platform = request, activeRequest != request {
+                _ = await activeTask.value
+                return await refresh(request)
+            }
             return await activeTask.value
         }
 

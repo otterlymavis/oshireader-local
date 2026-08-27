@@ -174,7 +174,13 @@ struct ContentView: View {
     /// silently didn't make it in (duplicate, invalid, or over the custom
     /// URL limit) doesn't just vanish with no explanation.
     private func handlePendingShareDrain(_ summary: PendingShareDrainSummary) {
-        pendingShareFailure = summary.failures.first
+        // Only surface a new failure — never clear one. `.onAppear` and the
+        // `scenePhase == .active` change both call this on a cold launch; the
+        // second call drains an already-empty queue, and blindly assigning
+        // `summary.failures.first` (nil) would dismiss the alert the first
+        // drain just raised before the user ever sees it.
+        guard let failure = summary.failures.first else { return }
+        pendingShareFailure = failure
     }
 
     private var pendingShareFailureMessage: String {

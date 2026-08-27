@@ -108,7 +108,27 @@ final class LocalProfileStore: ObservableObject {
     static let defaultProfileName = "Default"
 
     @Published private(set) var profiles: [LocalProfile] = []
-    @Published private(set) var activeProfileID: UUID
+    @Published private(set) var activeProfileID: UUID {
+        didSet { setAtomicProfileID(activeProfileID) }
+    }
+
+    /// `activeProfileID` is a `@Published` value mutated on the main thread but
+    /// read from background ingestion (`IngestionService`, `defaultsKey(_:)`).
+    /// A profile switch concurrent with one of those reads is a data race on a
+    /// 16-byte `UUID` store. This lock-guarded mirror is the safe accessor for
+    /// non-main-thread callers.
+    private let atomicProfileIDLock = NSLock()
+    private var atomicProfileID: UUID
+    var currentProfileIDThreadSafe: UUID {
+        atomicProfileIDLock.lock()
+        defer { atomicProfileIDLock.unlock() }
+        return atomicProfileID
+    }
+    private func setAtomicProfileID(_ id: UUID) {
+        atomicProfileIDLock.lock()
+        atomicProfileID = id
+        atomicProfileIDLock.unlock()
+    }
 
     private let fileManager: FileManager
     private let defaults: UserDefaults
@@ -125,10 +145,12 @@ final class LocalProfileStore: ObservableObject {
            registry.profiles.contains(where: { $0.id == registry.activeProfileID }) {
             self.profiles = registry.profiles
             self.activeProfileID = registry.activeProfileID
+            self.atomicProfileID = registry.activeProfileID
         } else {
             let profile = LocalProfile(id: UUID(), name: Self.defaultProfileName, createdAt: Date(), lastUsedAt: Date())
             self.profiles = [profile]
             self.activeProfileID = profile.id
+            self.atomicProfileID = profile.id
             ensureProfileDirectory(for: profile.id)
             migrateLegacyData(to: profile.id)
             persist()
@@ -215,7 +237,7 @@ final class LocalProfileStore: ObservableObject {
     }
 
     static func defaultsKey(_ key: String, profileID: UUID? = nil) -> String {
-        let id = (profileID ?? shared.activeProfileID).uuidString
+        let id = (profileID ?? shared.currentProfileIDThreadSafe).uuidString
         return "profile.\(id).\(key)"
     }
 

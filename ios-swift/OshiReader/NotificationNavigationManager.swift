@@ -54,6 +54,14 @@ final class NotificationNavigationManager: ObservableObject {
     @discardableResult
     func mergeNotificationItem(userInfo: [AnyHashable: Any]) -> Bool {
         guard let payload = notificationPayload(from: userInfo) else { return false }
+        // Only pre-seed a preview when the payload carries a real publish date.
+        // `notificationPayload` otherwise fills `published_at` with `now`, which
+        // would pin the item to the top of the feed permanently: when the hosted
+        // feed later delivers the same item with its true (older) date,
+        // `LocalDB.mergedPublishedAt` keeps the newer of the two — the fabricated
+        // `now` — so the real date can never take over. Items without a payload
+        // date are picked up by the `refreshNow()` that follows this call.
+        guard payload.hasPublishedAt else { return false }
         let item = Self.preferredNotificationItem(
             payload.item,
             cachedItems: LocalDB.shared.feedItems,

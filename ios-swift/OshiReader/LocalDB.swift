@@ -166,19 +166,32 @@ class LocalDB: ObservableObject {
     }
 
     private func writeWidgetSnapshotNow() {
-        let termOptions = terms.map { WidgetTermOption(id: $0.id, keyword: $0.keyword) }
-        var itemsByTermID: [String: [FeedItem]] = [:]
-        for term in terms {
-            // Deliberately bypasses `queryFeed`'s single-slot cache: looping
-            // over every term here would thrash that cache (each term's
-            // lookup evicts the last), leaving it cold for the next real
-            // FeedView render right after. This recompute is already
-            // debounced to once per data-change burst, so there's no
-            // caching win to give up.
-            itemsByTermID[term.id] = Array(computeQueryFeed(keyword: term.keyword, days: 0).prefix(Self.widgetItemsPerTerm))
-        }
-        let snapshot = WidgetSnapshot(terms: termOptions, itemsByTermID: itemsByTermID, updatedAt: Date())
+        // Snapshot the @Published inputs on the main thread (cheap CoW refs),
+        // then do the per-term filter/sort work on `queue` — looping
+        // `computeQueryFeed` over every term is O(terms × feedItems·log) and
+        // must not run on the main thread. It also deliberately bypasses
+        // `queryFeed`'s single-slot cache (each term's lookup would evict the
+        // last, leaving it cold for the next real FeedView render).
+        let termsSnapshot = terms
+        let feedItemsSnapshot = feedItems
+        let hiddenItemsSnapshot = hiddenItems
+        let subscribedPlatformsSnapshot = subscribedPlatforms
+        let termOptions = termsSnapshot.map { WidgetTermOption(id: $0.id, keyword: $0.keyword) }
         queue.async {
+            var itemsByTermID: [String: [FeedItem]] = [:]
+            for term in termsSnapshot {
+                itemsByTermID[term.id] = Array(
+                    Self.computeQueryFeed(
+                        keyword: term.keyword,
+                        days: 0,
+                        feedItems: feedItemsSnapshot,
+                        hiddenItems: hiddenItemsSnapshot,
+                        subscribedPlatforms: subscribedPlatformsSnapshot,
+                        terms: termsSnapshot
+                    ).prefix(Self.widgetItemsPerTerm)
+                )
+            }
+            let snapshot = WidgetSnapshot(terms: termOptions, itemsByTermID: itemsByTermID, updatedAt: Date())
             WidgetSnapshotStore.write(snapshot)
             DispatchQueue.main.async {
                 WidgetCenter.shared.reloadAllTimelines()
@@ -908,7 +921,7 @@ class LocalDB: ObservableObject {
                     }
                     // Other discussion routes can still carry thread-creation dates,
                     // which are not useful staleness signals for current activity.
-                    if discussionActivityPlatforms.contains(normalizedPlatformKey($0.platform)) {
+                    if discussionActivityPlatforms.contains(Self.normalizedPlatformKey($0.platform)) {
                         return true
                     }
                     // An unparseable date means we can't tell whether the item is
@@ -1069,14 +1082,36 @@ class LocalDB: ObservableObject {
     }
 
     private func computeQueryFeed(keyword: String?, days: Int) -> [FeedItem] {
+        Self.computeQueryFeed(
+            keyword: keyword,
+            days: days,
+            feedItems: feedItems,
+            hiddenItems: hiddenItems,
+            subscribedPlatforms: subscribedPlatforms,
+            terms: terms
+        )
+    }
+
+    /// Pure implementation: takes explicit snapshots of the four `@Published`
+    /// inputs it reads so callers off the main thread (e.g. the debounced
+    /// widget-snapshot build) can run it on a background queue after
+    /// snapshotting that state on the main thread.
+    private static func computeQueryFeed(
+        keyword: String?,
+        days: Int,
+        feedItems: [FeedItem],
+        hiddenItems: Set<String>,
+        subscribedPlatforms: [String],
+        terms: [WatchTerm]
+    ) -> [FeedItem] {
         let now = Date()
         // days == 0 means "All Time" — no cutoff applied
         let cutoffDate = days > 0 ? Calendar.current.date(byAdding: .day, value: -days, to: now) : nil
-        
+
         let strictKeywordPlatforms = PlatformRegistry.strictKeywordPlatformIDs
             .union(["news", "tver"])
         let discussionActivityPlatforms = Self.discussionActivityPlatforms
-        let termsByKeyword = Dictionary(self.terms.map { ($0.keyword, $0) }, uniquingKeysWith: { first, _ in first })
+        let termsByKeyword = Dictionary(terms.map { ($0.keyword, $0) }, uniquingKeysWith: { first, _ in first })
 
         let candidates = feedItems.compactMap { item -> FeedQueryCandidate? in
             let key = "\(item.id)::\(item.watch_term_keyword)"
@@ -1085,7 +1120,7 @@ class LocalDB: ObservableObject {
             // Search pages fallbacks
             if Self.isSearchFallbackItem(item) { return nil }
             if FeedItemPolicy.shouldPruneLegacyYouTubeItem(item) { return nil }
-            let platformKey = normalizedPlatformKey(item.platform)
+            let platformKey = Self.normalizedPlatformKey(item.platform)
             
             // Bare address item (Yahoo News fallback checking)
             if platformKey == "yahoonews" && (item.title?.contains("https://") == true || item.content_text?.contains("https://") == true) {
@@ -1115,7 +1150,7 @@ class LocalDB: ObservableObject {
             if strictKeywordPlatforms.contains(PlatformRegistry.normalizeID(item.platform)), !item.watch_term_keyword.isEmpty {
                 let aliases = termsByKeyword[item.watch_term_keyword]?.aliases ?? []
                 let matchingKeywords = [item.watch_term_keyword] + aliases
-                if !matchingKeywords.contains(where: { matchesKeyword(item: item, kw: $0) }) {
+                if !matchingKeywords.contains(where: { Self.matchesKeyword(item: item, kw: $0) }) {
                     return nil
                 }
             }
@@ -1279,7 +1314,7 @@ class LocalDB: ObservableObject {
         return current
     }
     
-    private func matchesKeyword(item: FeedItem, kw: String) -> Bool {
+    private static func matchesKeyword(item: FeedItem, kw: String) -> Bool {
         let primaryText = item.title?.trimmingCharacters(in: .whitespacesAndNewlines)
         let haystack = ((primaryText?.isEmpty == false ? primaryText : item.content_text) ?? "").lowercased()
         let needle = kw.lowercased()
@@ -1734,10 +1769,28 @@ class LocalDB: ObservableObject {
         }.value
     }
 
-    @MainActor
-    func importBackupData(_ data: Data) throws {
-        flushPendingFeedItemsSave()
-        guard data.count <= Self.maximumBackupBytes else {
+    /// Decoded + normalized + re-encoded backup payload. All of that work is
+    /// pure and CPU-heavy (a 20 MB JSON decode, list transforms, nine
+    /// re-encodes), so `prepareBackupImport` can run off the main thread and
+    /// only `applyPreparedImport` — the staged file swap plus `@Published`
+    /// assignment — has to run on the main actor.
+    private struct PreparedBackupImport: Sendable {
+        let terms: [WatchTerm]
+        let feedItems: [FeedItem]
+        let savedPages: [SavedPage]
+        let customUrls: [CustomUrl]
+        let amebloBlogs: [AmebloBlog]
+        let subscribedPlatforms: [String]
+        let wallpaper: String?
+        let sourcesOrder: [String]?
+        let oshiAvatars: [String: String]
+        let compositions: [String: [AvatarLayer]]
+        let hiddenItems: [String]
+        let encodedFiles: [(String, Data)]
+    }
+
+    private static func prepareBackupImport(_ data: Data) throws -> PreparedBackupImport {
+        guard data.count <= maximumBackupBytes else {
             throw NSError(domain: "OshiReaderBackup", code: 5, userInfo: [NSLocalizedDescriptionKey: "Backup file is too large"])
         }
         let backup = try JSONDecoder().decode(LocalBackup.self, from: data)
@@ -1746,8 +1799,8 @@ class LocalDB: ObservableObject {
         }
         guard backup.terms.count <= 200,
               backup.feed_items.count <= 2_000,
-              backup.saved_pages.count <= Self.maximumSavedPages,
-              backup.custom_urls.count <= Self.maximumCustomUrls,
+              backup.saved_pages.count <= maximumSavedPages,
+              backup.custom_urls.count <= maximumCustomUrls,
               backup.ameblo_blogs.count <= AmebloBlog.maximumCount,
               backup.oshi_avatars.count <= 200,
               backup.compositions.count <= 200,
@@ -1788,6 +1841,7 @@ class LocalDB: ObservableObject {
         }
         let normalizedCustomUrls = customURLImport.urls
 
+        let encoder = JSONEncoder()
         let encodedFiles: [(String, Data)] = try [
             ("terms", encoder.encode(normalizedTerms)),
             ("feed_items", encoder.encode(normalizedFeedItems)),
@@ -1799,10 +1853,29 @@ class LocalDB: ObservableObject {
             ("oshi_compositions", encoder.encode(backup.compositions)),
             ("hidden_items", encoder.encode(normalizedHiddenItems))
         ]
-        try saveEncodedFilesSynchronously(
-            encodedFiles,
+
+        return PreparedBackupImport(
+            terms: normalizedTerms,
+            feedItems: normalizedFeedItems,
+            savedPages: normalizedSavedPages,
+            customUrls: normalizedCustomUrls,
+            amebloBlogs: normalizedAmebloBlogs,
+            subscribedPlatforms: normalizedSubscribedPlatforms,
             wallpaper: backup.wallpaper,
-            sourcesOrder: normalizedSourcesOrder
+            sourcesOrder: normalizedSourcesOrder,
+            oshiAvatars: backup.oshi_avatars,
+            compositions: backup.compositions,
+            hiddenItems: normalizedHiddenItems,
+            encodedFiles: encodedFiles
+        )
+    }
+
+    @MainActor
+    private func applyPreparedImport(_ prepared: PreparedBackupImport) throws {
+        try saveEncodedFilesSynchronously(
+            prepared.encodedFiles,
+            wallpaper: prepared.wallpaper,
+            sourcesOrder: prepared.sourcesOrder
         )
 
         dataRevision += 1
@@ -1810,18 +1883,36 @@ class LocalDB: ObservableObject {
         invalidateContentCaches()
         NotificationManager.shared.clearLocalNotifications()
 
-        terms = normalizedTerms
-        feedItems = normalizedFeedItems
-        savedPages = normalizedSavedPages
-        customUrls = normalizedCustomUrls
-        amebloBlogs = normalizedAmebloBlogs
-        subscribedPlatforms = normalizedSubscribedPlatforms
-        wallpaper = backup.wallpaper
-        sourcesOrder = normalizedSourcesOrder
-        oshiAvatars = backup.oshi_avatars
-        compositions = backup.compositions
-        hiddenItems = Set(normalizedHiddenItems)
+        terms = prepared.terms
+        feedItems = prepared.feedItems
+        savedPages = prepared.savedPages
+        customUrls = prepared.customUrls
+        amebloBlogs = prepared.amebloBlogs
+        subscribedPlatforms = prepared.subscribedPlatforms
+        wallpaper = prepared.wallpaper
+        sourcesOrder = prepared.sourcesOrder
+        oshiAvatars = prepared.oshiAvatars
+        compositions = prepared.compositions
+        hiddenItems = Set(prepared.hiddenItems)
+    }
 
+    @MainActor
+    func importBackupData(_ data: Data) throws {
+        flushPendingFeedItemsSave()
+        try applyPreparedImport(Self.prepareBackupImport(data))
+    }
+
+    /// Same as `importBackupData` but runs the decode/normalize/re-encode off
+    /// the main thread — use this from UI file-importers and background sync so
+    /// a 20 MB restore doesn't freeze the app. The final staged swap and
+    /// `@Published` assignment still happen on the main actor.
+    @MainActor
+    func importBackupDataOffMain(_ data: Data) async throws {
+        flushPendingFeedItemsSave()
+        let prepared = try await Task.detached(priority: .userInitiated) {
+            try Self.prepareBackupImport(data)
+        }.value
+        try applyPreparedImport(prepared)
     }
 
     /// See exportEncryptedBackupData — PBKDF2 runs detached to keep the
@@ -1831,7 +1922,7 @@ class LocalDB: ObservableObject {
         let plaintext = try await Task.detached(priority: .userInitiated) {
             try EncryptedBackupCodec.decrypt(data, password: password)
         }.value
-        try importBackupData(plaintext)
+        try await importBackupDataOffMain(plaintext)
     }
 
     @MainActor
@@ -2075,13 +2166,13 @@ class LocalDB: ObservableObject {
     func getStats() -> (total: Int, byPlatform: [String: Int]) {
         var counts = [String: Int]()
         for item in feedItems {
-            let key = normalizedPlatformKey(item.platform)
+            let key = Self.normalizedPlatformKey(item.platform)
             counts[key] = (counts[key] ?? 0) + 1
         }
         return (feedItems.count, counts)
     }
 
-    private func normalizedPlatformKey(_ platform: String) -> String {
+    private static func normalizedPlatformKey(_ platform: String) -> String {
         PlatformRegistry.normalizeID(platform)
     }
 }
