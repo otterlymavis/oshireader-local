@@ -10,11 +10,17 @@ private final class DebouncedFileSaver {
     private let lock = NSLock()
     private var generation = 0
     private var pendingWorkItem: DispatchWorkItem?
+    /// True between a `scheduleSave` and the moment its write actually reaches
+    /// disk. Lets `flush` skip a full re-encode + file write when the store is
+    /// already persisted — the common case at a profile switch / app
+    /// backgrounding, where the debounce has long since fired.
+    private var hasPendingWrite = false
 
     func scheduleSave(on queue: DispatchQueue, delay: DispatchTimeInterval = .milliseconds(250), write: @escaping () -> Void) {
         lock.lock()
         pendingWorkItem?.cancel()
         generation &+= 1
+        hasPendingWrite = true
         let currentGeneration = generation
         let workItem = DispatchWorkItem { [weak self] in
             guard let self else { return }
@@ -23,6 +29,10 @@ private final class DebouncedFileSaver {
             self.lock.unlock()
             guard isCurrent else { return }
             write()
+            self.lock.lock()
+            // Only mark clean if no newer scheduleSave landed while `write` ran.
+            if self.generation == currentGeneration { self.hasPendingWrite = false }
+            self.lock.unlock()
         }
         pendingWorkItem = workItem
         lock.unlock()
@@ -31,14 +41,25 @@ private final class DebouncedFileSaver {
         queue.asyncAfter(deadline: .now() + delay, execute: workItem)
     }
 
-    /// Cancels any pending debounced write and performs `write` synchronously
-    /// on `queue` right now.
+    /// Cancels any pending debounced write and, if the store has an
+    /// un-persisted change, performs `write` synchronously on `queue` now.
+    /// A no-op when nothing is pending.
+    ///
+    /// Trade-off: if a debounced `write` failed (its errors are logged and
+    /// swallowed), the flag is still cleared, so a later `flush` won't retry
+    /// it — the next real mutation re-dirties and rewrites. Writes target the
+    /// app's own container with `.atomic`, so this is a near-non-issue, and
+    /// the previous always-write behaviour only retried a failure if a flush
+    /// happened to follow it with no mutation in between.
     func flush(on queue: DispatchQueue, write: @escaping () -> Void) {
         lock.lock()
+        let shouldWrite = hasPendingWrite
         generation &+= 1
         pendingWorkItem?.cancel()
         pendingWorkItem = nil
+        hasPendingWrite = false
         lock.unlock()
+        guard shouldWrite else { return }
         queue.sync(execute: write)
     }
 }

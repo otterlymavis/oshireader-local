@@ -253,9 +253,9 @@ When a foreground refresh is running, `refreshIfIdle(.background)` returns `nil`
 
 ## Optimizations
 
-> **Status:** O1–O6, O8–O10 applied plus the M6 residual and the
+> **Status:** O1–O10 applied plus the M6 residual and the
 > `collectDictionaries` / `SearchView` micro-items (build green, 393/393 unit
-> tests pass). Only O7 (acceptable as-is) is left — see the per-item notes.
+> tests pass). All optimization follow-ups are closed.
 
 ### O1. `PlatformRegistry.normalizeID` is O(n) with two string allocations, in every hot path
 **File:** `OshiReader/PlatformRegistry.swift:132‑148`
@@ -296,6 +296,19 @@ Up to 5 `create` POSTs per term per refresh. Cache `{uid, token}` in an actor wi
 ### O7. `flushPendingWrites()` / `queue.sync {}` on the main actor during `switchProfile`
 **File:** `OshiReader/LocalDB.swift:197‑213, 447‑452`
 Blocks the main thread on a full `feed_items` re-encode (up to 600 items). Acceptable now; will get janky if the cap grows.
+
+**✅ Done:** `DebouncedFileSaver` now tracks `hasPendingWrite` (set on
+`scheduleSave`, cleared once the debounced `write` reaches disk). `flush`
+returns immediately when nothing is pending instead of always re-encoding +
+writing. `switchProfile` couldn't just go async — the flush is a correctness
+barrier that must finish before `activateProfile` flips the active id (the
+write closure resolves its path off `activeProfileID` at execution time), and
+`async` reopens a mutation-during-suspension race. Skipping the write when the
+store is already persisted (the normal case — the 250 ms debounce fired long
+ago) keeps the barrier semantics with zero main-thread encode. The trailing
+`queue.sync {}` in `flushPendingWrites` still drains any genuinely in-flight
+async write. Trade-off: a failed debounced write is not retried by a later
+flush (documented in code); the next mutation re-dirties and rewrites.
 
 ### O8. Dead code / redundant recompute
 - **✅ Done:** `RSSDateFormatterPool` (`OshiReader/NetworkManager.swift:15‑34`) deleted — `date(from:format:)` was never called.
