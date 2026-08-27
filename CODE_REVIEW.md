@@ -5,24 +5,22 @@ severity. Line numbers are from the state of the tree at review time; the
 build and test suite were **not** run, so severities are best-effort from
 reading.
 
-> **Status:** all **High** and **Medium** findings below were fixed on this
-> branch. Each carries a **✅ Fixed** note with the change made. Low /
-> optimization / tooling items are left as-is.
+> **Status:** all **High** (H1) and **Medium** (M1–M9) findings and every
+> **Optimization** (O1–O10) are **closed** — each carries a **✅ Fixed** /
+> **✅ Done** note with the change. Remaining open by design: the **Low**
+> items (L1–L24), the **Concurrency (unverified)** notes, and the **tooling /
+> legacy** items (T1 `mobile/`, T2 `paid_catalog_cost_gate.py`) — none block
+> the app and each is scoped in place below.
 >
-> **Verification:** `xcodebuild build` green; `xcodebuild test` → **393 / 393
-> unit tests pass** (incl. `FeedMergingTests`, `FeedQueryingTests`,
-> `PaidPushTests`, `QuietHoursTests`, `SavedBookmarksTests`, `OPMLExportTests`,
-> `ThemeMetadataTests`). 8 of 20 **UI** tests fail — **proven pre-existing**:
-> stashing only this fix's 12 files (leaving the tree's other uncommitted
-> changes) and re-running still fails the same tests identically. The cause is
-> the tree's separate uncommitted change enabling paid push by default
-> (`config/paid-catalog.json` `repository_default_enabled: true`, populated
-> `PUSH_SUBSCRIPTION_PRODUCT_IDS` in `project.yml` / `project.pbxproj`,
-> `PlusStore.swift` — none touched here): `testPaidPushControlsFollowCatalogConfiguration`
-> asserts the guaranteed-push Settings section is *absent* under plain
-> `--uitesting`, and it is now present, which shifts every Settings /
-> add-keyword element lookup below it. All fixes here are inert under
-> `--uitesting` (paid sync disabled, `FeedView.refreshFeed()` returns early).
+> **Verification (current `master`):** `xcodebuild build` green; `xcodebuild
+> test` → **393 / 393 unit tests pass** and **20 / 20 UI tests pass**. The UI
+> suite was updated alongside the tree's separate change that enables paid
+> push by default (`config/paid-catalog.json` `repository_default_enabled:
+> true`, populated `PUSH_SUBSCRIPTION_PRODUCT_IDS`): the guaranteed-push
+> Settings section is now present under `--uitesting`, so
+> `testPaidPushControlsFollowCatalogConfiguration` asserts its presence + a
+> disabled control, the locale is pinned to English for element lookups, and
+> `PlusStore` StoreKit calls are gated off under `--uitesting`.
 
 **Severity key**
 - **High** — data loss / integrity, security, or user-visible wrong behavior that occurs in normal use.
