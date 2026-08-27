@@ -2569,15 +2569,19 @@ final class IngestionService {
     }
 
     /// Collects every dictionary keyed by any of `names`, grouped by which
-    /// key matched, in a single recursive walk of `value`.
+    /// key matched, in a single recursive walk of `value`. A matched renderer
+    /// subtree is not re-walked — a `videoRenderer` never nests another one —
+    /// which skips a large chunk of the response tree.
     private func collectDictionaries(named names: [String], in value: Any, into results: inout [String: [[String: Any]]]) {
         if let dict = value as? [String: Any] {
+            var matchedKeys = Set<String>()
             for name in names {
                 if let match = dict[name] as? [String: Any] {
                     results[name, default: []].append(match)
+                    matchedKeys.insert(name)
                 }
             }
-            for child in dict.values {
+            for (key, child) in dict where !matchedKeys.contains(key) {
                 collectDictionaries(named: names, in: child, into: &results)
             }
         } else if let array = value as? [Any] {

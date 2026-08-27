@@ -268,12 +268,12 @@ final class SavedBookmarksTests: XCTestCase {
     }
 
     @MainActor
-    func testProfileTransferCreatesNewProfileAndKeepsActiveProfile() throws {
+    func testProfileTransferCreatesNewProfileAndKeepsActiveProfile() async throws {
         let originalID = db.activeProfile.id
         _ = db.saveTerm(keyword: "Transferred term")
         let data = try db.exportProfileTransferData()
 
-        let imported = try db.importProfileTransferData(data)
+        let imported = try await db.importProfileTransferData(data)
         XCTAssertEqual(db.activeProfile.id, originalID)
         XCTAssertNotEqual(imported.id, originalID)
         XCTAssertTrue(db.profiles.contains(where: { $0.id == imported.id }))
@@ -283,8 +283,9 @@ final class SavedBookmarksTests: XCTestCase {
         try db.switchProfile(to: originalID)
         try db.deleteProfile(id: imported.id)
 
-        let repeatedImports = try (0..<3).map { _ in
-            try db.importProfileTransferData(data)
+        var repeatedImports: [LocalProfile] = []
+        for _ in 0..<3 {
+            repeatedImports.append(try await db.importProfileTransferData(data))
         }
         XCTAssertEqual(Set(repeatedImports.map(\.name)).count, 3)
         for profile in repeatedImports {
@@ -293,10 +294,8 @@ final class SavedBookmarksTests: XCTestCase {
     }
 
     @MainActor
-    func testProfileTransferRejectsMalformedAndUnsupportedPackages() throws {
-        XCTAssertThrowsError(try db.importProfileTransferData(Data("not a profile".utf8))) { error in
-            XCTAssertEqual(error as? LocalProfileError, .invalidPackage)
-        }
+    func testProfileTransferRejectsMalformedAndUnsupportedPackages() async throws {
+        await assertImportProfileThrows(Data("not a profile".utf8), .invalidPackage)
 
         let transfer = LocalProfileTransfer(profile: db.activeProfile, backup: LocalBackup(
             exportedAt: "",
@@ -315,14 +314,25 @@ final class SavedBookmarksTests: XCTestCase {
         var object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
         object["version"] = 99
         let data = try JSONSerialization.data(withJSONObject: object)
-        XCTAssertThrowsError(try db.importProfileTransferData(data)) { error in
-            XCTAssertEqual(error as? LocalProfileError, .unsupportedPackageVersion)
-        }
+        await assertImportProfileThrows(data, .unsupportedPackageVersion)
 
         object["version"] = 0
         let legacyVersionData = try JSONSerialization.data(withJSONObject: object)
-        XCTAssertThrowsError(try db.importProfileTransferData(legacyVersionData)) { error in
-            XCTAssertEqual(error as? LocalProfileError, .unsupportedPackageVersion)
+        await assertImportProfileThrows(legacyVersionData, .unsupportedPackageVersion)
+    }
+
+    @MainActor
+    private func assertImportProfileThrows(
+        _ data: Data,
+        _ expected: LocalProfileError,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async {
+        do {
+            _ = try await db.importProfileTransferData(data)
+            XCTFail("Expected importProfileTransferData to throw", file: file, line: line)
+        } catch {
+            XCTAssertEqual(error as? LocalProfileError, expected, file: file, line: line)
         }
     }
 

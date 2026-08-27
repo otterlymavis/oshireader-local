@@ -712,6 +712,7 @@ struct SettingsView: View {
                 if case .failure(let error) = result { profileError = localizedProfileMessage(error) }
             }
             .fileImporter(isPresented: $showingProfileImporter, allowedContentTypes: [.oshiReaderProfile, .data]) { result in
+                let data: Data
                 do {
                     let url = try result.get()
                     let didAccess = url.startAccessingSecurityScopedResource()
@@ -719,9 +720,19 @@ struct SettingsView: View {
                     let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
                     let byteCount = (attributes[.size] as? NSNumber)?.int64Value ?? 0
                     guard byteCount <= Int64(LocalDB.maximumProfileTransferBytes) else { throw LocalProfileError.invalidPackage }
-                    let imported = try db.importProfileTransferData(try Data(contentsOf: url, options: [.mappedIfSafe]))
-                    profileError = i18n.t("profileImported").replacingOccurrences(of: "%@", with: imported.name)
-                } catch { profileError = localizedProfileMessage(error) }
+                    data = try Data(contentsOf: url)
+                } catch {
+                    profileError = localizedProfileMessage(error)
+                    return
+                }
+                Task {
+                    do {
+                        let imported = try await db.importProfileTransferData(data)
+                        profileError = i18n.t("profileImported").replacingOccurrences(of: "%@", with: imported.name)
+                    } catch {
+                        profileError = localizedProfileMessage(error)
+                    }
+                }
             }
             .alert(i18n.t("profileStatus"), isPresented: Binding(
                 get: { !profileError.isEmpty && !showingProfileNameSheet },

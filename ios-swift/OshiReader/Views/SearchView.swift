@@ -51,6 +51,11 @@ struct SearchView: View {
     // `staticSearchLinks` never changes at runtime, so this only needs to be
     // rebuilt when `db.customUrls` changes — not on every keystroke re-render.
     @State private var cachedGroupedLinks: [(String, [SearchLink])] = Self.makeGroupedLinks(customUrls: LocalDB.shared.customUrls)
+    /// `feedItem(for:)` stamps a fresh timestamp on every call, so mapping
+    /// `selectedLinks` inline in `body` would hand `ReaderView` a
+    /// never-equal `siblingItems` on every render. Rebuild only when an input
+    /// (group, keyword, custom URLs) actually changes.
+    @State private var cachedSiblingItems: [FeedItem] = []
 
     private var activeTerms: [WatchTerm] {
         db.terms.filter(\.is_active)
@@ -113,7 +118,7 @@ struct SearchView: View {
                         if let item = selectedItem {
                             ReaderView(
                                 feedItem: item,
-                                siblingItems: selectedLinks.map(feedItem(for:)),
+                                siblingItems: cachedSiblingItems,
                                 onNavigate: { selectedItem = $0 }
                             )
                         } else {
@@ -125,7 +130,7 @@ struct SearchView: View {
                 NavigationStack {
                     mainContentColumn
                         .navigationDestination(for: FeedItem.self) { item in
-                            ReaderView(feedItem: item, siblingItems: selectedLinks.map(feedItem(for:)))
+                            ReaderView(feedItem: item, siblingItems: cachedSiblingItems)
                         }
                 }
             }
@@ -136,13 +141,17 @@ struct SearchView: View {
             } else if keyword.isEmpty, let first = activeTerms.first?.keyword {
                 keyword = first
             }
+            rebuildSiblingItems()
         }
         .onChange(of: db.customUrls) { _, newValue in
             cachedGroupedLinks = Self.makeGroupedLinks(customUrls: newValue)
             if selectedGroup == "Custom", customSearchLinks.isEmpty {
                 selectedGroup = "News"
             }
+            rebuildSiblingItems()
         }
+        .onChange(of: selectedGroup) { _, _ in rebuildSiblingItems() }
+        .onChange(of: keyword) { _, _ in rebuildSiblingItems() }
         .onReceive(intentNavigation.$pendingSearchQuery) { pendingQuery in
             if let pendingQuery {
                 applyPendingSearchQuery(pendingQuery)
@@ -416,6 +425,10 @@ struct SearchView: View {
 
     private func feedItem(for link: SearchLink) -> FeedItem {
         link.feedItem(keyword: trimmedKeyword)
+    }
+
+    private func rebuildSiblingItems() {
+        cachedSiblingItems = selectedLinks.map(feedItem(for:))
     }
 }
 

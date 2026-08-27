@@ -105,7 +105,7 @@ The `.fileImporter` handlers call `db.importBackupData(data)` / `db.importProfil
 
 **Fix:** run decode/normalize/write in a detached task; touch `@Published` state back on main.
 
-**✅ Fixed (backup path).** `importBackupData` is split into `prepareBackupImport(_:) -> PreparedBackupImport` (pure: decode + validate + normalize + re-encode nine files — `Sendable`) and `@MainActor applyPreparedImport(_:)` (staged swap + `@Published` assignment). New `importBackupDataOffMain(_:) async` runs `prepareBackupImport` in `Task.detached`. The plain-backup `.fileImporter` (now reads eagerly and imports in a `Task`), the encrypted import, and both `CloudSyncManager` import sites use it. **Residual:** `importProfileTransferData` still calls the synchronous `importBackupData` — it uses the smaller-capped transfer format and making it `async` ripples into its own `.fileImporter`; left for a follow-up.
+**✅ Fixed.** `importBackupData` is split into `prepareBackupImport(_:) -> PreparedBackupImport` (pure: decode + validate + normalize + re-encode nine files — `Sendable`) and `@MainActor applyPreparedImport(_:)` (staged swap + `@Published` assignment). New `importBackupDataOffMain(_:) async` runs `prepareBackupImport` in `Task.detached`. The plain-backup `.fileImporter` (now reads eagerly and imports in a `Task`), the encrypted import, and both `CloudSyncManager` import sites use it. **Residual now closed:** `importProfileTransferData` is `async` and uses `importBackupDataOffMain` too; its `.fileImporter` reads eagerly + runs in a `Task`, and the two `SavedBookmarksTests` cases were updated to `async` (`assertImportProfileThrows` helper). The package-wrapper parse (`JSONSerialization` + `JSONDecoder` of the ≤22 MB transfer) still runs on the main actor — one decode, far less than the 9-file normalize pipeline that now moved off.
 
 ### M7. Cold-launch share-drain can dismiss its own failure alert
 **File:** `OshiReader/ContentView.swift:120‑133, 176‑178`
@@ -253,12 +253,11 @@ When a foreground refresh is running, `refreshIfIdle(.background)` returns `nil`
 
 ## Optimizations
 
-> **Status:** O1–O6, O8, O10 applied (two commits: `perf: memoize
-> PlatformRegistry lookups and hot-path formatters` and `perf: cache TVer
-> token, cut redundant diagnostics I/O`; build green, 393/393 unit tests pass).
-> O7 (acceptable as-is) and O9 (a design mismatch, not a code optimization)
-> and the `collectDictionaries` / `SearchView` micro-items are left as
-> follow-ups — see the per-item notes.
+> **Status:** O1–O6, O8, O10 applied plus the M6 residual and the
+> `collectDictionaries` / `SearchView` micro-items (three `perf:` commits +
+> the M6 follow-up; build green, 393/393 unit tests pass). Only O7 (acceptable
+> as-is), O9 (a design mismatch, not a code optimization), and a full
+> end-of-refresh batch for O6 are left — see the per-item notes.
 
 ### O1. `PlatformRegistry.normalizeID` is O(n) with two string allocations, in every hot path
 **File:** `OshiReader/PlatformRegistry.swift:132‑148`
@@ -304,8 +303,8 @@ Blocks the main thread on a full `feed_items` re-encode (up to 600 items). Accep
 - **✅ Done:** `RSSDateFormatterPool` (`OshiReader/NetworkManager.swift:15‑34`) deleted — `date(from:format:)` was never called.
 - **✅ Done:** `computeQueryFeed`'s strict-keyword filter now builds the lowercased haystack once per item (`LocalDB.keywordHaystack(for:)`) instead of once per candidate keyword/alias inside `matchesKeyword`.
 - **✅ Done:** `SavedPageCard` computes `cleanDisplayText(page.title)` and `formattedDate` once per render, not 2–3×.
-- **Follow-up:** `collectDictionaries` walks the entire YouTube JSON recursively including already-matched subtrees (`IngestionService.swift:2523`).
-- **Follow-up:** `SearchView` recomputes `selectedLinks.map(feedItem(for:))` for `ReaderView(siblingItems:)` on every body render (`SearchView.swift:116, 128`) — needs a `@State` cache + `onChange`.
+- **✅ Done:** `collectDictionaries` no longer re-walks a matched renderer subtree (a `videoRenderer` never nests another one), skipping a large chunk of the YouTube response tree.
+- **✅ Done:** `SearchView` caches `selectedLinks.map(feedItem(for:))` in `@State`, rebuilt only on group / keyword / custom-URL change — `feedItem(for:)` stamps a fresh timestamp per call, so the inline map was handing `ReaderView` a never-equal `siblingItems` every render.
 
 ### O9. `WallpaperCanvas` renders a 1:1 300pt canvas shown `.aspectRatio(.fit)` full-screen
 **File:** `OshiReader/WallpaperRenderer.swift:97‑120`

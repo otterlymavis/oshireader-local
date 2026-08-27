@@ -1955,7 +1955,7 @@ class LocalDB: ObservableObject {
 
     @MainActor
     @discardableResult
-    func importProfileTransferData(_ data: Data) throws -> LocalProfile {
+    func importProfileTransferData(_ data: Data) async throws -> LocalProfile {
         guard data.count <= Self.maximumProfileTransferBytes else { throw LocalProfileError.invalidPackage }
         guard let packageObject = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let packageVersion = packageObject["version"] as? Int else {
@@ -1981,7 +1981,7 @@ class LocalDB: ObservableObject {
             try switchProfile(to: imported.id)
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.sortedKeys]
-            try importBackupData(encoder.encode(transfer.backup))
+            try await importBackupDataOffMain(encoder.encode(transfer.backup))
             if let settings = transfer.settings {
                 settings.apply(to: imported.id)
                 ThemeManager.shared.configure(profileID: imported.id)
