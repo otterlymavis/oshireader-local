@@ -253,10 +253,12 @@ When a foreground refresh is running, `refreshIfIdle(.background)` returns `nil`
 
 ## Optimizations
 
-> **Status:** O1, O2, O3, O8 (dead code), O10 applied on this branch (commit
-> `perf: memoize PlatformRegistry lookups and hot-path formatters`; build green,
-> 393/393 unit tests pass). O4–O7, O9, and the remaining O8 micro-items are
-> left as follow-ups — see the per-item notes.
+> **Status:** O1–O6, O8, O10 applied (two commits: `perf: memoize
+> PlatformRegistry lookups and hot-path formatters` and `perf: cache TVer
+> token, cut redundant diagnostics I/O`; build green, 393/393 unit tests pass).
+> O7 (acceptable as-is) and O9 (a design mismatch, not a code optimization)
+> and the `collectDictionaries` / `SearchView` micro-items are left as
+> follow-ups — see the per-item notes.
 
 ### O1. `PlatformRegistry.normalizeID` is O(n) with two string allocations, in every hot path
 **File:** `OshiReader/PlatformRegistry.swift:132‑148`
@@ -280,13 +282,19 @@ When a foreground refresh is running, `refreshIfIdle(.background)` returns `nil`
 **File:** `OshiReader/IngestionService.swift:1985‑2008`
 Up to 5 `create` POSTs per term per refresh. Cache `{uid, token}` in an actor with a TTL.
 
+**✅ Done.** New `TVerTokenCache` actor holds `(uid, token)` with a 30-min TTL; `fetchTVer` reuses it and only calls the extracted `createTVerToken` on a miss. A search response that fails to parse invalidates the cache so a rejected stale token can't wedge every TVer keyword for the TTL. Concurrent cold-cache misses may still each mint one (unchanged for that first burst); every later refresh reuses.
+
 ### O5. `_ISO8601Cache` eviction is a full flush
 **File:** `OshiReader/Models.swift:36‑55`
 `removeAll(keepingCapacity:)` at 4096 entries — a burst of unique timestamps causes repeated cold starts of the parse cache that `feedItemSortPrecedes` / `computeQueryFeed` lean on. Use a small ring buffer or 2-generation map.
 
+**✅ Done.** Two-generation cache: an overflow demotes `parsedDates` to `previousParsedDates` (still consulted, entries promoted back on hit) instead of discarding everything.
+
 ### O6. `RefreshDiagnostics` re-encodes + persists `healthRecords` per refresh unit
 **File:** `OshiReader/RefreshDiagnostics.swift:161‑178, 285‑313`
 `recordCompletedSourceStatuses` / `rebuildHealthSummaries` JSON-encode and write to `UserDefaults` on every call; in background mode `performBackground` calls it per unit. Batch to once per refresh.
+
+**✅ Done (partial).** `recordCompletedSourceStatuses` already persists, then called `rebuildHealthSummaries` which persisted the identical bytes again — that second write is now suppressed (`rebuildHealthSummaries(now:persist:)`), halving the per-unit UserDefaults writes. A full end-of-refresh batch would need a new flush hook; left as a follow-up.
 
 ### O7. `flushPendingWrites()` / `queue.sync {}` on the main actor during `switchProfile`
 **File:** `OshiReader/LocalDB.swift:197‑213, 447‑452`
@@ -294,10 +302,10 @@ Blocks the main thread on a full `feed_items` re-encode (up to 600 items). Accep
 
 ### O8. Dead code / redundant recompute
 - **✅ Done:** `RSSDateFormatterPool` (`OshiReader/NetworkManager.swift:15‑34`) deleted — `date(from:format:)` was never called.
-- `collectDictionaries` walks the entire YouTube JSON recursively including already-matched subtrees (`IngestionService.swift:2523`).
-- `matchesKeyword` rebuilds `"\(title) \(desc)".lowercased()` per candidate in `computeQueryFeed`'s strict-keyword filter, re-lowercasing per alias (`LocalDB.swift:1115‑1120`).
-- `SearchView` recomputes `selectedLinks.map(feedItem(for:))` for `ReaderView(siblingItems:)` on every body render (`SearchView.swift:116, 128`).
-- `SavedPageCard` calls `cleanDisplayText(page.title)` and `formattedDate` 2–3× per row (`SavedView.swift:184, 196`).
+- **✅ Done:** `computeQueryFeed`'s strict-keyword filter now builds the lowercased haystack once per item (`LocalDB.keywordHaystack(for:)`) instead of once per candidate keyword/alias inside `matchesKeyword`.
+- **✅ Done:** `SavedPageCard` computes `cleanDisplayText(page.title)` and `formattedDate` once per render, not 2–3×.
+- **Follow-up:** `collectDictionaries` walks the entire YouTube JSON recursively including already-matched subtrees (`IngestionService.swift:2523`).
+- **Follow-up:** `SearchView` recomputes `selectedLinks.map(feedItem(for:))` for `ReaderView(siblingItems:)` on every body render (`SearchView.swift:116, 128`) — needs a `@State` cache + `onChange`.
 
 ### O9. `WallpaperCanvas` renders a 1:1 300pt canvas shown `.aspectRatio(.fit)` full-screen
 **File:** `OshiReader/WallpaperRenderer.swift:97‑120`

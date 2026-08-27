@@ -1150,7 +1150,8 @@ class LocalDB: ObservableObject {
             if strictKeywordPlatforms.contains(PlatformRegistry.normalizeID(item.platform)), !item.watch_term_keyword.isEmpty {
                 let aliases = termsByKeyword[item.watch_term_keyword]?.aliases ?? []
                 let matchingKeywords = [item.watch_term_keyword] + aliases
-                if !matchingKeywords.contains(where: { Self.matchesKeyword(item: item, kw: $0) }) {
+                let haystack = Self.keywordHaystack(for: item)
+                if !matchingKeywords.contains(where: { Self.matchesKeyword(haystack: haystack, kw: $0) }) {
                     return nil
                 }
             }
@@ -1314,13 +1315,22 @@ class LocalDB: ObservableObject {
         return current
     }
     
-    private static func matchesKeyword(item: FeedItem, kw: String) -> Bool {
+    /// Lowercased title-or-content text an item is keyword-matched against.
+    /// Compute once per item, not once per candidate keyword/alias.
+    private static func keywordHaystack(for item: FeedItem) -> String {
         let primaryText = item.title?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let haystack = ((primaryText?.isEmpty == false ? primaryText : item.content_text) ?? "").lowercased()
+        return ((primaryText?.isEmpty == false ? primaryText : item.content_text) ?? "").lowercased()
+    }
+
+    private static func matchesKeyword(item: FeedItem, kw: String) -> Bool {
+        matchesKeyword(haystack: keywordHaystack(for: item), kw: kw)
+    }
+
+    private static func matchesKeyword(haystack: String, kw: String) -> Bool {
         let needle = kw.lowercased()
         if needle.isEmpty { return true }
         if haystack.contains(needle) { return true }
-        
+
         let parts = kw.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }
         if parts.count > 1 {
             return parts.allSatisfy { haystack.contains($0.lowercased()) }

@@ -6,7 +6,11 @@ private enum _ISO8601Cache {
     }
 
     private static let lock = NSLock()
+    // Two generations so an overflow demotes the current set to `previous`
+    // (still consulted on lookup) instead of discarding every entry — a burst
+    // of unique timestamps otherwise cold-starts the cache repeatedly.
     private static var parsedDates: [String: CachedValue] = [:]
+    private static var previousParsedDates: [String: CachedValue] = [:]
     private static let maxEntries = 4096
 
     static let withFractional: ISO8601DateFormatter = {
@@ -39,6 +43,15 @@ private enum _ISO8601Cache {
             lock.unlock()
             return cached.date
         }
+        if let cached = previousParsedDates[value] {
+            if parsedDates.count >= maxEntries {
+                previousParsedDates = parsedDates
+                parsedDates.removeAll(keepingCapacity: true)
+            }
+            parsedDates[value] = cached
+            lock.unlock()
+            return cached.date
+        }
 
         let result: Date?
         if let date = withFractional.date(from: value) {
@@ -48,7 +61,10 @@ private enum _ISO8601Cache {
         } else {
             result = naiveFormatters.lazy.compactMap { $0.date(from: value) }.first
         }
-        if parsedDates.count >= maxEntries { parsedDates.removeAll(keepingCapacity: true) }
+        if parsedDates.count >= maxEntries {
+            previousParsedDates = parsedDates
+            parsedDates.removeAll(keepingCapacity: true)
+        }
         parsedDates[value] = CachedValue(date: result)
         lock.unlock()
         return result

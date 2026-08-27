@@ -159,7 +159,9 @@ struct SavedPageCard: View {
     
     var body: some View {
         let meta = theme.metadata(for: page.platform)
-        
+        let displayTitle = cleanDisplayText(page.title) ?? page.url
+        let savedDate = formattedDate(page.saved_at)
+
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 HStack(spacing: 3) {
@@ -176,12 +178,12 @@ struct SavedPageCard: View {
                 
                 Spacer()
                 
-                Text(formattedDate(page.saved_at))
+                Text(savedDate)
                     .font(.caption2)
                     .foregroundColor(theme.colors.textMuted)
             }
-            
-            Text(cleanDisplayText(page.title) ?? page.url)
+
+            Text(displayTitle)
                 .font(.subheadline)
                 .fontWeight(.bold)
                 .foregroundColor(theme.colors.text)
@@ -193,7 +195,7 @@ struct SavedPageCard: View {
         .cornerRadius(12)
         .shadow(color: Color.black.opacity(theme.mode == .dark ? 0.2 : 0.04), radius: 5, x: 0, y: 2)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel([cleanDisplayText(page.title) ?? page.url, meta.name, formattedDate(page.saved_at)].joined(separator: ", "))
+        .accessibilityLabel([displayTitle, meta.name, savedDate].joined(separator: ", "))
         .accessibilityIdentifier("saved.card.\(page.id)")
     }
     

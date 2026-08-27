@@ -174,7 +174,11 @@ final class RefreshDiagnostics: ObservableObject {
         records.append(contentsOf: statuses.map { Self.healthRecord(from: $0, completedAt: completedAt) })
         healthRecords = records.sorted { $0.checkedAt < $1.checkedAt }
         persistHealthRecords()
-        rebuildHealthSummaries(now: completedAt)
+        // `persist: false` — this method just wrote `healthRecords`, and the
+        // background refresh loop calls it once per unit, so re-encoding +
+        // writing to UserDefaults again inside `rebuildHealthSummaries` is
+        // pure duplicate I/O.
+        rebuildHealthSummaries(now: completedAt, persist: false)
     }
 
     var statusText: String {
@@ -282,7 +286,7 @@ final class RefreshDiagnostics: ObservableObject {
         return cooldown
     }
 
-    private func rebuildHealthSummaries(now: Date) {
+    private func rebuildHealthSummaries(now: Date, persist: Bool = true) {
         let cutoff = now.addingTimeInterval(-Self.healthHistoryRetention)
         healthRecords = healthRecords.filter { $0.checkedAt >= cutoff }
         let grouped = Dictionary(grouping: healthRecords, by: \.sourceID)
@@ -309,7 +313,7 @@ final class RefreshDiagnostics: ObservableObject {
                     .max(by: { $0.checkedAt < $1.checkedAt })?.failure
             )
         }
-        persistHealthRecords()
+        if persist { persistHealthRecords() }
     }
 
     private static func relativeRefreshTime(for date: Date, relativeTo now: Date) -> String {

@@ -147,6 +147,28 @@ struct FiveChSubjectEntry: Codable, Sendable, Equatable {
     let boardURL: URL
 }
 
+/// Caches the anonymous TVer platform token (keyword-independent) so a
+/// multi-alias term doesn't mint one per `fetchTVer` call. Concurrent misses
+/// on a cold cache may each create a token — the same as today for that first
+/// burst — but every later refresh within the TTL reuses one.
+private actor TVerTokenCache {
+    private struct Entry { let uid: String; let token: String; let expiresAt: Date }
+    private var entry: Entry?
+
+    func cached(now: Date) -> (uid: String, token: String)? {
+        guard let entry, entry.expiresAt > now else { return nil }
+        return (entry.uid, entry.token)
+    }
+
+    func store(uid: String, token: String, expiresAt: Date) {
+        entry = Entry(uid: uid, token: token, expiresAt: expiresAt)
+    }
+
+    func invalidate() {
+        entry = nil
+    }
+}
+
 private actor FiveChSubjectCache {
     private struct CachedValue {
         let entries: [FiveChSubjectEntry]
@@ -257,6 +279,11 @@ final class IngestionService {
     private let fiveChSubjectLimiter = RequestLimiter(limit: 4)
     private let fiveChDatLimiter = RequestLimiter(limit: 3)
     private let tverDetailLimiter = RequestLimiter(limit: 4)
+    private let tverTokenCache = TVerTokenCache()
+    /// The anonymous TVer platform token is keyword-independent and stays
+    /// valid well beyond one refresh, so cache it instead of minting a fresh
+    /// one per keyword *and* per alias (up to 5 `create` POSTs per term).
+    private static let tverTokenTTL: TimeInterval = 30 * 60
     private let googleNewsPacer = RequestStartPacer(intervalNanoseconds: 200_000_000)
     private static let maximumTransportAttempts = 2
     private static let retryDelayNanoseconds: UInt64 = 100_000_000
@@ -1982,14 +2009,8 @@ final class IngestionService {
         date >= now().addingTimeInterval(-maximumAge) && date <= now().addingTimeInterval(Self.searchResultFutureGrace)
     }
 
-    private func fetchTVer(keyword: String) async -> [FeedItem] {
-        let baseHeaders = [
-            "User-Agent": browserUA,
-            "Origin": "https://tver.jp",
-            "Referer": "https://tver.jp/",
-        ]
-        // 1. Create an anonymous platform token.
-        guard let createURL = URL(string: "https://platform-api.tver.jp/v2/api/platform_users/browser/create") else { return [] }
+    private func createTVerToken(baseHeaders: [String: String]) async -> (uid: String, token: String)? {
+        guard let createURL = URL(string: "https://platform-api.tver.jp/v2/api/platform_users/browser/create") else { return nil }
         var createReq = URLRequest(url: createURL)
         createReq.httpMethod = "POST"
         createReq.timeoutInterval = 15
@@ -2003,9 +2024,35 @@ final class IngestionService {
               let result = cJson["result"] as? [String: Any],
               let uid = result["platform_uid"] as? String,
               let token = result["platform_token"] as? String else {
-            await recordFailure(.invalidPayload)
-            return []
+            return nil
         }
+        return (uid, token)
+    }
+
+    private func fetchTVer(keyword: String) async -> [FeedItem] {
+        let baseHeaders = [
+            "User-Agent": browserUA,
+            "Origin": "https://tver.jp",
+            "Referer": "https://tver.jp/",
+        ]
+        // 1. An anonymous platform token — reused from cache across keywords.
+        let credentials: (uid: String, token: String)
+        if let cached = await tverTokenCache.cached(now: now()) {
+            credentials = cached
+        } else {
+            guard let created = await createTVerToken(baseHeaders: baseHeaders) else {
+                await recordFailure(.invalidPayload)
+                return []
+            }
+            await tverTokenCache.store(
+                uid: created.uid,
+                token: created.token,
+                expiresAt: now().addingTimeInterval(Self.tverTokenTTL)
+            )
+            credentials = created
+        }
+        let uid = credentials.uid
+        let token = credentials.token
 
         // 2. Keyword search.
         var comps = URLComponents(string: "https://platform-api.tver.jp/service/api/v1/callKeywordSearch")!
@@ -2025,6 +2072,9 @@ final class IngestionService {
         ]) { _, new in new }
         guard case .success(let data, _) = await httpGET(searchURL, headers: searchHeaders, timeout: 15),
               let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+            // A cached token that the search endpoint rejects would otherwise
+            // wedge every TVer keyword until the TTL elapsed.
+            await tverTokenCache.invalidate()
             await recordFailure(.invalidPayload)
             return []
         }
