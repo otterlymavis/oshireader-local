@@ -12,8 +12,7 @@ Paid release candidates must pass the automated contract gate and the separate T
 
 ```text
 oshireader/
-├── ios-swift/          # Native iOS SwiftUI application
-└── mobile/             # Mobile scraper/package experiments
+└── ios-swift/          # Native iOS SwiftUI application
 ```
 
 ## Native iOS App

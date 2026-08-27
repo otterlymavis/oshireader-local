@@ -5,12 +5,11 @@ severity. Line numbers are from the state of the tree at review time; the
 build and test suite were **not** run, so severities are best-effort from
 reading.
 
-> **Status:** all **High** (H1) and **Medium** (M1–M9) findings and every
-> **Optimization** (O1–O10) are **closed** — each carries a **✅ Fixed** /
-> **✅ Done** note with the change. Remaining open by design: the **Low**
-> items (L1–L24), the **Concurrency (unverified)** notes, and the **tooling /
-> legacy** items (T1 `mobile/`, T2 `paid_catalog_cost_gate.py`) — none block
-> the app and each is scoped in place below.
+> **Status:** all **High** (H1), **Medium** (M1–M9), **Optimization**
+> (O1–O10), and **tooling / legacy** (T1–T2) findings are **closed** — each
+> carries a **✅ Fixed** / **✅ Done** note with the change. Remaining open by
+> design: the **Low** items (L1–L24) and the **Concurrency (unverified)**
+> notes — none block the app and each is scoped in place below.
 >
 > **Verification (current `master`):** `xcodebuild build` green; `xcodebuild
 > test` → **393 / 393 unit tests pass** and **20 / 20 UI tests pass**. The UI
@@ -339,10 +338,14 @@ Called for every feed card, saved card, and platform chip on every render. It ca
 ### T1. `mobile/` is an orphaned React Native fragment that cannot compile
 `mobile/` still contains an Expo `package.json` (RN 0.81, React 19) and a single source file, `mobile/src/scraper/youtube.ts`, which imports `../localDb`, `../connectors/youtube`, and `./utils` — none of which exist in the tree (the rest of the RN app was removed in the on-device Swift migration). `tsc` on this directory fails. Delete `mobile/` or restore the missing modules; as-is it's dead weight and a misleading second "mobile app".
 
+**✅ Done:** `mobile/` deleted (`git rm -r`); its four `.gitignore` patterns and the `README.md` project-structure entry removed. Nothing outside the directory referenced it (no workflow, no build script).
+
 ### T2. `scripts/paid_catalog_cost_gate.py` — minor robustness
 - `nonnegative_decimal` calls `Decimal(raw)`, which raises `decimal.InvalidOperation` (an `ArithmeticError`, **not** a `ValueError`/`ArgumentTypeError`) on non-numeric input — argparse doesn't catch it, so `--compute abc` prints an uncaught traceback instead of a clean usage error. Wrap in `try/except (InvalidOperation, ValueError)` and re-raise `argparse.ArgumentTypeError`.
 - With no cost arguments (all default to `0`), `minimum_gross_monthly_price` is `0.00` and **any** proposed price passes the gate (exit 0). A CI job that forgets the cost flags silently passes. Add a guard that `seven_day_cost > 0`.
 - Flat 30% Apple commission (`APPLE_NET_SHARE = 0.70`) ignores the 15% Small Business / post-year-1 subscription rate — intentionally conservative for a price floor, not a bug; worth a comment.
+
+**✅ Done:** `nonnegative_decimal` catches `(InvalidOperation, ValueError)` → `argparse.ArgumentTypeError` (`--compute abc` now gives a one-line usage error). `main` calls `parser.error(...)` when `seven_day_cost <= 0` instead of extrapolating a zero floor. `APPLE_NET_SHARE` carries a comment explaining the conservative flat-30% choice. The three existing CI invocations are unaffected (exit 0 / exit 2 / annual `199.90` unchanged).
 
 ## Coverage
 

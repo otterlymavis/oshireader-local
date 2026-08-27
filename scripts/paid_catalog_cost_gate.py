@@ -5,13 +5,16 @@ from __future__ import annotations
 
 import argparse
 import json
-from decimal import Decimal, ROUND_UP
+from decimal import Decimal, InvalidOperation, ROUND_UP
 
 
 DAYS_PER_MONTH = Decimal("365.25") / Decimal("12")
 SOAK_DAYS = Decimal("7")
 OPERATIONAL_RESERVE = Decimal("1.20")
 TARGET_COST_COVERAGE = Decimal("2")
+# Flat 30% Apple commission. Deliberately ignores the 15% Small Business /
+# post-year-1 subscription rate: this computes a *price floor*, so assuming the
+# worse (higher) commission keeps the floor conservative rather than a bug.
 APPLE_NET_SHARE = Decimal("0.70")
 
 
@@ -20,7 +23,10 @@ def money(value: Decimal) -> str:
 
 
 def nonnegative_decimal(raw: str) -> Decimal:
-    value = Decimal(raw)
+    try:
+        value = Decimal(raw)
+    except (InvalidOperation, ValueError):
+        raise argparse.ArgumentTypeError(f"{raw!r} is not a number")
     if value < 0:
         raise argparse.ArgumentTypeError("costs and prices must be nonnegative")
     return value
@@ -44,6 +50,14 @@ def main() -> int:
         for name in ("compute", "database", "egress", "proxy", "apns", "diagnostics")
     }
     seven_day_cost = sum(categories.values(), Decimal("0"))
+    if seven_day_cost <= 0:
+        # Every category defaulted to 0 — the caller forgot the cost flags.
+        # Without a real soak cost the floor is 0 and any price "passes",
+        # so fail loudly instead of green-lighting silently.
+        parser.error(
+            "no soak costs given: pass the measured --compute/--database/--egress/"
+            "--proxy/--apns/--diagnostics figures (at least one must be > 0)"
+        )
     monthly_cost = seven_day_cost * DAYS_PER_MONTH / SOAK_DAYS
     reserved_monthly_cost = monthly_cost * OPERATIONAL_RESERVE
     minimum_gross_monthly = reserved_monthly_cost * TARGET_COST_COVERAGE / APPLE_NET_SHARE
