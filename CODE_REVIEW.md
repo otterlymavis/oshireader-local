@@ -253,11 +253,10 @@ When a foreground refresh is running, `refreshIfIdle(.background)` returns `nil`
 
 ## Optimizations
 
-> **Status:** O1–O6, O8, O10 applied plus the M6 residual and the
-> `collectDictionaries` / `SearchView` micro-items (three `perf:` commits +
-> the M6 follow-up; build green, 393/393 unit tests pass). Only O7 (acceptable
-> as-is), O9 (a design mismatch, not a code optimization), and a full
-> end-of-refresh batch for O6 are left — see the per-item notes.
+> **Status:** O1–O6, O8–O10 applied plus the M6 residual and the
+> `collectDictionaries` / `SearchView` micro-items (build green, 393/393 unit
+> tests pass). Only O7 (acceptable as-is) and a full end-of-refresh batch for
+> O6 are left — see the per-item notes.
 
 ### O1. `PlatformRegistry.normalizeID` is O(n) with two string allocations, in every hot path
 **File:** `OshiReader/PlatformRegistry.swift:132‑148`
@@ -309,6 +308,12 @@ Blocks the main thread on a full `feed_items` re-encode (up to 600 items). Accep
 ### O9. `WallpaperCanvas` renders a 1:1 300pt canvas shown `.aspectRatio(.fit)` full-screen
 **File:** `OshiReader/WallpaperRenderer.swift:97‑120`
 The wallpaper appears small / letterboxed versus the editor preview. Design mismatch, not a crash.
+
+**✅ Done:** `WallpaperBackground` now displays the composition with
+`.aspectRatio(contentMode: .fill)` + `.clipped()` instead of `.fit`, so the
+square render covers the full screen (centre-cropping the horizontal edges)
+rather than letterboxing. The 300×300 `WallpaperCanvas` itself is unchanged —
+it still matches the editor.
 
 ### O10. `ThemeManager.metadata(for:)` — 27-case switch + `Color` allocations per card render, no caching
 **File:** `OshiReader/Theme.swift:220‑283`

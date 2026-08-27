@@ -140,18 +140,24 @@ struct WallpaperBackground: View {
         Group {
             if spec.hasPrefix("http"), let url = URL(string: spec) {
                 AsyncImage(url: url) { image in
-                    image.resizable().aspectRatio(contentMode: .fit)
+                    // `.fill`, not `.fit`: the rendered composition is a 300×300
+                    // square (see WallpaperCanvas). Fitted full-screen it only
+                    // spans the width and letterboxes, reading as tiny next to
+                    // the square editor preview. Fill covers the screen and
+                    // centre-crops the horizontal edges.
+                    image.resizable().aspectRatio(contentMode: .fill)
                 } placeholder: {
                     EmptyView()
                 }
             } else if let localImage {
-                Image(uiImage: localImage).resizable().aspectRatio(contentMode: .fit)
+                Image(uiImage: localImage).resizable().aspectRatio(contentMode: .fill)
             } else {
                 EmptyView()
             }
         }
         .opacity(0.22)
         .ignoresSafeArea()
+        .clipped()
         .task(id: spec) {
             guard !spec.hasPrefix("http") else { localImage = nil; return }
             let path = WallpaperRenderer.localURL(for: spec).path
