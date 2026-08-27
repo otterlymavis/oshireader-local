@@ -118,7 +118,10 @@ final class PlusStore: ObservableObject {
     private var entitlementRequestGate = PaidEntitlementRequestGate()
 
     private init() {
-        guard !Self.isTesting, Self.isPaidPushConfigured else { return }
+        // Under UI tests the paid Settings section still renders (it keys off
+        // the pure `isPaidPushConfigured` static) but must not start the
+        // StoreKit transaction listener or hit the entitlement endpoint.
+        guard !Self.isTesting, !Self.isUITesting, Self.isPaidPushConfigured else { return }
         updatesTask = Task { [weak self] in
             for await update in Transaction.updates { await self?.handle(update) }
         }
@@ -153,6 +156,10 @@ final class PlusStore: ObservableObject {
     }
 
     func loadProductsIfNeeded() async {
+        // UI tests render the paid section (to assert it exists) but must not
+        // hit real StoreKit — a failed lookup sets `errorMessage`, which adds a
+        // row and shifts every element below it mid-test.
+        guard !Self.isUITesting else { return }
         guard products.isEmpty, !isLoadingProducts, !Self.productIDs.isEmpty else { return }
         isLoadingProducts = true
         defer { isLoadingProducts = false }
@@ -241,5 +248,9 @@ final class PlusStore: ObservableObject {
     private static var isTesting: Bool {
         ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
             || NSClassFromString("XCTest.XCTestCase") != nil
+    }
+
+    static var isUITesting: Bool {
+        ProcessInfo.processInfo.arguments.contains("--uitesting")
     }
 }

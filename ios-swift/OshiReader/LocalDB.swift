@@ -2043,6 +2043,12 @@ class LocalDB: ObservableObject {
 
         profileStore.resetForUITesting()
 
+        // The default in-app language is Japanese; the UI test suite asserts
+        // against English strings. Pin English for the test fixture — this runs
+        // from `OshiReaderApp.init`, before `I18nManager.shared` (which reads
+        // this key in its initializer) is first accessed by the view tree.
+        UserDefaults.standard.set("en", forKey: profileKey("selected_lang"))
+
         let now = Self.iso8601.string(from: Date())
         let term = WatchTerm(id: "ui-term-oshitest", keyword: "UITest Oshi", collection_mode: "all_info", is_active: true, created_at: now)
         let feedItem = FeedItem(

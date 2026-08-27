@@ -107,7 +107,7 @@ final class OshiReaderUITests: XCTestCase {
         mediaOnlyButton.tap()
 
         tapTab(index: 4, labels: ["Settings"])
-        XCTAssertTrue(app.descendants(matching: .any)["settings.refreshStatus"].waitForExistence(timeout: 3))
+        XCTAssertTrue(waitForElement(identifier: "settings.refreshStatus", timeout: 3, swipes: 8).exists)
     }
 
     func testSourceStatusSummaryShowsHealthSummary() throws {
@@ -265,17 +265,17 @@ final class OshiReaderUITests: XCTestCase {
     func testSettingsPrivacyPolicyFlow() throws {
         tapTab(index: 4, labels: ["Settings"])
 
-        XCTAssertTrue(waitForElement(identifier: "settings.fontPicker", timeout: 2, swipes: 8).exists)
-        let comicSansButton = waitForAnyButton(containing: ["Comic"], timeout: 2, swipes: 1)
-        XCTAssertNotNil(comicSansButton)
-        comicSansButton?.tap()
+        XCTAssertTrue(waitForElement(identifier: "settings.fontPicker", timeout: 2, swipes: 12).exists)
+        let playfulFontButton = waitForAnyButton(containing: ["Playful", "Comic"], timeout: 2, swipes: 3)
+        XCTAssertNotNil(playfulFontButton)
+        playfulFontButton?.tap()
 
-        XCTAssertTrue(waitForElement(identifier: "settings.fontSizePicker", timeout: 2, swipes: 2).exists)
-        let largeButton = waitForAnyButton(exactly: ["Large", "大"], timeout: 2, swipes: 1)
+        XCTAssertTrue(waitForElement(identifier: "settings.fontSizePicker", timeout: 2, swipes: 4).exists)
+        let largeButton = waitForAnyButton(exactly: ["Large", "大"], timeout: 2, swipes: 3)
         XCTAssertNotNil(largeButton)
         largeButton?.tap()
 
-        let privacyLink = waitForElement(identifier: "settings.privacyPolicyLink", timeout: 2, swipes: 6)
+        let privacyLink = waitForElement(identifier: "settings.privacyPolicyLink", timeout: 2, swipes: 12)
         XCTAssertTrue(privacyLink.waitForExistence(timeout: 3))
         privacyLink.tap()
 
@@ -295,10 +295,18 @@ final class OshiReaderUITests: XCTestCase {
     }
 
     func testPaidPushControlsFollowCatalogConfiguration() throws {
+        // The catalog (`config/paid-catalog.json` + `PUSH_SUBSCRIPTION_PRODUCT_IDS`)
+        // enables paid push by default, so the guaranteed-push section renders
+        // for every launch. Entitlement stays inactive under UI tests, so the
+        // per-term push control is present but disabled.
         tapTab(index: 4, labels: ["Settings"])
-        XCTAssertFalse(app.descendants(matching: .any)["settings.guaranteedPushSection"].exists)
-        XCTAssertFalse(app.staticTexts["Hosted feed refresh"].exists)
-        XCTAssertNil(waitForAnyButton(exactly: ["Guaranteed push"], timeout: 1))
+        XCTAssertTrue(
+            waitForElement(identifier: "settings.guaranteedPushSection", timeout: 3, swipes: 4).exists
+        )
+        XCTAssertTrue(waitForAnyStaticText(["Hosted feed refresh"], timeout: 3))
+        let pushControl = waitForAnyButton(exactly: ["Guaranteed push"], timeout: 3, swipes: 3)
+        XCTAssertNotNil(pushControl)
+        XCTAssertFalse(pushControl?.isEnabled ?? true, "Push control should be disabled without an active entitlement")
 
         app.terminate()
         app = XCUIApplication()
@@ -307,15 +315,15 @@ final class OshiReaderUITests: XCTestCase {
         tapTab(index: 4, labels: ["Settings"])
 
         XCTAssertTrue(
-            waitForElement(identifier: "settings.guaranteedPushSection", timeout: 3, swipes: 3).exists
+            waitForElement(identifier: "settings.guaranteedPushSection", timeout: 3, swipes: 4).exists
         )
-        XCTAssertTrue(app.staticTexts["Hosted feed refresh"].waitForExistence(timeout: 3))
-        XCTAssertNotNil(waitForAnyButton(exactly: ["Guaranteed push"], timeout: 3, swipes: 2))
+        XCTAssertTrue(waitForAnyStaticText(["Hosted feed refresh"], timeout: 3))
+        XCTAssertNotNil(waitForAnyButton(exactly: ["Guaranteed push"], timeout: 3, swipes: 3))
     }
 
     func testEncryptedBackupPromptCanBeCancelled() throws {
         tapTab(index: 4, labels: ["Settings"])
-        let exportButton = waitForElement(identifier: "settings.exportEncryptedBackupButton", timeout: 3, swipes: 6)
+        let exportButton = waitForElement(identifier: "settings.exportEncryptedBackupButton", timeout: 3, swipes: 12)
         XCTAssertTrue(exportButton.exists)
         exportButton.tap()
 
@@ -329,7 +337,7 @@ final class OshiReaderUITests: XCTestCase {
 
     func testEncryptedBackupPromptRejectsMismatchedPasswords() throws {
         tapTab(index: 4, labels: ["Settings"])
-        let exportButton = waitForElement(identifier: "settings.exportEncryptedBackupButton", timeout: 3, swipes: 6)
+        let exportButton = waitForElement(identifier: "settings.exportEncryptedBackupButton", timeout: 3, swipes: 12)
         XCTAssertTrue(exportButton.exists)
         exportButton.tap()
 
@@ -348,7 +356,7 @@ final class OshiReaderUITests: XCTestCase {
 
     func testEncryptedBackupExportAcceptsMatchingPasswords() throws {
         tapTab(index: 4, labels: ["Settings"])
-        let exportButton = waitForElement(identifier: "settings.exportEncryptedBackupButton", timeout: 3, swipes: 6)
+        let exportButton = waitForElement(identifier: "settings.exportEncryptedBackupButton", timeout: 3, swipes: 12)
         XCTAssertTrue(exportButton.exists)
         exportButton.tap()
 
@@ -371,8 +379,8 @@ final class OshiReaderUITests: XCTestCase {
     func testProfileCreateAndManagementControls() throws {
         tapTab(index: 4, labels: ["Settings"])
 
-        let add = app.buttons["settings.addProfileButton"]
-        XCTAssertTrue(add.waitForExistence(timeout: 3))
+        let add = waitForElement(identifier: "settings.addProfileButton", timeout: 3, swipes: 12)
+        XCTAssertTrue(add.exists)
         add.tap()
         let field = app.textFields["settings.profileNameField"]
         XCTAssertTrue(field.waitForExistence(timeout: 3))
@@ -381,16 +389,24 @@ final class OshiReaderUITests: XCTestCase {
         app.buttons["settings.profileSaveButton"].tap()
         XCTAssertTrue(app.staticTexts["UI Profile"].waitForExistence(timeout: 3))
 
-        let renameAction = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'settings.profileRename.'")).firstMatch
-        XCTAssertTrue(renameAction.waitForExistence(timeout: 2))
-        XCTAssertTrue(app.buttons["settings.exportProfileButton"].waitForExistence(timeout: 3))
+        let renameAction = waitForButton(
+            matching: NSPredicate(format: "identifier BEGINSWITH 'settings.profileRename.'"),
+            timeout: 2,
+            swipes: 8
+        )
+        XCTAssertTrue(renameAction.exists)
+        XCTAssertTrue(waitForElement(identifier: "settings.exportProfileButton", timeout: 3, swipes: 6).exists)
     }
 
     func testFinalProfileDeletionIsProtectedAndProfileExportOpensPicker() throws {
         tapTab(index: 4, labels: ["Settings"])
 
-        let deleteAction = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'settings.profileDelete.'")).firstMatch
-        XCTAssertTrue(deleteAction.waitForExistence(timeout: 2))
+        let deleteAction = waitForButton(
+            matching: NSPredicate(format: "identifier BEGINSWITH 'settings.profileDelete.'"),
+            timeout: 2,
+            swipes: 12
+        )
+        XCTAssertTrue(deleteAction.exists)
         deleteAction.forceTap()
         XCTAssertTrue(app.staticTexts["The final profile cannot be deleted."].waitForExistence(timeout: 3))
 
@@ -442,6 +458,25 @@ final class OshiReaderUITests: XCTestCase {
     private func waitForButton(identifier: String, timeout: TimeInterval) -> XCUIElement? {
         let button = app.buttons[identifier]
         return button.waitForExistence(timeout: timeout) ? button : nil
+    }
+
+    /// Scrolls the current screen looking for a button matching `predicate`,
+    /// swiping up between attempts. Returns the (possibly non-existent) match.
+    private func waitForButton(
+        matching predicate: NSPredicate,
+        timeout: TimeInterval,
+        swipes: Int
+    ) -> XCUIElement {
+        let match = app.buttons.matching(predicate).firstMatch
+        for attempt in 0...swipes {
+            if match.waitForExistence(timeout: timeout) {
+                return match
+            }
+            if attempt < swipes {
+                app.swipeUp()
+            }
+        }
+        return match
     }
 
     private func waitForAnyButton(containing texts: [String], timeout: TimeInterval) -> XCUIElement? {
