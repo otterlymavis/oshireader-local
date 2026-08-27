@@ -61,9 +61,29 @@ private enum EncryptedBackupOperation: String, Identifiable {
     var id: String { rawValue }
 }
 
-private enum ProfileNameMode {
+private enum ProfileNameMode: Equatable {
     case create
     case rename
+}
+
+/// The one modal sheet SettingsView presents. Consolidated into a single
+/// `.sheet(item:)` — stacking several `.sheet(isPresented:)` on the Form
+/// (alongside its many `.alert` / `.fileImporter` / `.fileExporter`) made an
+/// earlier one intermittently fail to present after an unrelated re-render.
+private enum SettingsSheet: Identifiable, Equatable {
+    case addKeyword
+    case platformSubscription
+    case profileName(mode: ProfileNameMode, renameTarget: UUID?)
+    case sourceStatus
+
+    var id: String {
+        switch self {
+        case .addKeyword: return "addKeyword"
+        case .platformSubscription: return "platformSubscription"
+        case .profileName: return "profileName"
+        case .sourceStatus: return "sourceStatus"
+        }
+    }
 }
 
 struct SettingsView: View {
@@ -81,8 +101,7 @@ struct SettingsView: View {
     @StateObject private var paidBackend = PaidBackendFeedCoordinator.shared
     @Environment(\.scenePhase) private var scenePhase
     
-    @State private var showingAddKeywordAlert = false
-    @State private var showingPlatformSheet = false
+    @State private var activeSheet: SettingsSheet?
     @State private var showingClearAllAlert = false
     @State private var newKeyword = ""
     @State private var newCollectionMode = "all_info"
@@ -120,9 +139,6 @@ struct SettingsView: View {
     @State private var showingProfileImporter = false
     @State private var profileName = ""
     @State private var profileError = ""
-    @State private var showingProfileNameSheet = false
-    @State private var profileNameMode: ProfileNameMode = .create
-    @State private var profileToRename: UUID?
     @State private var showingAliasLimitMessage = false
     @State private var isProfileSectionExpanded = ProcessInfo.processInfo.arguments.contains("--uitesting")
     @State private var isDataSectionExpanded = ProcessInfo.processInfo.arguments.contains("--uitesting")
@@ -136,7 +152,6 @@ struct SettingsView: View {
         || NotificationManager.shared.authorizationStatus == .denied
     @State private var currentBackgroundRefreshStatus = UIApplication.shared.backgroundRefreshStatus
     @State private var notificationTermBeingUpdated: String?
-    @State private var showingSourceStatusSheet = false
     @AppStorage(PaidHostedDiagnosticReporter.consentKey) private var paidDiagnosticsEnabled = false
     
     /// Computed once — PlatformRegistry.all is a static catalog, so there's no
@@ -150,6 +165,17 @@ struct SettingsView: View {
     // hard-blocking additional terms.
     static let manyActiveTermsThreshold = 15
     private var activeTermCount: Int { db.terms.lazy.filter(\.is_active).count }
+
+    /// A `Binding<Bool>` for sheet children that dismiss themselves by setting
+    /// `isPresented = false`; clearing it drops the single `activeSheet`.
+    private var sheetDismissBinding: Binding<Bool> {
+        Binding(get: { activeSheet != nil }, set: { if !$0 { activeSheet = nil } })
+    }
+
+    private var isProfileNameSheetActive: Bool {
+        if case .profileName = activeSheet { return true }
+        return false
+    }
 
     static func shouldShowHostedSourceStatus(
         isPaidConfigured: Bool,
@@ -207,7 +233,7 @@ struct SettingsView: View {
                         }
                     }
                     
-                    Button(action: { showingAddKeywordAlert.toggle() }) {
+                    Button(action: { activeSheet = .addKeyword }) {
                         HStack {
                             Image(systemName: "plus.circle.fill")
                             Text(i18n.t("addKeyword"))
@@ -331,7 +357,7 @@ struct SettingsView: View {
                 
                 // Section: Subscribed Platforms
                 Section {
-                    Button(action: { showingPlatformSheet = true }) {
+                    Button(action: { activeSheet = .platformSubscription }) {
                         HStack {
                             Label(i18n.t("platformSettings"), systemImage: "dot.radiowaves.left.and.right")
                                 .foregroundColor(theme.colors.text)
@@ -531,27 +557,45 @@ struct SettingsView: View {
             .navigationTitle(i18n.t("settingsTitle"))
             .navigationBarTitleDisplayMode(.inline)
             .background(theme.colors.bg)
-            .sheet(isPresented: $showingAddKeywordAlert) {
-                AddKeywordSheet(
-                    db: db,
-                    theme: theme,
-                    i18n: i18n,
-                    allPlatforms: allPlatforms,
-                    isPresented: $showingAddKeywordAlert,
-                    keyword: $newKeyword,
-                    collectionMode: $newCollectionMode,
-                    sourceMode: $newSourceMode,
-                    selectedPlatforms: $newSelectedPlatforms
-                )
-            }
-            .sheet(isPresented: $showingPlatformSheet) {
-                PlatformSubscriptionSheet(
-                    db: db,
-                    theme: theme,
-                    i18n: i18n,
-                    allPlatforms: allPlatforms,
-                    isPresented: $showingPlatformSheet
-                )
+            .sheet(item: $activeSheet) { sheet in
+                switch sheet {
+                case .addKeyword:
+                    AddKeywordSheet(
+                        db: db,
+                        theme: theme,
+                        i18n: i18n,
+                        allPlatforms: allPlatforms,
+                        isPresented: sheetDismissBinding,
+                        keyword: $newKeyword,
+                        collectionMode: $newCollectionMode,
+                        sourceMode: $newSourceMode,
+                        selectedPlatforms: $newSelectedPlatforms
+                    )
+                case .platformSubscription:
+                    PlatformSubscriptionSheet(
+                        db: db,
+                        theme: theme,
+                        i18n: i18n,
+                        allPlatforms: allPlatforms,
+                        isPresented: sheetDismissBinding
+                    )
+                case let .profileName(mode, renameTarget):
+                    ProfileNameSheet(
+                        mode: mode,
+                        db: db,
+                        i18n: i18n,
+                        isPresented: sheetDismissBinding,
+                        name: $profileName,
+                        errorText: $profileError,
+                        profileToRename: renameTarget,
+                        localizedError: localizedProfileMessage
+                    )
+                case .sourceStatus:
+                    SourceStatusSheet(
+                        summaries: refreshDiagnostics.visibleSourceHealthSummaries,
+                        theme: theme
+                    )
+                }
             }
             .alert(i18n.t("clearAllDataAlert"), isPresented: $showingClearAllAlert) {
                 Button(i18n.t("cancel"), role: .cancel) {}
@@ -691,18 +735,6 @@ struct SettingsView: View {
             } message: {
                 Text(backupMessage)
             }
-            .sheet(isPresented: $showingProfileNameSheet) {
-                ProfileNameSheet(
-                    mode: profileNameMode,
-                    db: db,
-                    i18n: i18n,
-                    isPresented: $showingProfileNameSheet,
-                    name: $profileName,
-                    errorText: $profileError,
-                    profileToRename: profileToRename,
-                    localizedError: localizedProfileMessage
-                )
-            }
             .fileExporter(
                 isPresented: $showingProfileExporter,
                 document: profileTransferDocument,
@@ -735,7 +767,7 @@ struct SettingsView: View {
                 }
             }
             .alert(i18n.t("profileStatus"), isPresented: Binding(
-                get: { !profileError.isEmpty && !showingProfileNameSheet },
+                get: { !profileError.isEmpty && !isProfileNameSheetActive },
                 set: { if !$0 { profileError = "" } }
             )) {
                 Button(i18n.t("ok"), role: .cancel) { profileError = "" }
@@ -744,9 +776,6 @@ struct SettingsView: View {
                 Button(i18n.t("ok"), role: .cancel) {}
             } message: {
                 Text(i18n.t("aliasLimitReached"))
-            }
-            .sheet(isPresented: $showingSourceStatusSheet) {
-                SourceStatusSheet(summaries: refreshDiagnostics.visibleSourceHealthSummaries, theme: theme)
             }
         }
         .onChange(of: profiles.activeProfileID) { _, profileID in
@@ -788,7 +817,7 @@ struct SettingsView: View {
 
             if !refreshDiagnostics.visibleSourceHealthSummaries.isEmpty || !refreshDiagnostics.sourceStatuses.isEmpty {
                 Button {
-                    showingSourceStatusSheet = true
+                    activeSheet = .sourceStatus
                 } label: {
                     HStack(spacing: 6) {
                         Image(systemName: refreshDiagnostics.hasSourceFailures ? "exclamationmark.triangle" : "chart.bar.xaxis")
@@ -840,11 +869,9 @@ struct SettingsView: View {
                         Spacer()
 
                         Button {
-                            profileNameMode = .rename
-                            profileToRename = profile.id
                             profileName = profile.name
                             profileError = ""
-                            showingProfileNameSheet = true
+                            activeSheet = .profileName(mode: .rename, renameTarget: profile.id)
                         } label: {
                             Image(systemName: "pencil")
                         }
@@ -866,11 +893,9 @@ struct SettingsView: View {
                 }
 
                 Button {
-                    profileNameMode = .create
-                    profileToRename = nil
                     profileName = ""
                     profileError = ""
-                    showingProfileNameSheet = true
+                    activeSheet = .profileName(mode: .create, renameTarget: nil)
                 } label: {
                     Label(i18n.t("addProfile"), systemImage: "plus")
                 }
