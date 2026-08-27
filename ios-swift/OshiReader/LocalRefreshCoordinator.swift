@@ -419,6 +419,7 @@ final class LocalRefreshCoordinator: ObservableObject {
         var completedCount = 0
         var addedCount = 0
         var customCompleted = true
+        var didRecordSourceStatuses = false
         let cooldown = RefreshDiagnostics.shared.sourcesInCooldown()
         var notificationBatch = BackgroundRefreshNotificationBatch(feedWasEmptyAtStart: db.feedItems.isEmpty)
 
@@ -482,14 +483,29 @@ final class LocalRefreshCoordinator: ObservableObject {
             customCompleted = customCompleted && unitResult.customCompleted
             if !unitResult.statuses.isEmpty {
                 RefreshDiagnostics.shared.recordSourceStatuses(unitResult.statuses)
+                // `persist: false` — the health history is re-encoded and
+                // written to UserDefaults once after the loop
+                // (`flushPendingHealthRecords`) rather than on every unit (O6).
+                // `replacingRecordsSince: startedAt` makes each call rewrite
+                // this refresh's records for the seen sources, so the final
+                // in-memory state equals what a single end-of-loop call
+                // produces.
                 RefreshDiagnostics.shared.recordCompletedSourceStatuses(
                     RefreshDiagnostics.shared.sourceStatuses,
-                    replacingRecordsSince: startedAt
+                    replacingRecordsSince: startedAt,
+                    persist: false
                 )
+                didRecordSourceStatuses = true
             }
             completedCount += 1
             UserDefaults.standard.set(unit.stableID, forKey: completedUnitKey)
             UserDefaults.standard.removeObject(forKey: legacyCursorKey)
+        }
+
+        // O6: single end-of-refresh write of the health history, covering both
+        // normal completion and an early `break` (deadline / cancellation).
+        if didRecordSourceStatuses {
+            RefreshDiagnostics.shared.flushPendingHealthRecords()
         }
 
         let notificationItems = notificationBatch.survivingItems(in: db.feedItems)

@@ -161,7 +161,8 @@ final class RefreshDiagnostics: ObservableObject {
     func recordCompletedSourceStatuses(
         _ statuses: [SourceRefreshStatus],
         completedAt: Date = Date(),
-        replacingRecordsSince replacementStart: Date? = nil
+        replacingRecordsSince replacementStart: Date? = nil,
+        persist: Bool = true
     ) {
         let cutoff = completedAt.addingTimeInterval(-Self.healthHistoryRetention)
         var records = healthRecords.filter { $0.checkedAt >= cutoff }
@@ -173,12 +174,20 @@ final class RefreshDiagnostics: ObservableObject {
         }
         records.append(contentsOf: statuses.map { Self.healthRecord(from: $0, completedAt: completedAt) })
         healthRecords = records.sorted { $0.checkedAt < $1.checkedAt }
-        persistHealthRecords()
-        // `persist: false` — this method just wrote `healthRecords`, and the
-        // background refresh loop calls it once per unit, so re-encoding +
-        // writing to UserDefaults again inside `rebuildHealthSummaries` is
-        // pure duplicate I/O.
+        if persist { persistHealthRecords() }
+        // The rebuild is always `persist: false`: when this call persisted
+        // above, re-encoding the identical bytes there is pure duplicate I/O;
+        // when it didn't (background loop passes `persist: false`), the caller
+        // flushes once via `flushPendingHealthRecords()` after the last unit
+        // instead of re-encoding the whole history on every refresh unit (O6).
         rebuildHealthSummaries(now: completedAt, persist: false)
+    }
+
+    /// Encodes and writes the accumulated `healthRecords` to `UserDefaults`
+    /// once. The background refresh loop records each unit with
+    /// `persist: false` and calls this a single time when the loop ends.
+    func flushPendingHealthRecords() {
+        persistHealthRecords()
     }
 
     var statusText: String {

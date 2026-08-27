@@ -255,8 +255,7 @@ When a foreground refresh is running, `refreshIfIdle(.background)` returns `nil`
 
 > **Status:** O1–O6, O8–O10 applied plus the M6 residual and the
 > `collectDictionaries` / `SearchView` micro-items (build green, 393/393 unit
-> tests pass). Only O7 (acceptable as-is) and a full end-of-refresh batch for
-> O6 are left — see the per-item notes.
+> tests pass). Only O7 (acceptable as-is) is left — see the per-item notes.
 
 ### O1. `PlatformRegistry.normalizeID` is O(n) with two string allocations, in every hot path
 **File:** `OshiReader/PlatformRegistry.swift:132‑148`
@@ -292,7 +291,7 @@ Up to 5 `create` POSTs per term per refresh. Cache `{uid, token}` in an actor wi
 **File:** `OshiReader/RefreshDiagnostics.swift:161‑178, 285‑313`
 `recordCompletedSourceStatuses` / `rebuildHealthSummaries` JSON-encode and write to `UserDefaults` on every call; in background mode `performBackground` calls it per unit. Batch to once per refresh.
 
-**✅ Done (partial).** `recordCompletedSourceStatuses` already persists, then called `rebuildHealthSummaries` which persisted the identical bytes again — that second write is now suppressed (`rebuildHealthSummaries(now:persist:)`), halving the per-unit UserDefaults writes. A full end-of-refresh batch would need a new flush hook; left as a follow-up.
+**✅ Done.** Two steps: (1) `rebuildHealthSummaries(now:persist:)` no longer re-writes the identical bytes `recordCompletedSourceStatuses` just persisted. (2) `recordCompletedSourceStatuses` now takes `persist:` — the background loop in `LocalRefreshCoordinator.performBackground` records each unit with `persist: false` and calls the new `flushPendingHealthRecords()` once when the loop ends (covering normal completion and an early `break`). Because each per-unit call already rewrites this refresh's records via `replacingRecordsSince: startedAt`, the single end-of-loop encode + `UserDefaults` write is equivalent to the last per-unit write, minus the N−1 intermediate ones. Foreground `perform` still persists per completed pass (one write, unchanged).
 
 ### O7. `flushPendingWrites()` / `queue.sync {}` on the main actor during `switchProfile`
 **File:** `OshiReader/LocalDB.swift:197‑213, 447‑452`
