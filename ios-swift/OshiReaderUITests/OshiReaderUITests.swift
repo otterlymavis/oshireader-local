@@ -54,15 +54,15 @@ final class OshiReaderUITests: XCTestCase {
         XCTAssertNotNil(selectedMode)
         selectedMode?.tap()
 
-        let sourceMenu = app.buttons["settings.newKeywordSources"]
-        XCTAssertTrue(sourceMenu.waitForExistence(timeout: 3))
-        sourceMenu.tap()
-
+        // Choosing "Selected" reveals an inline grid of platform toggles.
+        // "youtube" is first in PlatformRegistry.all, so it renders inside the
+        // 90pt scroll viewport without needing to be scrolled into view.
         let youtubeSource = app.buttons["settings.newKeywordSource.youtube"]
         XCTAssertTrue(youtubeSource.waitForExistence(timeout: 3))
         youtubeSource.tap()
+        // The grid stays put — toggling one source doesn't collapse it.
+        XCTAssertTrue(youtubeSource.waitForExistence(timeout: 3))
 
-        XCTAssertTrue(sourceMenu.waitForExistence(timeout: 3))
         let addButton = waitForButton(identifier: "settings.confirmAddKeywordButton", timeout: 3)
         XCTAssertNotNil(addButton)
         addButton?.tap()
@@ -105,6 +105,12 @@ final class OshiReaderUITests: XCTestCase {
         let mediaOnlyButton = app.buttons["filter.mediaOnlyButton"]
         XCTAssertTrue(mediaOnlyButton.waitForExistence(timeout: 3))
         mediaOnlyButton.tap()
+
+        // The filter sheet has no dismiss control and does not close on
+        // selection — swipe it away before leaving the Feed tab, otherwise the
+        // Settings tab button is behind the still-presented sheet.
+        app.swipeDown(velocity: .fast)
+        XCTAssertTrue(mediaOnlyButton.waitForNonExistence(timeout: 3))
 
         tapTab(index: 4, labels: ["Settings"])
         XCTAssertTrue(waitForElement(identifier: "settings.refreshStatus", timeout: 3, swipes: 8).exists)

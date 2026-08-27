@@ -1652,6 +1652,8 @@ private struct AddKeywordSheet: View {
                                 .foregroundColor(theme.colors.text)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                             }
+                            .accessibilityIdentifier("settings.newKeywordSource.\(key)")
+                            .accessibilityAddTraits(selectedPlatforms.contains(key) ? [.isSelected] : [])
                         }
                     }
                 }
@@ -1712,7 +1714,10 @@ private struct AddKeywordSheet: View {
 
             Spacer()
         }
-        .accessibilityIdentifier("settings.addKeywordSheet")
+        // No `.accessibilityIdentifier` on this VStack: applied to a bare
+        // layout container it collapses the sheet into one accessibility
+        // element and shadows every child's identifier (`settings.keywordField`,
+        // `settings.confirmAddKeywordButton`, `settings.newKeywordSource.*`).
         .padding()
         .background(theme.colors.bg)
         .presentationDetents([.medium])
