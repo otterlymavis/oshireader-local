@@ -90,60 +90,54 @@ enum PlatformRegistry {
         PlatformDefinition(id: "custom", name: "Custom Feeds", icon: "🌐")
     ]
 
+    // Derived collections are read on hot paths (per feed item, per row
+    // render). `all` never changes at runtime, so compute each once.
+    private static let byID: [String: PlatformDefinition] = Dictionary(
+        all.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }
+    )
+    private static let knownIDs: Set<String> = Set(all.map(\.id))
+    /// Every accepted raw value (including aliases like "x", "news:mdpr")
+    /// mapped to its canonical id, so `normalizeID` is an O(1) lookup instead
+    /// of a linear scan of `all` with a `Set.contains` per entry.
+    private static let aliasToCanonical: [String: String] = {
+        var map: [String: String] = [:]
+        for definition in all {
+            for raw in definition.rawPlatformValues {
+                map[raw.lowercased()] = definition.id
+            }
+        }
+        return map
+    }()
+
     static func definition(for id: String) -> PlatformDefinition? {
-        let normalized = normalizeID(id)
-        return all.first { $0.id == normalized }
+        byID[normalizeID(id)]
     }
 
-    static var googleNewsSources: [PlatformDefinition] {
-        all.filter { $0.googleNewsSite != nil }
-    }
+    static let googleNewsSources: [PlatformDefinition] = all.filter { $0.googleNewsSite != nil }
 
-    static var defaultSubscribedIDs: [String] {
-        all.map(\.id)
-    }
+    static let defaultSubscribedIDs: [String] = all.map(\.id)
 
-    static var strictKeywordPlatformIDs: Set<String> {
-        Set(all.filter(\.usesStrictKeywordMatching).map(\.id))
-    }
+    static let strictKeywordPlatformIDs: Set<String> = Set(all.filter(\.usesStrictKeywordMatching).map(\.id))
 
-    static var mediaPlatformIDs: Set<String> {
-        Set(all.filter(\.isMediaPlatform).map(\.id))
-    }
+    static let mediaPlatformIDs: Set<String> = Set(all.filter(\.isMediaPlatform).map(\.id))
 
-    static var activityDateWindowPlatformIDs: Set<String> {
-        Set(all.filter(\.usesActivityDateWindow).map(\.id))
-    }
+    static let activityDateWindowPlatformIDs: Set<String> = Set(all.filter(\.usesActivityDateWindow).map(\.id))
 
-    static var dateCutoffExemptPlatformIDs: Set<String> {
-        Set(all.filter(\.skipDateCutoff).map(\.id))
-    }
+    static let dateCutoffExemptPlatformIDs: Set<String> = Set(all.filter(\.skipDateCutoff).map(\.id))
 
     static func normalizeIDs(_ ids: [String]) -> [String] {
-        let known = Set(all.map(\.id))
         var seen = Set<String>()
         return ids.compactMap { raw in
             let id = normalizeID(raw)
-            guard known.contains(id), seen.insert(id).inserted else { return nil }
+            guard knownIDs.contains(id), seen.insert(id).inserted else { return nil }
             return id
         }
     }
 
     static func normalizeID(_ rawID: String) -> String {
         let id = rawID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        switch id {
-        case "x":
-            return "twitter"
-        case "news:mdpr":
-            return "mdpr"
-        case "news:yahoo_ent":
-            return "yahoonews"
-        default:
-            if let definition = all.first(where: { $0.rawPlatformValues.contains(id) }) {
-                return definition.id
-            }
-            if id.hasPrefix("news:") { return "news" }
-            return id
-        }
+        if let canonical = aliasToCanonical[id] { return canonical }
+        if id.hasPrefix("news:") { return "news" }
+        return id
     }
 }

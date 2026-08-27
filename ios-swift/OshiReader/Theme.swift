@@ -217,8 +217,33 @@ class ThemeManager: ObservableObject {
         }
     }
     
+    /// `metadata(for:)` is called for every visible feed / saved card and
+    /// platform chip on each render. The result depends only on `(mode,
+    /// normalized platform)`, so memoize it — bounded at 3 modes × the
+    /// platform catalog. Unknown raw platforms produce a per-input name and
+    /// are computed fresh (not cached).
+    private static let metadataCacheLock = NSLock()
+    private static var metadataCache: [AppThemeMode: [String: PlatformMetadata]] = [:]
+
     func metadata(for platform: String) -> PlatformMetadata {
         let normalizedPlatform = PlatformRegistry.normalizeID(platform)
+        guard PlatformRegistry.definition(for: normalizedPlatform) != nil else {
+            return uncachedMetadata(for: platform, normalizedPlatform: normalizedPlatform)
+        }
+        Self.metadataCacheLock.lock()
+        if let cached = Self.metadataCache[mode]?[normalizedPlatform] {
+            Self.metadataCacheLock.unlock()
+            return cached
+        }
+        Self.metadataCacheLock.unlock()
+        let result = uncachedMetadata(for: platform, normalizedPlatform: normalizedPlatform)
+        Self.metadataCacheLock.lock()
+        Self.metadataCache[mode, default: [:]][normalizedPlatform] = result
+        Self.metadataCacheLock.unlock()
+        return result
+    }
+
+    private func uncachedMetadata(for platform: String, normalizedPlatform: String) -> PlatformMetadata {
         switch normalizedPlatform {
         case "youtube":
             return PlatformMetadata(name: "YouTube", icon: "📹", accent: Color.red, bg: Color(red: 1.0, green: 0.9, blue: 0.9), fg: Color.red)

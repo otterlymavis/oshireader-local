@@ -253,17 +253,28 @@ When a foreground refresh is running, `refreshIfIdle(.background)` returns `nil`
 
 ## Optimizations
 
+> **Status:** O1, O2, O3, O8 (dead code), O10 applied on this branch (commit
+> `perf: memoize PlatformRegistry lookups and hot-path formatters`; build green,
+> 393/393 unit tests pass). O4–O7, O9, and the remaining O8 micro-items are
+> left as follow-ups — see the per-item notes.
+
 ### O1. `PlatformRegistry.normalizeID` is O(n) with two string allocations, in every hot path
 **File:** `OshiReader/PlatformRegistry.swift:132‑148`
 `trimmingCharacters` + `lowercased` (two allocations even for an already-canonical id), a `switch`, then `all.first(where: { $0.rawPlatformValues.contains(id) })` over 27 definitions. Called per feed item in `LocalDB.computeQueryFeed` (twice per item), per item in `mergeItemsBatchedResult` and `cappedFeedItems.map`, and on every feed/saved row render via `theme.metadata(for:)`. Order of 10k+ scans per query/merge.
 **Fix:** build `static let aliasToCanonical: [String: String]` once and make `normalizeID` `trim → lowercase → dictionary lookup → hasPrefix("news:") fallback`.
 
+**✅ Done.** `aliasToCanonical` (+ `byID`, `knownIDs`) built once; `normalizeID` is now the dict lookup; `definition(for:)` and `normalizeIDs` use `byID`/`knownIDs`; the redundant `"x"` / `"news:*"` switch cases were dropped (already covered by `rawPlatformValues`).
+
 ### O2. `PlatformRegistry` derived collections are `static var` (recomputed on every access)
 **File:** `OshiReader/PlatformRegistry.swift:98‑120`
 `strictKeywordPlatformIDs`, `mediaPlatformIDs`, `activityDateWindowPlatformIDs`, `dateCutoffExemptPlatformIDs`, `defaultSubscribedIDs`, `googleNewsSources` each rebuild a `Set`/array from `filter` + `map` over `all` every read. `dateCutoffExemptPlatformIDs` is rebuilt once per subscribed platform per feed-cap pass via `LocalDB.minRetainedFeedItems` (`LocalDB.swift:1027‑1031`). Make them `static let`.
 
+**✅ Done.** All six are now `static let`.
+
 ### O3. `ISO8601DateFormatter()` allocated per call in hot paths
 **Files:** `OshiReader/PaidBackendFeedCoordinator.swift:308, 320, 331`; `OshiReader/PlusStore.swift:231`; `OshiReader/BackendClient.swift:333` (`JSONDecoder()` per request). Hoist to `static let`.
+
+**✅ Done** for the `ISO8601DateFormatter` sites in `PaidBackendFeedCoordinator` and `PlusStore` (both `@MainActor`, so a shared static is safe). **Skipped** the `BackendClient` `JSONDecoder`: it's hit concurrently from non-isolated code, and a shared `JSONDecoder` there trades a cheap allocation for the same "concurrent `decode` on one instance" question flagged under *Concurrency (unverified)*.
 
 ### O4. `fetchTVer` creates an anonymous platform token per keyword *and* per alias, per refresh
 **File:** `OshiReader/IngestionService.swift:1985‑2008`
@@ -282,7 +293,7 @@ Up to 5 `create` POSTs per term per refresh. Cache `{uid, token}` in an actor wi
 Blocks the main thread on a full `feed_items` re-encode (up to 600 items). Acceptable now; will get janky if the cap grows.
 
 ### O8. Dead code / redundant recompute
-- `RSSDateFormatterPool` (`OshiReader/NetworkManager.swift:15‑34`) — `date(from:format:)` is never called; `RSSParserDelegate.parseDate` uses its own instance formatter. Delete it.
+- **✅ Done:** `RSSDateFormatterPool` (`OshiReader/NetworkManager.swift:15‑34`) deleted — `date(from:format:)` was never called.
 - `collectDictionaries` walks the entire YouTube JSON recursively including already-matched subtrees (`IngestionService.swift:2523`).
 - `matchesKeyword` rebuilds `"\(title) \(desc)".lowercased()` per candidate in `computeQueryFeed`'s strict-keyword filter, re-lowercasing per alias (`LocalDB.swift:1115‑1120`).
 - `SearchView` recomputes `selectedLinks.map(feedItem(for:))` for `ReaderView(siblingItems:)` on every body render (`SearchView.swift:116, 128`).
@@ -296,6 +307,8 @@ The wallpaper appears small / letterboxed versus the editor preview. Design mism
 **File:** `OshiReader/Theme.swift:220‑283`
 Called for every feed card, saved card, and platform chip on every render. It calls `PlatformRegistry.normalizeID` once, then again via `PlatformRegistry.definition(for:)` in the `default` branch, and allocates a fresh `PlatformMetadata` (several `Color`s) each time with no memoization. Pairs with O1/O2.
 **Fix:** build a `static let [String: PlatformMetadata]` keyed by canonical id once, with the primary-color default as fallback.
+
+**✅ Done** (variant): rather than transcribe the 27-case switch into a literal, `metadata(for:)` is now a cache wrapper (`[AppThemeMode: [String: PlatformMetadata]]`, `NSLock`-guarded) around an unchanged `uncachedMetadata(for:normalizedPlatform:)`. Keyed by `(mode, normalized id)` so a theme switch never serves stale colors; unknown raw platforms are computed fresh (not cached).
 
 ---
 
