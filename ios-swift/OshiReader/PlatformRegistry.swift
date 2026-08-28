@@ -60,7 +60,7 @@ enum PlatformRegistry {
         PlatformDefinition(id: "youtube", name: "YouTube", icon: "📹", isMediaPlatform: true),
         PlatformDefinition(id: "niconico", name: "NicoNico", icon: "💬", isMediaPlatform: true),
         PlatformDefinition(id: "tver", name: "TVer", icon: "📺", isMediaPlatform: true),
-        PlatformDefinition(id: "twitter", name: "X", icon: "𝕏", rawPlatformValues: ["twitter", "x"], isMediaPlatform: true),
+        PlatformDefinition(id: "twitter", name: "X", icon: "𝕏", rawPlatformValues: ["twitter", "x"]),
         PlatformDefinition(id: "note", name: "Note", icon: "📝"),
         PlatformDefinition(id: "girlschannel", name: "GirlsChannel", icon: "👭", googleNewsSite: "girlschannel.net", usesStrictKeywordMatching: true, skipDateCutoff: true, usesActivityDateWindow: true),
         PlatformDefinition(id: "5ch", name: "5ch", icon: "💬", googleNewsSite: "5ch.net", usesStrictKeywordMatching: true, skipDateCutoff: true, usesActivityDateWindow: true),
@@ -111,6 +111,13 @@ enum PlatformRegistry {
 
     static func definition(for id: String) -> PlatformDefinition? {
         byID[normalizeID(id)]
+    }
+
+    /// Whether `id` (already `normalizeID`-d) names a platform the registry
+    /// knows. Callers use this to avoid subscription-gating items on an
+    /// unrecognized platform out of existence.
+    static func isKnownID(_ id: String) -> Bool {
+        knownIDs.contains(id)
     }
 
     static let googleNewsSources: [PlatformDefinition] = all.filter { $0.googleNewsSite != nil }

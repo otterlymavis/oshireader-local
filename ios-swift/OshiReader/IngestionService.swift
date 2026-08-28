@@ -2488,9 +2488,27 @@ final class IngestionService {
                 i += 4
             } else if next == "u", i + 5 < scalars.count {
                 let hex = String(String.UnicodeScalarView(scalars[(i + 2)...(i + 5)]))
-                if let value = Int(hex, radix: 16), let decoded = UnicodeScalar(value) {
-                    output.append(decoded)
-                    i += 6
+                if let value = Int(hex, radix: 16) {
+                    // Non-BMP scalars (emoji, CJK-ext) arrive as a `\uD8xx`
+                    // high surrogate followed by a `\uDCxx` low surrogate.
+                    // `UnicodeScalar(_:)` rejects a lone surrogate, so pair
+                    // them here — otherwise this falls to the literal-`u`
+                    // branch and emits garbage.
+                    if (0xD800...0xDBFF).contains(value),
+                       i + 11 < scalars.count,
+                       scalars[i + 6] == "\\", scalars[i + 7] == "u",
+                       let low = Int(String(String.UnicodeScalarView(scalars[(i + 8)...(i + 11)])), radix: 16),
+                       (0xDC00...0xDFFF).contains(low),
+                       let decoded = UnicodeScalar(0x10000 + ((value - 0xD800) << 10) + (low - 0xDC00)) {
+                        output.append(decoded)
+                        i += 12
+                    } else if let decoded = UnicodeScalar(value) {
+                        output.append(decoded)
+                        i += 6
+                    } else {
+                        output.append(next)
+                        i += 2
+                    }
                 } else {
                     output.append(next)
                     i += 2

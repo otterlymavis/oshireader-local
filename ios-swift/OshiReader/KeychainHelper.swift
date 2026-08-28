@@ -6,6 +6,10 @@ import Security
 enum KeychainHelper {
     private static let service = "com.otterpia.oshireader.credentials"
     private static let fallbackLock = NSLock()
+    /// Serializes `save` so its read → delete → add sequence is atomic:
+    /// two concurrent saves for one key could otherwise interleave and lose
+    /// a write or resurrect the old value via the restore path.
+    private static let saveLock = NSLock()
     private static var testFallbackStore: [String: Data] = [:]
 
     enum Key: String {
@@ -70,6 +74,8 @@ enum KeychainHelper {
     /// Store (or clear, when value is empty/nil) a secret.
     @discardableResult
     static func save(_ key: Key, _ value: String?) -> Bool {
+        saveLock.lock()
+        defer { saveLock.unlock() }
         let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let base: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,

@@ -1177,8 +1177,11 @@ class LocalDB: ObservableObject {
                 }
             }
             
-            // Subscribed platforms
-            if !subscribedPlatforms.contains(platformKey) {
+            // Subscribed platforms. Only gates *known* platforms — an item on
+            // an unrecognized platform (e.g. the "web" fallback a push preview
+            // merges via NotificationNavigationManager) has no subscription
+            // toggle, so filtering it here would make it permanently invisible.
+            if PlatformRegistry.isKnownID(platformKey), !subscribedPlatforms.contains(platformKey) {
                 return nil
             }
             

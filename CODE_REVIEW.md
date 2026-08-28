@@ -6,10 +6,11 @@ build and test suite were **not** run, so severities are best-effort from
 reading.
 
 > **Status:** all **High** (H1), **Medium** (M1–M9), **Optimization**
-> (O1–O10), and **tooling / legacy** (T1–T2) findings are **closed** — each
-> carries a **✅ Fixed** / **✅ Done** note with the change. Remaining open by
-> design: the **Low** items (L1–L24) and the **Concurrency (unverified)**
-> notes — none block the app and each is scoped in place below.
+> (O1–O10), **tooling / legacy** (T1–T2), and the correctness-relevant **Low**
+> items (L1, L7, L8, L9, L18, L22) are **closed** — each carries a **✅ Fixed**
+> / **✅ Done** note with the change. Remaining open by design: the other Low
+> items (edge cases / cosmetic / fragile-but-correct) and the **Concurrency
+> (unverified)** notes — none block the app and each is scoped in place below.
 >
 > **Verification (current `master`):** `xcodebuild build` green; `xcodebuild
 > test` → **393 / 393 unit tests pass** and **20 / 20 UI tests pass**. The UI
@@ -137,6 +138,8 @@ If a `.foreground` (or `.platform("youtube")`) refresh is in flight and the user
 **File:** `OshiReader/IngestionService.swift:2410‑2459`
 `\uXXXX` is decoded one escape at a time. YouTube's string-form `ytInitialData` encodes emoji / CJK-ext as surrogate pairs (`😀`); `UnicodeScalar(0xD83D)` returns `nil`, the code falls to `else`, appends the literal `u`, and advances 2 — producing garbage. Scrape-fallback path only; cosmetic. Fix: combine a high surrogate (`0xD800…0xDBFF`) with a following `\uDCxx`.
 
+**✅ Fixed.** The `\u` branch now detects a high surrogate (`0xD800…0xDBFF`), looks ahead for a `\uDCxx` low surrogate, and combines them into the real scalar (`0x10000 + ((hi − 0xD800) << 10) + (lo − 0xDC00)`), advancing 12. Lone surrogates and BMP scalars keep the old paths.
+
 ### L2. `cappedFeedItems` can return more than `maxFeedItems` on import
 **File:** `OshiReader/LocalDB.swift:973‑1025, 1778`
 The final fallback pass counts `selectedKeys.count`, but the return filters `sortedItems` by key membership. `importBackupData` passes items not deduped by `feedItemKey`, so duplicate keys let both rows through and the result exceeds the cap.
@@ -161,13 +164,19 @@ The final fallback pass counts `selectedKeys.count`, but the return filters `sor
 **File:** `OshiReader/Views/SettingsView.swift:626‑633, 662‑667, 707‑710`
 `FileManager.attributesOfItem(atPath: url.path)` on a document-picker / iCloud URL isn't reliable; `(attributes[.size] as? NSNumber)?.int64Value ?? 0` yields size `0` on failure, passing every `<= maximumBytes` check, and `Data(contentsOf:)` then loads the whole file. Use `url.resourceValues(forKeys: [.fileSizeKey]).fileSize` and treat "unknown size" as a hard failure.
 
+**✅ Fixed.** New `fileByteCount(at:)` helper reads `url.resourceValues(forKeys: [.fileSizeKey]).fileSize` and returns `Int64?`. All three importers (backup / encrypted backup / profile transfer) now `guard let byteCount = fileByteCount(at: url), byteCount <= max` — an unreadable size fails the same way "too large" does instead of loading the file.
+
 ### L8. `PendingShareStore.enqueue` does an unsynchronized read-modify-write
 **File:** `OshiReader/PendingShare.swift:24‑35`
 `readAll()` + append + `write(atomic)` on the shared App Group file. Two rapid Share Extension invocations, or an `enqueue` mid-`drain`, can drop a share. `drain()` is race-hardened; `enqueue` isn't. Use `NSFileCoordinator` or an append-only format.
 
+**✅ Fixed.** `enqueue` wraps its read-append-write in `NSFileCoordinator.coordinate(writingItemAt:options:.forMerging)`, and `drain()`'s move-aside now runs under a two-URL `.forMoving` / `.forReplacing` coordination, so the two never interleave. `readAll` takes the coordinated URL.
+
 ### L9. `KeychainHelper.save` delete-then-add is not atomic
 **File:** `OshiReader/KeychainHelper.swift:97‑108`
 `readRawData` → `SecItemDelete` → `SecItemAdd` for the same key can interleave across two concurrent saves to lose a write or resurrect the old value via the restore path. Rare (manual token entry).
+
+**✅ Fixed.** New `saveLock` (`NSLock`) held for the whole `save` body, so its read → delete → add (and the delete-only clear branch) run atomically against concurrent saves. `read` is unchanged (`SecItem` reads are already atomic).
 
 ### L10. `PlusStore.refreshStatus` failure keeps stale entitlement
 **File:** `OshiReader/PlusStore.swift:179‑187, 225‑236`
@@ -205,6 +214,8 @@ Re-appearing (nav pop-back) reloads layers from `db.compositions[keyword]`, sile
 **File:** `OshiReader/PlatformRegistry.swift:132‑148`; `OshiReader/LocalDB.swift:1124`
 `normalizeID` returns unknown ids unchanged; `computeQueryFeed`'s `subscribedPlatforms.contains(platformKey)` then drops the item. An item merged with `platform: "web"` (the `NotificationNavigationManager` fallback, `NotificationNavigationManager.swift:135`) is invisible in the feed.
 
+**✅ Fixed.** New `PlatformRegistry.isKnownID(_:)`; `computeQueryFeed`'s subscription gate is now `if PlatformRegistry.isKnownID(platformKey), !subscribedPlatforms.contains(platformKey) { return nil }` — an item on an unrecognized platform has no subscription toggle, so it passes rather than being filtered to invisibility.
+
 ### L19. `OshiView` pages the `TabView` by array index
 **File:** `OshiReader/Views/OshiView.swift:65‑76, 134‑136`
 `ForEach(cachedSortedTerms.indices, id: \.self)` bound to `$activePage` — deleting/reordering a term leaves `activePage` on an index that now maps to a different oshi; `rebuildOshiCache` only clamps the out-of-range case.
@@ -220,6 +231,8 @@ It calls `queryFeed(keyword: nil, days: 30)` — the full dedup path (`keyword !
 ### L22. `OPMLExporter.xmlEscape` doesn't strip XML-1.0-illegal control characters
 **File:** `OshiReader/OPMLExporter.swift:105‑112`
 Handles the 5 predefined entities but not `\u{00}`–`\u{1F}` (except tab/LF/CR); a keyword or custom-URL title with a control char produces an OPML file strict readers reject.
+
+**✅ Fixed.** After entity-escaping, `xmlEscape` filters the scalar view to drop C0 controls other than `\t` / `\n` / `\r` (`scalar.value >= 0x20`).
 
 ### L23. `didReceiveRemoteNotification` / background refresh report `.failed` when the coordinator is busy
 **File:** `OshiReader/AppDelegate.swift:95‑104`; `OshiReader/BackgroundRefreshManager.swift:76‑103`

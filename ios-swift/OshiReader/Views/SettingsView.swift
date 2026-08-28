@@ -668,9 +668,8 @@ struct SettingsView: View {
                     defer {
                         if didAccess { url.stopAccessingSecurityScopedResource() }
                     }
-                    let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
-                    let byteCount = (attributes[.size] as? NSNumber)?.int64Value ?? 0
-                    guard byteCount <= Int64(LocalDB.maximumBackupBytes) else {
+                    guard let byteCount = fileByteCount(at: url),
+                          byteCount <= Int64(LocalDB.maximumBackupBytes) else {
                         backupMessage = i18n.t("backupFileTooLarge")
                         showingBackupMessage = true
                         return
@@ -715,9 +714,8 @@ struct SettingsView: View {
                     defer {
                         if didAccess { url.stopAccessingSecurityScopedResource() }
                     }
-                    let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
-                    let byteCount = (attributes[.size] as? NSNumber)?.int64Value ?? 0
-                    guard byteCount <= Int64(EncryptedBackupCodec.maximumEnvelopeBytes) else {
+                    guard let byteCount = fileByteCount(at: url),
+                          byteCount <= Int64(EncryptedBackupCodec.maximumEnvelopeBytes) else {
                         throw EncryptedBackupError.payloadTooLarge
                     }
                     pendingEncryptedBackupData = try Data(contentsOf: url, options: [.mappedIfSafe])
@@ -749,9 +747,8 @@ struct SettingsView: View {
                     let url = try result.get()
                     let didAccess = url.startAccessingSecurityScopedResource()
                     defer { if didAccess { url.stopAccessingSecurityScopedResource() } }
-                    let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
-                    let byteCount = (attributes[.size] as? NSNumber)?.int64Value ?? 0
-                    guard byteCount <= Int64(LocalDB.maximumProfileTransferBytes) else { throw LocalProfileError.invalidPackage }
+                    guard let byteCount = fileByteCount(at: url),
+                          byteCount <= Int64(LocalDB.maximumProfileTransferBytes) else { throw LocalProfileError.invalidPackage }
                     data = try Data(contentsOf: url)
                 } catch {
                     profileError = localizedProfileMessage(error)
@@ -1236,6 +1233,16 @@ struct SettingsView: View {
         default:
             return error.localizedDescription
         }
+    }
+
+    /// Byte size of a security-scoped file, or `nil` when the OS won't report
+    /// it. `FileManager.attributesOfItem(atPath:)` is unreliable for
+    /// document-picker / iCloud URLs; the old `?? 0` fallback made every
+    /// `<= max` guard pass on failure and `Data(contentsOf:)` then loaded the
+    /// whole file. Callers must treat `nil` as a hard failure.
+    private func fileByteCount(at url: URL) -> Int64? {
+        guard let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize else { return nil }
+        return Int64(size)
     }
 
     private func displayName(for style: AppColorStyle) -> String {

@@ -103,12 +103,18 @@ enum OPMLExporter {
     }()
 
     private static func xmlEscape(_ value: String) -> String {
-        value
+        let entitiesEscaped = value
             .replacingOccurrences(of: "&", with: "&amp;")
             .replacingOccurrences(of: "<", with: "&lt;")
             .replacingOccurrences(of: ">", with: "&gt;")
             .replacingOccurrences(of: "\"", with: "&quot;")
             .replacingOccurrences(of: "'", with: "&apos;")
+        // Drop characters XML 1.0 forbids even as entities — C0 controls other
+        // than tab / LF / CR. A keyword or custom-URL title carrying one would
+        // otherwise produce an OPML file strict parsers reject outright.
+        return String(entitiesEscaped.unicodeScalars.filter { scalar in
+            scalar == "\t" || scalar == "\n" || scalar == "\r" || scalar.value >= 0x20
+        })
     }
 }
 

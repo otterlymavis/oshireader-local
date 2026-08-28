@@ -24,15 +24,23 @@ enum PendingShareStore {
     /// Called from the Share Extension process.
     static func enqueue(url: String, title: String?) {
         guard let fileURL else { return }
-        var pending = readAll()
-        pending.append(PendingSharedURL(
+        let entry = PendingSharedURL(
             id: UUID().uuidString,
             url: url,
             title: title,
             sharedAt: ISO8601DateFormatter().string(from: Date())
-        ))
-        guard let data = try? JSONEncoder().encode(pending) else { return }
-        try? data.write(to: fileURL, options: [.atomic])
+        )
+        // Coordinate the whole read-append-write. Two rapid Share Extension
+        // invocations, or an `enqueue` overlapping `drain()`'s move, would
+        // otherwise race on this file and silently drop a share.
+        let coordinator = NSFileCoordinator()
+        var coordinationError: NSError?
+        coordinator.coordinate(writingItemAt: fileURL, options: .forMerging, error: &coordinationError) { writeURL in
+            var pending = readAll(at: writeURL)
+            pending.append(entry)
+            guard let data = try? JSONEncoder().encode(pending) else { return }
+            try? data.write(to: writeURL, options: [.atomic])
+        }
     }
 
     /// Called from the host app. Returns whatever was queued and clears it —
@@ -55,9 +63,18 @@ enum PendingShareStore {
         // Anything `enqueue()` has written to `fileURL` since is left alone
         // for the next drain.
         if !FileManager.default.fileExists(atPath: stagingURL.path) {
-            do {
-                try FileManager.default.moveItem(at: fileURL, to: stagingURL)
-            } catch {
+            let coordinator = NSFileCoordinator()
+            var coordinationError: NSError?
+            var moveFailed = false
+            coordinator.coordinate(
+                writingItemAt: fileURL, options: .forMoving,
+                writingItemAt: stagingURL, options: .forReplacing,
+                error: &coordinationError
+            ) { from, to in
+                do { try FileManager.default.moveItem(at: from, to: to) }
+                catch { moveFailed = true }
+            }
+            if coordinationError != nil || moveFailed {
                 return []
             }
         }
@@ -67,9 +84,8 @@ enum PendingShareStore {
         return decoded
     }
 
-    private static func readAll() -> [PendingSharedURL] {
-        guard let fileURL,
-              let data = try? Data(contentsOf: fileURL),
+    private static func readAll(at url: URL) -> [PendingSharedURL] {
+        guard let data = try? Data(contentsOf: url),
               let decoded = try? JSONDecoder().decode([PendingSharedURL].self, from: data) else { return [] }
         return decoded
     }
