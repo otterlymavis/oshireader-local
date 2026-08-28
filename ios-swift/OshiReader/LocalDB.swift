@@ -158,6 +158,13 @@ class LocalDB: ObservableObject {
     // easy to miss one of and silently serve stale query results.
     private var queryFeedGeneration = 0
     private var queryFeedInvalidationSubscription: AnyCancellable?
+    /// True for the remainder of the run-loop turn in which an
+    /// `objectWillChange` fired. That notification precedes the `@Published`
+    /// store, so a `queryFeed` re-entering the same turn would compute from
+    /// the pre-mutation value and cache it under the already-bumped
+    /// generation — stale until the next mutation. While set, `queryFeed`
+    /// still recomputes but does not persist the result.
+    private var queryFeedMutationInFlight = false
     private var queryFeedCache: (keyword: String?, days: Int, generation: Int, hourBucket: Int, result: [FeedItem])?
 
     private init() {
@@ -165,8 +172,16 @@ class LocalDB: ObservableObject {
         recoverPendingRestoreIfNeeded()
         loadAll()
         queryFeedInvalidationSubscription = objectWillChange.sink { [weak self] _ in
-            self?.queryFeedGeneration &+= 1
-            self?.scheduleWidgetSnapshotRefresh()
+            guard let self else { return }
+            self.queryFeedGeneration &+= 1
+            if !self.queryFeedMutationInFlight {
+                self.queryFeedMutationInFlight = true
+                // Cleared once the current turn (and thus the @Published
+                // store) has finished; a burst of mutations in one turn
+                // reuses this single reset.
+                DispatchQueue.main.async { self.queryFeedMutationInFlight = false }
+            }
+            self.scheduleWidgetSnapshotRefresh()
         }
     }
 
@@ -1106,7 +1121,9 @@ class LocalDB: ObservableObject {
         // unfiltered feed while a keyword filter is active) pass
         // `cacheResult: false` so they don't evict the single-slot entry the
         // active view just populated and force a guaranteed miss next frame.
-        if cacheResult {
+        // `queryFeedMutationInFlight` blocks a write mid-mutation-turn, when
+        // `result` may have been computed from the pre-mutation state.
+        if cacheResult, !queryFeedMutationInFlight {
             queryFeedCache = (keyword: keyword, days: days, generation: queryFeedGeneration, hourBucket: hourBucket, result: result)
         }
         return result

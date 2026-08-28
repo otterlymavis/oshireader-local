@@ -7,11 +7,11 @@ reading.
 
 > **Status:** all **High** (H1), **Medium** (M1–M9), **Optimization**
 > (O1–O10), **tooling / legacy** (T1–T2), the correctness / perf **Low** items
-> (L1, L4, L7, L8, L9, L18, L21, L22), and two of the three **Concurrency
+> (L1, L4, L7, L8, L9, L18, L21, L22), and all three **Concurrency
 > (unverified)** notes are **closed** — each carries a **✅ Fixed** / **✅
 > Done** note with the change. Remaining open by design: the other Low items
-> (edge cases / cosmetic / fragile-but-correct) and the `queryFeedGeneration`
-> ordering note — none block the app and each is scoped in place below.
+> (edge cases / cosmetic / fragile-but-correct) — none block the app and each
+> is scoped in place below.
 >
 > **Verification (current `master`):** `xcodebuild build` green; `xcodebuild
 > test` → **393 / 393 unit tests pass** and **20 / 20 UI tests pass**. The UI
@@ -264,6 +264,7 @@ When a foreground refresh is running, `refreshIfIdle(.background)` returns `nil`
 - **`JSONDecoder` shared across the concurrent `loadAll()` fan-out** — `OshiReader/LocalDB.swift:252‑297`. Concurrent `decode` on one instance is undocumented as safe. Give each parallel closure its own decoder.
   **✅ Fixed:** `loadFromFile` / `loadArrayFromFile` allocate a fresh `JSONDecoder()` per call instead of using `self.decoder` (which was unconfigured, so the local one is equivalent).
 - **`LocalDB.queryFeedGeneration` bumped from `objectWillChange.sink`** — `OshiReader/LocalDB.swift:146‑149`. `objectWillChange` fires *before* the property write; a `queryFeed` call landing between the sink and the write caches a stale result under the new generation and won't be invalidated until the next mutation.
+  **✅ Fixed:** the sink also sets `queryFeedMutationInFlight` for the rest of the run-loop turn (cleared via one `DispatchQueue.main.async`, reused across a burst). While set, `queryFeed` still recomputes but does not write `queryFeedCache`, so a result derived from pre-mutation state can't be persisted under the bumped generation.
 - **`PushSyncCoordinator.retryPendingOperations()` re-entrancy** — `OshiReader/PushSyncCoordinator.swift:167‑179`. Called from many `@MainActor` paths with `await` points mid-loop; two invocations can interleave and double-`deletePushTerm` the same id. (Related to H1.)
 
 ---
