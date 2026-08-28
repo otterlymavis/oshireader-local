@@ -6,12 +6,12 @@ build and test suite were **not** run, so severities are best-effort from
 reading.
 
 > **Status:** all **High** (H1), **Medium** (M1–M9), **Optimization**
-> (O1–O10), **tooling / legacy** (T1–T2), the correctness / perf **Low** items
-> (L1, L4, L7, L8, L9, L18, L21, L22), and all three **Concurrency
-> (unverified)** notes are **closed** — each carries a **✅ Fixed** / **✅
-> Done** note with the change. Remaining open by design: the other Low items
-> (edge cases / cosmetic / fragile-but-correct) — none block the app and each
-> is scoped in place below.
+> (O1–O10), **tooling / legacy** (T1–T2), the correctness / perf / robustness
+> **Low** items (L1, L2, L3, L4, L7, L8, L9, L18, L21, L22, L23), and all
+> three **Concurrency (unverified)** notes are **closed** — each carries a
+> **✅ Fixed** / **✅ Done** note with the change. Remaining open by design:
+> L5, L6, L10–L17, L19, L20, L24 (cosmetic / fragile-but-correct / narrow
+> edge cases) — none block the app and each is scoped in place below.
 >
 > **Verification (current `master`):** `xcodebuild build` green; `xcodebuild
 > test` → **393 / 393 unit tests pass** and **20 / 20 UI tests pass**. The UI
@@ -145,9 +145,13 @@ If a `.foreground` (or `.platform("youtube")`) refresh is in flight and the user
 **File:** `OshiReader/LocalDB.swift:973‑1025, 1778`
 The final fallback pass counts `selectedKeys.count`, but the return filters `sortedItems` by key membership. `importBackupData` passes items not deduped by `feedItemKey`, so duplicate keys let both rows through and the result exceeds the cap.
 
+**✅ Fixed.** The final assembly now tracks an `emitted` set and yields each selected key at most once (first occurrence in sort order), so the result can't exceed `maxFeedItems` even when the input has duplicate keys.
+
 ### L3. Temp files leak on failed atomic replace
 **File:** `OshiReader/IngestionService.swift:67‑70` (`FiveChIndexStore.commit`)
 `replaceItemAt`/`moveItem` failures leave `.fivech-index-<uuid>.tmp` in the profile directory with no cleanup. Wrap in `do/catch` + `try? removeItem(at: temp)`.
+
+**✅ Fixed.** `temp` is now declared before the `do`, and the `catch` runs `try? FileManager.default.removeItem(at: temp)` so a failed replace/move doesn't leave a staging file behind.
 
 ### L4. `RecentTermUsageStore.markUsed` writes unconditionally
 **File:** `OshiReader/RecentTermUsageStore.swift:32‑37`
@@ -242,6 +246,8 @@ Handles the 5 predefined entities but not `\u{00}`–`\u{1F}` (except tab/LF/CR)
 ### L23. `didReceiveRemoteNotification` / background refresh report `.failed` when the coordinator is busy
 **File:** `OshiReader/AppDelegate.swift:95‑104`; `OshiReader/BackgroundRefreshManager.swift:76‑103`
 When a foreground refresh is running, `refreshIfIdle(.background)` returns `nil` → `.failed` → `completionHandler(.failed)` / `task.setTaskCompleted(success: false)`. Repeated spurious failures can make iOS throttle silent pushes and BG runs. Treat "coordinator busy" as `.noData`/success.
+
+**✅ Fixed.** `refreshNow()` returns `.noData` up front when `LocalRefreshCoordinator.shared.isRefreshing` — a foreground refresh already covers the wake, so `didReceiveRemoteNotification` reports `.newData`/`.noData` and `task.setTaskCompleted(success: true)` instead of `.failed`. (The one remaining `nil` path is the vanishingly rare check-then-start race, still mapped to `.failed`; harmless in a backgrounded context.)
 
 ### L24. Assorted minor issues
 - `PlatformRegistry` has no guard against two definitions sharing a `rawPlatformValues` entry (first match wins); the explicit `"news:mdpr"` / `"news:yahoo_ent"` switch cases (`PlatformRegistry.swift:137‑140`) duplicate what `rawPlatformValues` already handles.

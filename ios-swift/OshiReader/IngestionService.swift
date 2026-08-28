@@ -65,8 +65,24 @@ actor FiveChIndexStore {
         var value = state(for: profileID); for snapshot in snapshots { value.snapshots[snapshot.boardURL] = snapshot }; value.cursor = value.boards.isEmpty ? 0 : nextCursor % value.boards.count; commit(Self.capped(value), profileID: profileID)
     }
     private func commit(_ value: State, profileID: UUID) {
-        states[profileID] = value; let url = LocalProfileStore.shared.fileURL(for: "fivech_index", profileID: profileID)
-        do { let data = try JSONEncoder().encode(value); let dir = url.deletingLastPathComponent(); try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true); let temp = dir.appendingPathComponent(".fivech-index-\(UUID().uuidString).tmp"); try data.write(to: temp, options: .atomic); if FileManager.default.fileExists(atPath: url.path) { _ = try FileManager.default.replaceItemAt(url, withItemAt: temp) } else { try FileManager.default.moveItem(at: temp, to: url) } } catch { }
+        states[profileID] = value
+        let url = LocalProfileStore.shared.fileURL(for: "fivech_index", profileID: profileID)
+        let dir = url.deletingLastPathComponent()
+        let temp = dir.appendingPathComponent(".fivech-index-\(UUID().uuidString).tmp")
+        do {
+            let data = try JSONEncoder().encode(value)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try data.write(to: temp, options: .atomic)
+            if FileManager.default.fileExists(atPath: url.path) {
+                _ = try FileManager.default.replaceItemAt(url, withItemAt: temp)
+            } else {
+                try FileManager.default.moveItem(at: temp, to: url)
+            }
+        } catch {
+            // A failed replace/move leaves the staging file behind — remove it
+            // so `.fivech-index-*.tmp` doesn't accumulate in the profile dir.
+            try? FileManager.default.removeItem(at: temp)
+        }
     }
     private static func capped(_ input: State) -> State {
         var value = input; value.version = version; value.boards = Array(input.boards.prefix(boardCap)); var snapshots: [String: BoardSnapshot] = [:]; var total = 0

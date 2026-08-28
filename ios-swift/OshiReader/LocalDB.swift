@@ -1074,7 +1074,16 @@ class LocalDB: ObservableObject {
             }
         }
 
-        return sortedItems.indices.filter { selectedKeys.contains(keys[$0]) }.map { sortedItems[$0] }
+        // Emit each selected key at most once. `importBackupData` can pass in
+        // rows that aren't deduped by `feedItemKey`, and a plain
+        // `filter { selectedKeys.contains … }` would let every duplicate row
+        // through, pushing the result back over `maxFeedItems`.
+        var emitted = Set<String>()
+        return sortedItems.indices.compactMap { index -> FeedItem? in
+            let key = keys[index]
+            guard selectedKeys.contains(key), emitted.insert(key).inserted else { return nil }
+            return sortedItems[index]
+        }
     }
 
     private static func minRetainedFeedItems(for platformId: String) -> Int {

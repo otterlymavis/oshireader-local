@@ -75,6 +75,15 @@ final class BackgroundRefreshManager {
 
     func refreshNow() async -> BackgroundRefreshOutcome {
         guard !ProcessInfo.processInfo.arguments.contains("--uitesting") else { return .failed }
+
+        // A foreground refresh already in progress covers this silent-push / BG
+        // wake. Report `.noData` (success) instead of letting `refreshIfIdle`'s
+        // nil map to `.failed` — repeated spurious `.failed` results make iOS
+        // throttle silent-push delivery and background execution.
+        if LocalRefreshCoordinator.shared.isRefreshing {
+            return .noData
+        }
+
         let waiter = BackgroundRefreshWaiter()
         let worker = Task { @MainActor in
             let result = await LocalRefreshCoordinator.shared.refreshIfIdle(.background)
