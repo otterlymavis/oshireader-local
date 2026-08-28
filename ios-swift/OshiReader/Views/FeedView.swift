@@ -612,9 +612,11 @@ struct FeedView: View {
     }
 
     private var isFilteredEmptyState: Bool {
-        let unfiltered = Self.makeFilteredItems(db: db, keyword: nil, platform: nil, mediaFilter: "all", days: 30)
-        guard !unfiltered.isEmpty else { return false }
-        return cachedFilteredItems.isEmpty
+        guard cachedFilteredItems.isEmpty else { return false }
+        // Probe the unfiltered feed without touching queryFeedCache — the
+        // single slot is holding the active filter's result that
+        // rebuildFeedCache just computed.
+        return !db.queryFeed(keyword: nil, days: 30, cacheResult: false).isEmpty
     }
 
     private func clearFeedFilters() {

@@ -7,6 +7,10 @@ final class RecentTermUsageStore: ObservableObject {
     static let shared = RecentTermUsageStore()
     static let storageKey = "refresh.recent_term_usage"
     static let maximumEntries = 100
+    /// Re-opening the same article seconds apart shouldn't re-write the whole
+    /// `UserDefaults` dictionary and churn `@Published`. This hint only orders
+    /// background refresh, so coarse resolution is fine.
+    static let markUsedCoalesceInterval: TimeInterval = 60
 
     private let defaults: UserDefaults
     private var profileID: UUID?
@@ -31,7 +35,11 @@ final class RecentTermUsageStore: ObservableObject {
 
     func markUsed(termID: String) {
         guard !termID.isEmpty else { return }
-        timestamps[termID] = Date()
+        let now = Date()
+        if let last = timestamps[termID], now.timeIntervalSince(last) < Self.markUsedCoalesceInterval {
+            return
+        }
+        timestamps[termID] = now
         prune()
         persist()
     }

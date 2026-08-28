@@ -399,7 +399,10 @@ class LocalDB: ObservableObject {
         guard FileManager.default.fileExists(atPath: url.path) else { return defaultValue }
         do {
             let data = try Data(contentsOf: url)
-            return try decoder.decode(T.self, from: data)
+            // Fresh decoder per call: loadAll() fans these out on a concurrent
+            // queue, and concurrent `decode` on one JSONDecoder instance is
+            // not a documented-safe operation.
+            return try JSONDecoder().decode(T.self, from: data)
         } catch {
             AppLogger.persistence.error("Failed to load \(name): \(error.localizedDescription)")
             return defaultValue
@@ -427,7 +430,8 @@ class LocalDB: ObservableObject {
         guard FileManager.default.fileExists(atPath: url.path) else { return defaultValue }
         do {
             let data = try Data(contentsOf: url)
-            let wrapped = try decoder.decode([FailableDecodable<T>].self, from: data)
+            // Fresh decoder per call — see `loadFromFile`.
+            let wrapped = try JSONDecoder().decode([FailableDecodable<T>].self, from: data)
             let decoded = wrapped.compactMap(\.value)
             let skippedCount = wrapped.count - decoded.count
             if skippedCount > 0 {
@@ -1086,7 +1090,7 @@ class LocalDB: ObservableObject {
     }
     
     // MARK: - Query Feed (Filtering)
-    func queryFeed(keyword: String?, days: Int) -> [FeedItem] {
+    func queryFeed(keyword: String?, days: Int, cacheResult: Bool = true) -> [FeedItem] {
         // Bucketed by hour so a long-lived cache entry can't drift more than
         // an hour stale against the days-based cutoff in computeQueryFeed —
         // the generation counter alone only invalidates on data mutations,
@@ -1098,7 +1102,13 @@ class LocalDB: ObservableObject {
             return cache.result
         }
         let result = computeQueryFeed(keyword: keyword, days: days)
-        queryFeedCache = (keyword: keyword, days: days, generation: queryFeedGeneration, hourBucket: hourBucket, result: result)
+        // One-off probes (e.g. FeedView.isFilteredEmptyState checking the
+        // unfiltered feed while a keyword filter is active) pass
+        // `cacheResult: false` so they don't evict the single-slot entry the
+        // active view just populated and force a guaranteed miss next frame.
+        if cacheResult {
+            queryFeedCache = (keyword: keyword, days: days, generation: queryFeedGeneration, hourBucket: hourBucket, result: result)
+        }
         return result
     }
 

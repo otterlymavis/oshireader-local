@@ -3184,13 +3184,23 @@ actor RequestLimiter {
         }
 
         let id = UUID()
-        return await withTaskCancellationHandler {
+        let acquired = await withTaskCancellationHandler {
             await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
                 waiters.append((id, continuation))
             }
         } onCancel: {
             Task { await self.cancelWaiter(id) }
         }
+
+        // `release()` can hand this slot over *after* the task was cancelled
+        // (the onCancel hop lost the race), so `acquired` is `true` for a
+        // caller that will now bail on `Task.isCancelled` without calling
+        // `release()` — a permanently leaked slot. Give it straight back.
+        if acquired, Task.isCancelled {
+            release()
+            return false
+        }
+        return acquired
     }
 
     func release() {

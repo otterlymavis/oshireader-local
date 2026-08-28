@@ -6,11 +6,12 @@ build and test suite were **not** run, so severities are best-effort from
 reading.
 
 > **Status:** all **High** (H1), **Medium** (M1–M9), **Optimization**
-> (O1–O10), **tooling / legacy** (T1–T2), and the correctness-relevant **Low**
-> items (L1, L7, L8, L9, L18, L22) are **closed** — each carries a **✅ Fixed**
-> / **✅ Done** note with the change. Remaining open by design: the other Low
-> items (edge cases / cosmetic / fragile-but-correct) and the **Concurrency
-> (unverified)** notes — none block the app and each is scoped in place below.
+> (O1–O10), **tooling / legacy** (T1–T2), the correctness / perf **Low** items
+> (L1, L4, L7, L8, L9, L18, L21, L22), and two of the three **Concurrency
+> (unverified)** notes are **closed** — each carries a **✅ Fixed** / **✅
+> Done** note with the change. Remaining open by design: the other Low items
+> (edge cases / cosmetic / fragile-but-correct) and the `queryFeedGeneration`
+> ordering note — none block the app and each is scoped in place below.
 >
 > **Verification (current `master`):** `xcodebuild build` green; `xcodebuild
 > test` → **393 / 393 unit tests pass** and **20 / 20 UI tests pass**. The UI
@@ -152,6 +153,8 @@ The final fallback pass counts `selectedKeys.count`, but the return filters `sor
 **File:** `OshiReader/RecentTermUsageStore.swift:32‑37`
 (Correction to an earlier draft: this is **not** called per feed-row appearance — only on article open / keyword-filter change, `FeedView.swift:260, 630, 697`.) Residual: `timestamps[termID] = Date()` always changes the value, so re-opening the same article triggers a full `UserDefaults` dictionary write + `@Published` mutation. Add a "skip if updated within ~60 s" guard.
 
+**✅ Fixed.** `markUsed` returns early when the term's stored timestamp is younger than `markUsedCoalesceInterval` (60 s) — no dictionary re-write, no `@Published` churn (which was re-rendering `FeedView`, the sole observer, for nothing).
+
 ### L5. `styleInjectionJS()` interpolates CSS into a JS template literal
 **File:** `OshiReader/Views/ReaderView.swift:1006‑1014`
 `style.innerHTML = \`\(readerCSS)\``, and `readerCSS` embeds `fontFamilyCSS` (from `AppearanceManager`). A backtick or `${…}` breaks the literal or executes in the page's JS context. Fixed enum today; still, assign via a `<style>` element's `textContent` or strip `` ` `` / `\` / `$`.
@@ -228,6 +231,8 @@ Re-appearing (nav pop-back) reloads layers from `db.compositions[keyword]`, sile
 **File:** `OshiReader/Views/FeedView.swift:614‑618`; `OshiReader/LocalDB.swift:1055‑1069`
 It calls `queryFeed(keyword: nil, days: 30)` — the full dedup path (`keyword != nil` short-circuits earlier). `LocalDB.queryFeedCache` is one slot, so evaluating this while a keyword filter is active evicts the entry `cachedFilteredItems` just populated → the next `rebuildFeedCache` is a guaranteed cache miss. Only when the filtered list is empty.
 
+**✅ Fixed.** `queryFeed` gained `cacheResult: Bool = true`; on a miss it only writes `queryFeedCache` when that's `true`. `isFilteredEmptyState` now probes with `cacheResult: false` (and short-circuits on `cachedFilteredItems.isEmpty` first), so it never evicts the active view's entry.
+
 ### L22. `OPMLExporter.xmlEscape` doesn't strip XML-1.0-illegal control characters
 **File:** `OshiReader/OPMLExporter.swift:105‑112`
 Handles the 5 predefined entities but not `\u{00}`–`\u{1F}` (except tab/LF/CR); a keyword or custom-URL title with a control char produces an OPML file strict readers reject.
@@ -255,7 +260,9 @@ When a foreground refresh is running, `refreshIfIdle(.background)` returns `nil`
 ## Concurrency (unverified)
 
 - **`RequestLimiter.acquire()` cancellation vs. direct hand-off** — `OshiReader/IngestionService.swift:3097‑3139`. `release()` resumes `waiters.first` with `true` while `active` stays put; the "resumed `true` while the task was cancelled" case relies on every call site re-checking `Task.isCancelled` after `acquire()` and calling `release()`. Most do; the 5ch index maintenance paths are worth an audit for a leaked slot.
+  **✅ Fixed at the source:** `acquire()` re-checks `Task.isCancelled` after the continuation resumes; if it was handed a slot while cancelled it calls `release()` itself and returns `false`, so no call site can leak the slot regardless of whether it re-checks.
 - **`JSONDecoder` shared across the concurrent `loadAll()` fan-out** — `OshiReader/LocalDB.swift:252‑297`. Concurrent `decode` on one instance is undocumented as safe. Give each parallel closure its own decoder.
+  **✅ Fixed:** `loadFromFile` / `loadArrayFromFile` allocate a fresh `JSONDecoder()` per call instead of using `self.decoder` (which was unconfigured, so the local one is equivalent).
 - **`LocalDB.queryFeedGeneration` bumped from `objectWillChange.sink`** — `OshiReader/LocalDB.swift:146‑149`. `objectWillChange` fires *before* the property write; a `queryFeed` call landing between the sink and the write caches a stale result under the new generation and won't be invalidated until the next mutation.
 - **`PushSyncCoordinator.retryPendingOperations()` re-entrancy** — `OshiReader/PushSyncCoordinator.swift:167‑179`. Called from many `@MainActor` paths with `await` points mid-loop; two invocations can interleave and double-`deletePushTerm` the same id. (Related to H1.)
 
