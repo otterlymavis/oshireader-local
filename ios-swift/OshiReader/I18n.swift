@@ -34,6 +34,12 @@ class I18nManager: ObservableObject {
     }
     
     private let translations: [String: [String: String]] = [
+        "dateAdded": [
+            "en": "Added",
+            "ja": "追加日",
+            "zh-TW": "加入日期",
+            "zh-CN": "添加日期"
+        ],
         "appTitle": [
             "en": "oshireader",
             "ja": "推しリーダー",
@@ -255,6 +261,78 @@ class I18nManager: ObservableObject {
             "ja": "任意で、初期設定はオフです。有料ホスト機能の障害時のみ、アプリ・ソース・件数・エラー分類の限定的な情報を送信します。キーワード、URL、フィード項目、認証情報は含まれません。",
             "zh-TW": "此功能為選用且預設關閉。僅在付費託管功能失敗時傳送有限的 app、來源、數量與錯誤分類資訊，絕不包含關鍵字、網址、動態項目或憑證。",
             "zh-CN": "此功能为可选且默认关闭。仅在付费托管功能失败时发送有限的 app、来源、数量与错误分类信息，绝不包含关键字、网址、动态项目或凭证。"
+        ],
+        "dataAndProfilesSection": [
+            "en": "Data & Profiles",
+            "ja": "データとプロフィール",
+            "zh-TW": "資料與設定檔",
+            "zh-CN": "数据与配置文件"
+        ],
+        "paidBackendSectionTitle": [
+            "en": "Paid Backend",
+            "ja": "有料バックエンド",
+            "zh-TW": "付費後端",
+            "zh-CN": "付费后端"
+        ],
+        "paidHostedFeedRefresh": [
+            "en": "Hosted feed refresh",
+            "ja": "ホスト型フィード更新",
+            "zh-TW": "託管動態更新",
+            "zh-CN": "托管动态更新"
+        ],
+        "paidStatusActive": [
+            "en": "Active",
+            "ja": "有効",
+            "zh-TW": "使用中",
+            "zh-CN": "使用中"
+        ],
+        "paidStatusInactive": [
+            "en": "Inactive",
+            "ja": "無効",
+            "zh-TW": "未使用",
+            "zh-CN": "未使用"
+        ],
+        "paidFreeExplainer": [
+            "en": "All reading, storage, on-device refresh, and local alerts remain free. A purchase adds hosted polling and guaranteed push.",
+            "ja": "閲覧、保存、端末内での更新、ローカル通知はすべて無料のままです。購入するとホスト型ポーリングと確実なプッシュが追加されます。",
+            "zh-TW": "閱讀、儲存、裝置端更新與本機通知皆維持免費。購買後可額外取得託管輪詢與保證推播。",
+            "zh-CN": "阅读、存储、设备端更新与本地通知均保持免费。购买后可额外获得托管轮询与保证推送。"
+        ],
+        "paidRealtimePushTerms": [
+            "en": "Real-time push terms",
+            "ja": "リアルタイムプッシュのキーワード",
+            "zh-TW": "即時推播關鍵字",
+            "zh-CN": "实时推送关键词"
+        ],
+        "paidBellAntennaExplainer": [
+            "en": "The bell controls free best-effort local alerts. The antenna controls paid guaranteed push.",
+            "ja": "ベルは無料のベストエフォート型ローカル通知を、アンテナは有料の確実なプッシュを切り替えます。",
+            "zh-TW": "鈴鐺控制免費的盡力而為本機通知，天線控制付費的保證推播。",
+            "zh-CN": "铃铛控制免费的尽力而为本地通知，天线控制付费的保证推送。"
+        ],
+        "paidRestorePurchases": [
+            "en": "Restore Purchases",
+            "ja": "購入を復元",
+            "zh-TW": "還原購買項目",
+            "zh-CN": "恢复购买"
+        ],
+        "paidPushPausedSelection": [
+            "en": "Guaranteed push is paused. Disable terms until usage is within your current limit.",
+            "ja": "確実なプッシュは一時停止中です。使用量が現在の上限内に収まるまでキーワードを無効にしてください。",
+            "zh-TW": "保證推播已暫停。請停用部分關鍵字，直到用量在目前上限之內。",
+            "zh-CN": "保证推送已暂停。请停用部分关键词，直到用量在当前上限之内。"
+        ],
+        "paidPushPausedNoPurchase": [
+            "en": "Guaranteed push is paused because there is no active purchase. Free local alerts remain available.",
+            "ja": "有効な購入がないため、確実なプッシュは一時停止中です。無料のローカル通知は引き続き利用できます。",
+            "zh-TW": "因為沒有有效的購買項目，保證推播已暫停。免費的本機通知仍可使用。",
+            "zh-CN": "因为没有有效的购买项目，保证推送已暂停。免费的本地通知仍可使用。"
+        ],
+        "paidDisable": [
+            "en": "Disable",
+            "ja": "無効にする",
+            "zh-TW": "停用",
+            "zh-CN": "停用"
         ],
         "sourceStatusBadgeOK": [
             "en": "Working",
