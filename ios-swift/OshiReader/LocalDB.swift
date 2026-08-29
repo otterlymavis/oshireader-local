@@ -80,6 +80,13 @@ struct PendingShareDrainSummary: Equatable {
     let failures: [CustomUrlAddResult]
 }
 
+/// Local app retrieval horizon; independent of the selected display range and
+/// the ingestion service's source-health freshness threshold.
+enum FeedDatePolicy {
+    static let maximumLookbackDays = 180
+    static let maximumLookbackAge: TimeInterval = TimeInterval(maximumLookbackDays) * 24 * 60 * 60
+}
+
 enum FeedItemPolicy {
     static func isLegacyYouTubeGoogleNewsFallback(_ item: FeedItem) -> Bool {
         guard PlatformRegistry.normalizeID(item.platform) == "youtube" else { return false }
@@ -1167,7 +1174,6 @@ class LocalDB: ObservableObject {
 
         let strictKeywordPlatforms = PlatformRegistry.strictKeywordPlatformIDs
             .union(["news", "tver"])
-        let discussionActivityPlatforms = Self.discussionActivityPlatforms
         let termsByKeyword = Dictionary(terms.map { ($0.keyword, $0) }, uniquingKeysWith: { first, _ in first })
 
         let candidates = feedItems.compactMap { item -> FeedQueryCandidate? in
@@ -1184,11 +1190,9 @@ class LocalDB: ObservableObject {
                 return nil
             }
             
-            // Discussion sources are activity-oriented. Direct 5ch DAT rows carry
-            // latest-reply dates, while fallback rows may only know thread creation;
-            // keep the established cutoff exemption for both representations.
-            let skipCutoff = discussionActivityPlatforms.contains(platformKey)
-            if let cutoff = cutoffDate, !skipCutoff {
+            // Apply the user's range to every source's available date, including
+            // discussion activity/creation dates. All Time remains unrestricted.
+            if let cutoff = cutoffDate {
                 guard let itemDate = parseISO8601Date(item.published_at), itemDate >= cutoff else {
                     return nil
                 }

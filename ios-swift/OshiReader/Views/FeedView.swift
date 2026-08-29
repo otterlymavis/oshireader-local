@@ -162,15 +162,15 @@ struct FeedView: View {
         (label: "days3", days: 3),
         (label: "month1", days: 30),
         (label: "months3", days: 90),
-        (label: "months6", days: 180)
+        (label: "months6", days: FeedDatePolicy.maximumLookbackDays)
     ]
     
     private var canLoadMore: Bool {
-        displayedCount < min(cachedFilteredItems.count, 100)
+        displayedCount < cachedFilteredItems.count
     }
 
     private var remainingLoadMoreCount: Int {
-        max(min(cachedFilteredItems.count, 100) - displayedCount, 0)
+        max(cachedFilteredItems.count - displayedCount, 0)
     }
 
     private func makeFilteredItems() -> [FeedItem] {
@@ -359,7 +359,7 @@ struct FeedView: View {
         }
         .onChange(of: selectedKeyword) { _, keyword in handleSelectedKeywordChange(keyword) }
         .onChange(of: selectedPlatform) { _, _ in rebuildFeedCache(resetDisplayedCount: true) }
-        .onChange(of: daysFilter) { _, newDays in handleDaysFilterChange(newDays) }
+        .onChange(of: daysFilter) { oldDays, newDays in handleDaysFilterChange(from: oldDays, to: newDays) }
         .onChange(of: mediaFilter) { _, _ in rebuildFeedCache(resetDisplayedCount: true) }
         .onChange(of: db.feedItems) { _, _ in rebuildFeedCache() }
         .onChange(of: db.subscribedPlatforms) { _, _ in
@@ -633,9 +633,9 @@ struct FeedView: View {
         }
     }
 
-    private func handleDaysFilterChange(_ newDays: Int) {
+    private func handleDaysFilterChange(from oldDays: Int, to newDays: Int) {
         rebuildFeedCache(resetDisplayedCount: true)
-        if newDays == 0 {
+        if newDays == 0 || (oldDays > 0 && newDays > oldDays) {
             Task { await refreshFeed() }
         }
     }
@@ -662,7 +662,7 @@ struct FeedView: View {
     }
 
     private func loadMoreFeedItems() {
-        let nextCount = min(displayedCount + 20, 100)
+        let nextCount = min(displayedCount + 20, cachedFilteredItems.count)
         guard nextCount != displayedCount else { return }
         displayedCount = nextCount
         updateVisibleFeedCache(displayedCount: nextCount)

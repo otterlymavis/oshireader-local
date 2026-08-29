@@ -411,3 +411,36 @@ final class FeedQueryingTests: XCTestCase {
         XCTAssertEqual(results.map(\.id), ["youtube:newer", "youtube:older"])
     }
 }
+
+
+extension FeedQueryingTests {
+    @MainActor
+    func testEverySourceObeysFrontPageDateRanges() throws {
+        let term = db.saveTerm(keyword: "Range Audit")
+        db.setSubscribedPlatforms(platforms: PlatformRegistry.all.map(\.id))
+        let now = Date()
+        var items = [FeedItem]()
+        for platform in PlatformRegistry.all {
+            for age in [1, 40, 120, 190] {
+                let published = ISO8601DateFormatter().string(from: now.addingTimeInterval(-Double(age) * 86400))
+                items.append(FeedItem(
+                    id: "\(platform.id):audit-\(age)", platform: platform.id,
+                    url: "https://example.com/\(platform.id)/\(age)",
+                    title: "Range Audit \(platform.id) \(age)", content_text: nil, author: nil,
+                    thumbnail_url: nil, media_type: "article", published_at: published,
+                    watch_term_keyword: term.keyword, fetched_at: ISO8601DateFormatter().string(from: now),
+                    source: platform.id == "youtube" ? "youtube_scrape" : "audit"
+                ))
+            }
+        }
+        XCTAssertEqual(db.mergeItems(newItems: items), 112)
+        for platform in PlatformRegistry.all {
+            for days in [3, 30, 90, 180, 0] {
+                let visible = FeedView.makeFilteredItems(db: db, keyword: term.keyword, platform: platform.id, mediaFilter: "all", days: days)
+                let expected = days == 0 ? 4 : [1,40,120,190].filter { $0 <= days }.count
+                XCTAssertEqual(visible.count, expected, "\(platform.id) / \(days) days")
+            }
+        }
+    }
+
+}

@@ -3818,6 +3818,13 @@ final class OshiReaderTests: XCTestCase {
                 },
                 {
                   "videoRenderer": {
+                    "videoId": "history0001",
+                    "title": { "runs": [{ "text": "Fresh Oshi interview" }] },
+                    "publishedTimeText": { "simpleText": "4 months ago" }
+                  }
+                },
+                {
+                  "videoRenderer": {
                     "videoId": "freshfresh1",
                     "title": { "runs": [{ "text": "Fresh Oshi new result" }] },
                     "publishedTimeText": { "simpleText": "2 days ago" }
@@ -3849,7 +3856,7 @@ final class OshiReaderTests: XCTestCase {
 
         let firstURL = await capture.firstURL()
         XCTAssertEqual(firstURL, "https://www.youtube.com/youtubei/v1/search?prettyPrint=false")
-        XCTAssertEqual(report.items.map(\.id), ["youtube:freshfresh1"])
+        XCTAssertEqual(report.items.map(\.id), ["youtube:freshfresh1", "youtube:history0001"])
     }
 
     func testYouTubeScrapeAcceptsPublishedTimeRunsText() async throws {
@@ -5245,7 +5252,7 @@ final class OshiReaderTests: XCTestCase {
           "entryId":"stale-1",
           "amebaId":"stale-blog",
           "entryTitle":"Fallback Oshi archive",
-          "entryUpdatedDatetime":"2026-06-01T08:00:00Z"
+          "entryUpdatedDatetime":"2026-01-01T08:00:00Z"
         },"future-entry":{
           "entryId":"future-1",
           "amebaId":"future-blog",
@@ -5513,7 +5520,7 @@ final class OshiReaderTests: XCTestCase {
         XCTAssertTrue(report.items.isEmpty)
     }
 
-    func testNewsRejectsResultsOlderThanFreshnessWindow() async throws {
+    func testNewsRejectsResultsOlderThanSixMonthWindow() async throws {
         let oldRSS = Data("""
         <rss version="2.0"><channel><item>
         <title>Status Oshi article from 2025</title>
@@ -5522,10 +5529,12 @@ final class OshiReaderTests: XCTestCase {
         <pubDate>Wed, 01 Jan 2025 08:00:00 GMT</pubDate>
         </item></channel></rss>
         """.utf8)
+        let capture = RequestCapture()
         let referenceDate = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-23T08:00:00Z"))
         let service = IngestionService(
             requestExecutor: { request in
-                (
+                await capture.record(request.url!.absoluteString)
+                return (
                     oldRSS,
                     try XCTUnwrap(HTTPURLResponse(
                         url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
@@ -5544,6 +5553,96 @@ final class OshiReaderTests: XCTestCase {
 
         XCTAssertTrue(report.items.isEmpty)
         XCTAssertEqual(report.sourceStatuses.first?.outcome, .noResults)
+        let urls = await capture.urls
+        let googleURLs = urls.filter { URL(string: $0)?.host == "news.google.com" }
+        XCTAssertEqual(googleURLs.count, 1, "News must not widen an empty result to an archival search")
+        let components = try XCTUnwrap(URLComponents(string: XCTUnwrap(googleURLs.first)))
+        XCTAssertEqual(components.queryItems?.first { $0.name == "q" }?.value, "Status Oshi when:180d")
+        XCTAssertFalse(urls.contains { $0.contains("when:10y") || $0.contains("bing.com") })
+    }
+
+    func testNewsFiltersDatesFromSearchAndPublisherFeeds() async throws {
+        let referenceDate = try XCTUnwrap(parseISO8601Date("2026-08-23T08:00:00Z"))
+        let boundaryDate = referenceDate.addingTimeInterval(-180 * 24 * 60 * 60)
+        let boundary = ISO8601DateFormatter().string(from: boundaryDate)
+        let outsideWindow = ISO8601DateFormatter().string(from: boundaryDate.addingTimeInterval(-1))
+        let service = IngestionService(
+            requestExecutor: { request in
+                let host = request.url!.host!
+                let dates = [
+                    ("fresh", "2026-08-23T07:00:00Z"),
+                    ("boundary", boundary),
+                    ("outsideWindow", outsideWindow),
+                    ("future", "2026-08-25T08:00:00Z"),
+                    ("undated", "invalid")
+                ]
+                let entries = dates.map { name, date in
+                    """
+                    <item><title>Freshness Oshi \(name)</title>
+                    <link>https://\(host)/\(name)</link><pubDate>\(date)</pubDate></item>
+                    """
+                }.joined()
+                return (
+                    Data("<rss version=\"2.0\"><channel>\(entries)</channel></rss>".utf8),
+                    try XCTUnwrap(HTTPURLResponse(
+                        url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                    ))
+                )
+            },
+            retrySleeper: { _ in },
+            classifyFreshness: true,
+            now: { referenceDate }
+        )
+
+        let report = await service.ingestReport(
+            term: WatchTerm(keyword: "Freshness Oshi"),
+            platforms: ["news"]
+        )
+
+        XCTAssertEqual(report.items.count, 4)
+        XCTAssertEqual(Set(report.items.map(\.title)), ["Freshness Oshi fresh", "Freshness Oshi boundary"])
+        XCTAssertEqual(Set(report.items.compactMap(\.source)), ["curated_rss", IngestionService.unverifiedDateGoogleNewsSource])
+        XCTAssertEqual(report.sourceStatuses.first?.outcome, .received)
+    }
+
+    @MainActor
+    func testNewsHistoryReachesSixMonthFrontPageWithoutBeingReportedFresh() async throws {
+        let referenceDate = Date()
+        let publishedAt = ISO8601DateFormatter().string(from: referenceDate.addingTimeInterval(-120 * 24 * 60 * 60))
+        let service = IngestionService(
+            requestExecutor: { request in
+                let rss = """
+                <rss version="2.0"><channel><item>
+                <title>History Oshi interview</title>
+                <link>https://\(request.url!.host!)/interview</link>
+                <pubDate>\(publishedAt)</pubDate>
+                </item></channel></rss>
+                """
+                return (
+                    Data(rss.utf8),
+                    try XCTUnwrap(HTTPURLResponse(
+                        url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+                    ))
+                )
+            },
+            retrySleeper: { _ in },
+            classifyFreshness: true,
+            now: { referenceDate }
+        )
+        let term = db.saveTerm(keyword: "History Oshi")
+        db.setSubscribedPlatforms(platforms: ["news"])
+        let report = await service.ingestReport(term: term, platforms: ["news"])
+
+        XCTAssertEqual(report.items.count, 2)
+        XCTAssertEqual(report.sourceStatuses.first?.outcome, .stale)
+        XCTAssertEqual(Set(report.items.map(\.published_at)), [publishedAt])
+        XCTAssertEqual(db.mergeItems(newItems: report.items), 2)
+        for days in [30, 90, 180, 0] {
+            let visible = FeedView.makeFilteredItems(
+                db: db, keyword: term.keyword, platform: "news", mediaFilter: "all", days: days
+            )
+            XCTAssertEqual(visible.count, days == 180 || days == 0 ? 2 : 0, "Range: \(days)")
+        }
     }
 
     func testRecentLookupFallsBackToHistoricalWithoutDroppingOlderItems() async throws {
@@ -5865,6 +5964,11 @@ final class OshiReaderTests: XCTestCase {
         <pubDate>Wed, 01 Jul 2026 08:00:00 GMT</pubDate>
         </item>
         <item>
+        <title>Status Oshi outside six months - ORICON NEWS</title>
+        <link>https://oricon.co.jp/news/too-old</link>
+        <pubDate>Thu, 01 Jan 2026 08:00:00 GMT</pubDate>
+        </item>
+        <item>
         <title>Unrelated current story - ORICON NEWS</title>
         <link>https://oricon.co.jp/news/unrelated</link>
         <pubDate>Sun, 23 Aug 2026 09:00:00 GMT</pubDate>
@@ -5895,8 +5999,7 @@ final class OshiReaderTests: XCTestCase {
             platforms: ["oricon"]
         )
 
-        XCTAssertEqual(report.items.count, 1)
-        XCTAssertEqual(report.items.first?.url, "https://oricon.co.jp/news/123?utm_source=bing")
+        XCTAssertEqual(report.items.map(\.url), ["https://oricon.co.jp/news/123?utm_source=bing", "https://oricon.co.jp/news/archive"])
         XCTAssertEqual(report.items.first?.title, "Status Oshi interview")
         XCTAssertEqual(report.items.first?.content_text, "Status Oshi talks about the new release.")
         XCTAssertEqual(report.items.first?.author, "ORICON NEWS")
@@ -7596,4 +7699,74 @@ final class OshiReaderTests: XCTestCase {
         XCTAssertLessThan(steadyStateAverage, 500, "full-platform ingestion against a mocked instant transport regressed well past its ~30ms baseline")
     }
 
+}
+
+
+extension OshiReaderTests {
+    func testAllSearchFallbacksRetainSixMonthResults() async throws {
+        let reference = Date()
+        let service = IngestionService(requestExecutor: { request in
+            let rows = [1,40,120,190].map { age in
+                let date = ISO8601DateFormatter().string(from: reference.addingTimeInterval(-Double(age)*86400))
+                return "<item><title>Range Audit \(age)</title><link>https://example.com/audit/\(age)</link><pubDate>\(date)</pubDate></item>"
+            }.joined()
+            if request.url?.host != "news.google.com" && request.url?.host != "www.bing.com" {
+                return (Data(), try XCTUnwrap(HTTPURLResponse(url: request.url!, statusCode: 503, httpVersion: nil, headerFields: nil)))
+            }
+            return (Data("<rss version=\"2.0\"><channel>\(rows)</channel></rss>".utf8), try XCTUnwrap(HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)))
+        }, retrySleeper: { _ in }, classifyFreshness: true, now: { reference })
+        for platform in Set(PlatformRegistry.googleNewsSources.map(\.id) + ["news", "twitter", "niconico"]).sorted() {
+            let report = await service.ingestReport(term: WatchTerm(keyword: "Range Audit"), platforms: [platform], fetchScope: .background)
+            let titles = Set(report.items.compactMap(\.title))
+            XCTAssertEqual(titles, ["Range Audit 1", "Range Audit 40", "Range Audit 120"], platform)
+        }
+    }
+
+}
+
+
+extension OshiReaderTests {
+    func testTVerKeepsSixMonthHistoryAndRejectsOlderEpisodes() async throws {
+        let reference = Date()
+        let rows = [1,40,120,190].map { age -> [String: Any] in
+            ["content": ["id": "history-\(age)", "title": "History Oshi episode \(age)",
+                "broadcastDate": ISO8601DateFormatter().string(from: reference.addingTimeInterval(-Double(age) * 86400))]]
+        }
+        let response = try JSONSerialization.data(withJSONObject: ["result": ["episodes": ["contents": rows]]])
+        let service = IngestionService(requestExecutor: { request in
+            let data = request.url!.path.contains("/browser/create")
+                ? Data(#"{"result":{"platform_uid":"test","platform_token":"test"}}"#.utf8) : response
+            return (data, try XCTUnwrap(HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)))
+        }, classifyFreshness: true, now: { reference })
+        let report = await service.ingestReport(term: WatchTerm(keyword: "History Oshi"), platforms: ["tver"])
+        XCTAssertEqual(Set(report.items.map(\.id)), ["tver:history-1", "tver:history-40", "tver:history-120"])
+    }
+
+    func testAmebloAndRealSoundDirectSearchKeepFourMonthHistory() async throws {
+        let reference = Date()
+        let date = ISO8601DateFormatter().string(from: reference.addingTimeInterval(-120 * 86400))
+        let service = IngestionService(requestExecutor: { request in
+            let html: String
+            if request.url!.host == "search.ameba.jp" {
+                html = """
+                <script>window.__STATE__={"blogEntry":{"blogEntryMap":{"history":{
+                "entryId":"history","amebaId":"history-blog","entryTitle":"History Oshi interview",
+                "entryUpdatedDatetime":"\(date)"}}}};</script>
+                """
+            } else {
+                html = """
+                <article class="entry-summary"><h3 class="entry-title"><a href="https://realsound.jp/history">History Oshi interview</a></h3>
+                <time datetime="\(date)"></time></article>
+                """
+            }
+            return (Data(html.utf8), try XCTUnwrap(HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)))
+        }, retrySleeper: { _ in }, classifyFreshness: true, now: { reference })
+        for platform in ["ameblo", "realsound"] {
+            let report = await service.ingestReport(term: WatchTerm(keyword: "History Oshi"), platforms: [platform])
+            XCTAssertEqual(report.items.count, 1, platform)
+            XCTAssertEqual(report.items.first?.published_at, date, platform)
+            XCTAssertEqual(report.sourceStatuses.first?.outcome, .stale, platform)
+            XCTAssertEqual(report.items.first?.source, platform == "ameblo" ? "ameba_search" : "realsound_search")
+        }
+    }
 }

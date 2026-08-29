@@ -189,6 +189,7 @@ final class PaidBackendFeedCoordinator: ObservableObject {
     private let refreshEntitlement: () async -> Void
     private let reportHostedFailure: (PaidHostedDiagnosticOperation, Error) async -> Void
     private let synchronizeHostedTerms: (() async throws -> [Int])?
+    private let fetchHostedFeed: (String?, [Int], Int, Int, String?, String) async throws -> [FeedItem]
 
     init(
         paidBackendConfigured: (() -> Bool)? = nil,
@@ -199,7 +200,8 @@ final class PaidBackendFeedCoordinator: ObservableObject {
         muteHostedItem: ((String, Int, TimeInterval) async throws -> Void)? = nil,
         refreshEntitlement: (() async -> Void)? = nil,
         reportHostedFailure: ((PaidHostedDiagnosticOperation, Error) async -> Void)? = nil,
-        synchronizeHostedTerms: (() async throws -> [Int])? = nil
+        synchronizeHostedTerms: (() async throws -> [Int])? = nil,
+        fetchHostedFeed: ((String?, [Int], Int, Int, String?, String) async throws -> [FeedItem])? = nil
     ) {
         self.paidBackendConfigured = paidBackendConfigured ?? { PlusStore.shouldSyncBackend }
         self.activeEntitlement = activeEntitlement ?? { PlusStore.shared.hasActiveEntitlement }
@@ -218,6 +220,11 @@ final class PaidBackendFeedCoordinator: ObservableObject {
             await PaidHostedDiagnosticReporter.shared.report(operation, error: error)
         }
         self.synchronizeHostedTerms = synchronizeHostedTerms
+        self.fetchHostedFeed = fetchHostedFeed ?? { platform, termIDs, pageSize, days, since, until in
+            try await BackendClient.shared.fetchAllBackendFeed(
+                platform: platform, termIDs: termIDs, pageSize: pageSize, days: days, since: since, until: until
+            )
+        }
     }
 
     var isAvailable: Bool {
@@ -311,7 +318,7 @@ final class PaidBackendFeedCoordinator: ObservableObject {
             case .foreground, .background:
                 platform = nil
             }
-            let cursorKey = refreshCursorKey(profileID: profileID, platform: platform)
+            let cursorKey = Self.refreshCursorKey(profileID: profileID, platform: platform)
             let refreshCutoff = Date()
             let since = refreshCursor(forKey: cursorKey).map {
                 Self.iso8601.string(from: $0.addingTimeInterval(-incrementalOverlap))
@@ -320,13 +327,13 @@ final class PaidBackendFeedCoordinator: ObservableObject {
             if backendTermIDs.isEmpty {
                 fetched = []
             } else {
-                fetched = try await BackendClient.shared.fetchAllBackendFeed(
-                    platform: platform,
-                    termIDs: backendTermIDs,
-                    pageSize: request == .background ? 100 : 200,
-                    days: 90,
-                    since: since,
-                    until: Self.iso8601.string(from: refreshCutoff)
+                fetched = try await fetchHostedFeed(
+                    platform,
+                    backendTermIDs,
+                    request == .background ? 100 : 200,
+                    FeedDatePolicy.maximumLookbackDays,
+                    since,
+                    Self.iso8601.string(from: refreshCutoff)
                 )
             }
             guard LocalProfileStore.shared.activeProfileID == profileID,
@@ -476,8 +483,10 @@ final class PaidBackendFeedCoordinator: ObservableObject {
             || backend.refresh_tier != "standard"
     }
 
-    private func refreshCursorKey(profileID: UUID, platform: String?) -> String {
-        "paid_backend_feed.cursor.\(profileID.uuidString).\(platform ?? "all")"
+    static func refreshCursorKey(profileID: UUID, platform: String?) -> String {
+        // Changing the horizon must backfill existing installations too, rather
+        // than reusing their 90-day cursor and fetching only incremental updates.
+        "paid_backend_feed.cursor.days\(FeedDatePolicy.maximumLookbackDays).\(profileID.uuidString).\(platform ?? "all")"
     }
 
     private func refreshCursor(forKey key: String) -> Date? {
