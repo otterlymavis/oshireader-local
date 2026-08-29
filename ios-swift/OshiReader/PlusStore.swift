@@ -92,7 +92,9 @@ final class PlusStore: ObservableObject {
 
     static var isPaidPushConfigured: Bool { !productIDs.isEmpty }
     static var shouldSyncBackend: Bool {
-        isPaidPushConfigured && !ProcessInfo.processInfo.arguments.contains("--uitesting")
+        isPaidPushConfigured
+            && !isTesting
+            && !ProcessInfo.processInfo.arguments.contains("--uitesting")
     }
 
     static func parseProductIDs(_ raw: String) -> [String] {

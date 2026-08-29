@@ -1,7 +1,7 @@
 {
   "version": 1,
   "subscription_group": "OshiReader Hosted",
-  "repository_default_enabled": false,
+  "repository_default_enabled": true,
   "products": [
     {
       "id": "com.otterpia.oshireader.hosted.monthly",

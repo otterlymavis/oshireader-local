@@ -90,8 +90,11 @@ jobs:
           fastfile = Path("ios-swift/fastlane/Fastfile").read_text(encoding="utf-8")
           checks = {
               "Local bundle identifier": "PRODUCT_BUNDLE_IDENTIFIER: com.otterpia.oshireader" in project,
-              "catalog build setting": 'PUSH_SUBSCRIPTION_PRODUCT_IDS: ""' in project,
-              "approved catalog remains default-off": catalog.get("repository_default_enabled") is False,
+              "catalog build setting": (
+                  'PUSH_SUBSCRIPTION_PRODUCT_IDS: "com.otterpia.oshireader.hosted.monthly,'
+                  'com.otterpia.oshireader.hosted.yearly"'
+              ) in project,
+              "approved catalog is enabled by default": catalog.get("repository_default_enabled") is True,
               "single hosted subscription group": catalog.get("subscription_group") == "OshiReader Hosted",
               "approved catalog has two ten-term products": [
                   (product.get("duration"), product.get("push_term_limit"))
@@ -115,7 +118,11 @@ jobs:
               "Local Fastlane target": 'app_identifier: "com.otterpia.oshireader"' in fastfile,
               "environment-provided App Store credentials": "APP_STORE_CONNECT_KEY_ID" in fastfile,
               "paid backend startup guard": "if PlusStore.shouldSyncBackend" in app_delegate,
-              "empty catalog disables backend sync": "isPaidPushConfigured &&" in plus_store,
+              "catalog and test guards control backend sync": all(value in plus_store for value in (
+                  "isPaidPushConfigured",
+                  "!isTesting",
+                  'contains("--uitesting")',
+              )),
               "paid backend feed client": "func fetchBackendFeed(" in backend_client,
               "backend feed entitlement guard": all(value in paid_backend for value in (
                   "PlusStore.shouldSyncBackend",
