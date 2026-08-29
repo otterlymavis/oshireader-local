@@ -271,6 +271,8 @@ final class OshiReaderUITests: XCTestCase {
     func testSettingsPrivacyPolicyFlow() throws {
         tapTab(index: 4, labels: ["Settings"])
 
+        XCTAssertTrue(openSettingsSubpage(link: "settings.appearanceLink", screenIdentifier: "settings.appearanceScreen"))
+
         XCTAssertTrue(waitForElement(identifier: "settings.fontPicker", timeout: 2, swipes: 12).exists)
         let playfulFontButton = waitForAnyButton(containing: ["Playful", "Comic"], timeout: 2, swipes: 3)
         XCTAssertNotNil(playfulFontButton)
@@ -280,6 +282,8 @@ final class OshiReaderUITests: XCTestCase {
         let largeButton = waitForAnyButton(exactly: ["Large", "大"], timeout: 2, swipes: 3)
         XCTAssertNotNil(largeButton)
         largeButton?.tap()
+
+        navigateBack()
 
         let privacyLink = waitForElement(identifier: "settings.privacyPolicyLink", timeout: 2, swipes: 12)
         XCTAssertTrue(privacyLink.waitForExistence(timeout: 3))
@@ -296,6 +300,8 @@ final class OshiReaderUITests: XCTestCase {
     func testSettingsNotificationControls() throws {
         tapTab(index: 4, labels: ["Settings"])
 
+        XCTAssertTrue(openSettingsSubpage(link: "settings.notificationsLink", screenIdentifier: "settings.notificationsScreen"))
+
         XCTAssertTrue(waitForElement(identifier: "settings.notificationStatus", timeout: 2, swipes: 4).exists)
         XCTAssertTrue(waitForElement(identifier: "settings.localAlertBackgroundStatus", timeout: 2, swipes: 1).exists)
     }
@@ -304,15 +310,19 @@ final class OshiReaderUITests: XCTestCase {
         // The catalog (`config/paid-catalog.json` + `PUSH_SUBSCRIPTION_PRODUCT_IDS`)
         // enables paid push by default, so the guaranteed-push section renders
         // for every launch. Entitlement stays inactive under UI tests, so the
-        // per-term push control is present but disabled.
+        // per-term push control is present but disabled. The per-term antenna
+        // control stays inline on the Watch Terms rows; the section-level status
+        // moved to the Paid Backend drill-down page.
         tapTab(index: 4, labels: ["Settings"])
+        let pushControl = waitForAnyButton(exactly: ["Guaranteed push"], timeout: 3, swipes: 3)
+        XCTAssertNotNil(pushControl)
+        XCTAssertFalse(pushControl?.isEnabled ?? true, "Push control should be disabled without an active entitlement")
+
+        XCTAssertTrue(openSettingsSubpage(link: "settings.paidBackendLink", screenIdentifier: "settings.paidBackendScreen"))
         XCTAssertTrue(
             waitForElement(identifier: "settings.guaranteedPushSection", timeout: 3, swipes: 4).exists
         )
         XCTAssertTrue(waitForAnyStaticText(["Hosted feed refresh"], timeout: 3))
-        let pushControl = waitForAnyButton(exactly: ["Guaranteed push"], timeout: 3, swipes: 3)
-        XCTAssertNotNil(pushControl)
-        XCTAssertFalse(pushControl?.isEnabled ?? true, "Push control should be disabled without an active entitlement")
 
         app.terminate()
         app = XCUIApplication()
@@ -320,15 +330,17 @@ final class OshiReaderUITests: XCTestCase {
         app.launch()
         tapTab(index: 4, labels: ["Settings"])
 
+        XCTAssertNotNil(waitForAnyButton(exactly: ["Guaranteed push"], timeout: 3, swipes: 3))
+        XCTAssertTrue(openSettingsSubpage(link: "settings.paidBackendLink", screenIdentifier: "settings.paidBackendScreen"))
         XCTAssertTrue(
             waitForElement(identifier: "settings.guaranteedPushSection", timeout: 3, swipes: 4).exists
         )
         XCTAssertTrue(waitForAnyStaticText(["Hosted feed refresh"], timeout: 3))
-        XCTAssertNotNil(waitForAnyButton(exactly: ["Guaranteed push"], timeout: 3, swipes: 3))
     }
 
     func testEncryptedBackupPromptCanBeCancelled() throws {
         tapTab(index: 4, labels: ["Settings"])
+        XCTAssertTrue(openSettingsSubpage(link: "settings.dataProfilesLink", screenIdentifier: "settings.dataProfilesScreen"))
         let exportButton = waitForElement(identifier: "settings.exportEncryptedBackupButton", timeout: 3, swipes: 12)
         XCTAssertTrue(exportButton.exists)
         exportButton.tap()
@@ -343,6 +355,7 @@ final class OshiReaderUITests: XCTestCase {
 
     func testEncryptedBackupPromptRejectsMismatchedPasswords() throws {
         tapTab(index: 4, labels: ["Settings"])
+        XCTAssertTrue(openSettingsSubpage(link: "settings.dataProfilesLink", screenIdentifier: "settings.dataProfilesScreen"))
         let exportButton = waitForElement(identifier: "settings.exportEncryptedBackupButton", timeout: 3, swipes: 12)
         XCTAssertTrue(exportButton.exists)
         exportButton.tap()
@@ -362,6 +375,7 @@ final class OshiReaderUITests: XCTestCase {
 
     func testEncryptedBackupExportAcceptsMatchingPasswords() throws {
         tapTab(index: 4, labels: ["Settings"])
+        XCTAssertTrue(openSettingsSubpage(link: "settings.dataProfilesLink", screenIdentifier: "settings.dataProfilesScreen"))
         let exportButton = waitForElement(identifier: "settings.exportEncryptedBackupButton", timeout: 3, swipes: 12)
         XCTAssertTrue(exportButton.exists)
         exportButton.tap()
@@ -384,6 +398,7 @@ final class OshiReaderUITests: XCTestCase {
 
     func testProfileCreateAndManagementControls() throws {
         tapTab(index: 4, labels: ["Settings"])
+        XCTAssertTrue(openSettingsSubpage(link: "settings.dataProfilesLink", screenIdentifier: "settings.dataProfilesScreen"))
 
         let add = waitForElement(identifier: "settings.addProfileButton", timeout: 3, swipes: 12)
         XCTAssertTrue(add.exists)
@@ -406,6 +421,7 @@ final class OshiReaderUITests: XCTestCase {
 
     func testFinalProfileDeletionIsProtectedAndProfileExportOpensPicker() throws {
         tapTab(index: 4, labels: ["Settings"])
+        XCTAssertTrue(openSettingsSubpage(link: "settings.dataProfilesLink", screenIdentifier: "settings.dataProfilesScreen"))
 
         let deleteAction = waitForButton(
             matching: NSPredicate(format: "identifier BEGINSWITH 'settings.profileDelete.'"),
@@ -433,6 +449,24 @@ final class OshiReaderUITests: XCTestCase {
         let tab = app.tabBars.buttons.element(boundBy: index)
         XCTAssertTrue(tab.waitForExistence(timeout: 3), "Missing tab button for \(labels)")
         tab.tap()
+    }
+
+    /// Taps a Settings drill-down row, then returns after the pushed page's
+    /// content (identified by `screenIdentifier`) has appeared. The Settings
+    /// screen splits its config into `NavigationLink` subpages; tests that used
+    /// to scroll one long Form now open the relevant subpage first.
+    @discardableResult
+    private func openSettingsSubpage(link: String, screenIdentifier: String? = nil) -> Bool {
+        let row = waitForElement(identifier: link, timeout: 2, swipes: 12)
+        guard row.waitForExistence(timeout: 2) else { return false }
+        row.tap()
+        guard let screenIdentifier else { return true }
+        return app.descendants(matching: .any)[screenIdentifier].waitForExistence(timeout: 3)
+    }
+
+    private func navigateBack() {
+        let backButton = app.navigationBars.buttons.element(boundBy: 0)
+        if backButton.waitForExistence(timeout: 2) { backButton.tap() }
     }
 
     private func firstExistingButton(containing text: String) -> XCUIElement? {
