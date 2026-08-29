@@ -924,3 +924,53 @@ final class PaidPushTests: XCTestCase {
         XCTAssertEqual(registrationCalls, 1)
     }
 }
+
+
+extension PaidPushTests {
+    @MainActor
+    func testHostedSixMonthBackfillIgnoresLegacyCursorThenResumesIncrementally() async {
+        let db = LocalDB.shared
+        let profileID = LocalProfileStore.shared.activeProfileID
+        let legacyKey = "paid_backend_feed.cursor.\(profileID.uuidString).all"
+        let newKey = PaidBackendFeedCoordinator.refreshCursorKey(profileID: profileID, platform: nil)
+        let previousLegacy = UserDefaults.standard.object(forKey: legacyKey)
+        let previousNew = UserDefaults.standard.object(forKey: newKey)
+        let previousTerms = db.terms
+        let previousItems = db.feedItems
+        defer {
+            UserDefaults.standard.set(previousLegacy, forKey: legacyKey)
+            UserDefaults.standard.set(previousNew, forKey: newKey)
+            db.terms = previousTerms
+            db.feedItems = previousItems
+        }
+        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: legacyKey)
+        UserDefaults.standard.removeObject(forKey: newKey)
+        db.terms = [WatchTerm(keyword: "Backfill Oshi")]
+        db.feedItems = []
+        var windows: [Int] = []
+        var cursors: [String?] = []
+        let published = ISO8601DateFormatter().string(from: Date().addingTimeInterval(-120 * 86400))
+        let coordinator = PaidBackendFeedCoordinator(
+            paidBackendConfigured: { true }, activeEntitlement: { true },
+            refreshEntitlement: {}, synchronizeHostedTerms: { [123] },
+            fetchHostedFeed: { _, ids, _, days, since, until in
+                XCTAssertEqual(ids, [123])
+                XCTAssertNotNil(parseISO8601Date(until))
+                windows.append(days)
+                cursors.append(since)
+                return [FeedItem(id: "news:backfill", platform: "news", url: "https://example.com/backfill",
+                    title: "Backfill Oshi", content_text: nil, author: nil, thumbnail_url: nil, media_type: "article",
+                    published_at: published, watch_term_keyword: "Backfill Oshi", fetched_at: until)]
+            }
+        )
+        let first = await coordinator.refresh(.foreground, sourceRevision: db.dataRevision, profileID: profileID)
+        XCTAssertTrue(first.succeeded)
+        XCTAssertEqual(first.addedCount, 1)
+        XCTAssertEqual(db.feedItems.first?.published_at, published)
+        let second = await coordinator.refresh(.foreground, sourceRevision: db.dataRevision, profileID: profileID)
+        XCTAssertTrue(second.succeeded)
+        XCTAssertEqual(windows, [180, 180])
+        XCTAssertNil(cursors[0])
+        XCTAssertNotNil(cursors[1])
+    }
+}

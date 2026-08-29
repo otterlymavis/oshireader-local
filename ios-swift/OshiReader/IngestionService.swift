@@ -270,6 +270,9 @@ private actor RequestStartPacer {
 /// flat `FeedItem`s ready for `LocalDB.mergeItems`.
 final class IngestionService {
     static let freshnessWindow: TimeInterval = 10 * 24 * 60 * 60
+    // Match the front page's six-month range without treating older items as fresh.
+    private static let newsLookbackDays = FeedDatePolicy.maximumLookbackDays
+    private static let newsMaximumAge = FeedDatePolicy.maximumLookbackAge
     static let googleNewsHistoricalLookbackYears = 10
     static let twitterPublicIndexSource = "twitter_public_index"
     static let fiveChVerifiedActivitySource = "2ch_sc_dat"
@@ -337,7 +340,7 @@ final class IngestionService {
         #"\\\\x22videoId\\\\x22:\\\\x22(\#(videoIdCharacterClass))\\\\x22"#,
         #"/(?:watch\?v\\\\x3d|shorts/)(\#(videoIdCharacterClass))"#
     ].compactMap { try? NSRegularExpression(pattern: $0) }
-    private static let youTubeFallbackMaximumAge: TimeInterval = 31 * 24 * 60 * 60
+    private static let youTubeFallbackMaximumAge = FeedDatePolicy.maximumLookbackAge
     private static let fiveChDirectBudget: TimeInterval = 12
     private static let fiveChSubjectCacheTTL: TimeInterval = 5 * 60
     private static let fiveChResultLimit = 25
@@ -748,10 +751,9 @@ final class IngestionService {
             var all = [FeedItem]()
             for await items in group { all.append(contentsOf: items) }
             guard classifyFreshness else { return all }
-            let cutoff = now().addingTimeInterval(-Self.freshnessWindow)
             return all.filter { item in
                 guard let publishedAt = parseISO8601Date(item.published_at) else { return false }
-                return publishedAt >= cutoff
+                return self.isWithinFreshnessWindow(publishedAt, maximumAge: Self.newsMaximumAge)
             }
         }
     }
@@ -1656,7 +1658,14 @@ final class IngestionService {
                 source: source
             )
         }
-        guard let initialURL = Self.googleNewsURL(query, locale: locale),
+        // News must cover the front page's six-month range. Bound discovery
+        // and parsed dates independently of the ten-day source-health check.
+        // Other sources retain their existing discovery behavior.
+        guard let initialURL = Self.googleNewsURL(
+            query,
+            locale: locale,
+            recentDays: platform == "news" ? Self.newsLookbackDays : nil
+        ),
               let initialEntries = await fetchGoogleNewsEntries(initialURL, locale: locale) else {
             guard allowsBingFallback else { return [] }
             return await bingFallback()
@@ -1671,6 +1680,8 @@ final class IngestionService {
             titlePatterns: titlePatterns,
             source: source
         )
+        // An empty News result must stay empty, not retry a ten-year search.
+        guard platform != "news" else { return initialItems }
         // Match OshiReader+'s device fallback: widen to a ten-year indexed
         // search only when the normal Google News result has no relevant hit.
         guard initialItems.isEmpty else {
@@ -1809,10 +1820,7 @@ final class IngestionService {
                   let publishedAt = validPublishedDate(entry.pubDate),
                   let publishedDate = parseISO8601Date(publishedAt) else { continue }
             if classifyFreshness {
-                let maximumAge = platform == "news"
-                    ? Self.freshnessWindow
-                    : Self.searchResultMaximumAge
-                guard isWithinFreshnessWindow(publishedDate, maximumAge: maximumAge) else { continue }
+                guard isWithinFreshnessWindow(publishedDate) else { continue }
             }
             let key = entry.link
             if !seen.insert(key).inserted { continue }
@@ -2018,7 +2026,7 @@ final class IngestionService {
         let publishedAt: String?
     }
 
-    private static let searchResultMaximumAge: TimeInterval = 31 * 24 * 60 * 60
+    private static let searchResultMaximumAge = FeedDatePolicy.maximumLookbackAge
     private static let searchResultFutureGrace: TimeInterval = 24 * 60 * 60
 
     private func isWithinFreshnessWindow(_ date: Date, maximumAge: TimeInterval = IngestionService.searchResultMaximumAge) -> Bool {

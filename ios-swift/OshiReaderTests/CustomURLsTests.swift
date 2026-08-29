@@ -270,3 +270,38 @@ final class CustomURLsTests: XCTestCase {
         )
     }
 }
+
+
+extension CustomURLsTests {
+    func testCustomURLUsesPublicationMetadataNotModifiedDate() throws {
+        let now = try XCTUnwrap(parseISO8601Date("2026-08-28T12:00:00Z"))
+        let html = """
+        <meta property="article:modified_time" content="2026-08-28T11:00:00Z">
+        <META CONTENT='2026-04-28T08:00:00+09:00' PROPERTY='article:published_time'>
+        <meta itemprop="datePublished" content="2026-04-28T01:00:00Z">
+        <meta name="pubdate" content="2030-01-01T00:00:00Z">
+        """
+        XCTAssertEqual(NetworkManager.customURLPublishedDate(in: html, now: now), "2026-04-27T23:00:00Z")
+        XCTAssertNil(NetworkManager.customURLPublishedDate(in: "<meta property='article:modified_time' content='2026-08-28T11:00:00Z'>", now: now))
+        XCTAssertNil(NetworkManager.customURLPublishedDate(in: "<meta itemprop='datePublished' content='invalid'>", now: now))
+        XCTAssertNil(NetworkManager.customURLPublishedDate(in: "<meta itemprop='datePublished' content='2030-01-01T00:00:00Z'>", now: now))
+    }
+
+    @MainActor
+    func testCustomPublicationDateCorrectsAddedDateAndSurvivesMissingMetadata() {
+        let now = Date()
+        let added = ISO8601DateFormatter().string(from: now)
+        let published = ISO8601DateFormatter().string(from: now.addingTimeInterval(-120 * 86400))
+        let item = FeedItem(id: "custom:date", platform: "custom", url: "https://example.com/article",
+            title: "Article", content_text: nil, author: nil, thumbnail_url: nil, media_type: "article",
+            published_at: added, watch_term_keyword: "", fetched_at: added, source: "custom_url")
+        _ = db.mergeItems(newItems: [item])
+        _ = db.mergeItems(newItems: [item.with(published_at: published, source: "custom_url_published")])
+        XCTAssertEqual(db.feedItems.first?.published_at, published)
+        XCTAssertTrue(db.queryFeed(keyword: nil, days: 30).isEmpty)
+        XCTAssertEqual(db.queryFeed(keyword: nil, days: 180).count, 1)
+        _ = db.mergeItems(newItems: [item])
+        XCTAssertEqual(db.feedItems.first?.published_at, published)
+        XCTAssertEqual(db.feedItems.first?.source, "custom_url_published")
+    }
+}

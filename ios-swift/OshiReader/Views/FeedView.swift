@@ -162,15 +162,15 @@ struct FeedView: View {
         (label: "days3", days: 3),
         (label: "month1", days: 30),
         (label: "months3", days: 90),
-        (label: "months6", days: 180)
+        (label: "months6", days: FeedDatePolicy.maximumLookbackDays)
     ]
     
     private var canLoadMore: Bool {
-        displayedCount < min(cachedFilteredItems.count, 100)
+        displayedCount < cachedFilteredItems.count
     }
 
     private var remainingLoadMoreCount: Int {
-        max(min(cachedFilteredItems.count, 100) - displayedCount, 0)
+        max(cachedFilteredItems.count - displayedCount, 0)
     }
 
     private func makeFilteredItems() -> [FeedItem] {
@@ -359,7 +359,7 @@ struct FeedView: View {
         }
         .onChange(of: selectedKeyword) { _, keyword in handleSelectedKeywordChange(keyword) }
         .onChange(of: selectedPlatform) { _, _ in rebuildFeedCache(resetDisplayedCount: true) }
-        .onChange(of: daysFilter) { _, newDays in handleDaysFilterChange(newDays) }
+        .onChange(of: daysFilter) { oldDays, newDays in handleDaysFilterChange(from: oldDays, to: newDays) }
         .onChange(of: mediaFilter) { _, _ in rebuildFeedCache(resetDisplayedCount: true) }
         .onChange(of: db.feedItems) { _, _ in rebuildFeedCache() }
         .onChange(of: db.subscribedPlatforms) { _, _ in
@@ -633,9 +633,9 @@ struct FeedView: View {
         }
     }
 
-    private func handleDaysFilterChange(_ newDays: Int) {
+    private func handleDaysFilterChange(from oldDays: Int, to newDays: Int) {
         rebuildFeedCache(resetDisplayedCount: true)
-        if newDays == 0 {
+        if newDays == 0 || (oldDays > 0 && newDays > oldDays) {
             Task { await refreshFeed() }
         }
     }
@@ -662,7 +662,7 @@ struct FeedView: View {
     }
 
     private func loadMoreFeedItems() {
-        let nextCount = min(displayedCount + 20, 100)
+        let nextCount = min(displayedCount + 20, cachedFilteredItems.count)
         guard nextCount != displayedCount else { return }
         displayedCount = nextCount
         updateVisibleFeedCache(displayedCount: nextCount)
@@ -988,6 +988,14 @@ struct FeedCard: View {
     @StateObject private var appearance = AppearanceManager.shared
     @StateObject private var i18n = I18nManager.shared
 
+    private var dateLabel: String {
+        let relative = relativeTime(from: item.published_at)
+        if PlatformRegistry.normalizeID(item.platform) == "custom", item.source != "custom_url_published" {
+            return "\(i18n.t("dateAdded")): \(relative)"
+        }
+        return relative
+    }
+
     private var accessibilitySummary: String {
         let meta = theme.metadata(for: item.platform)
         let parts: [String?] = [
@@ -996,7 +1004,7 @@ struct FeedCard: View {
             item.watch_term_keyword.isEmpty ? nil : item.watch_term_keyword,
             meta.name,
             isSaved ? i18n.t("tabSaved") : nil,
-            relativeTime(from: item.published_at)
+            dateLabel
         ]
         return parts.compactMap { $0 }.joined(separator: ", ")
     }
@@ -1042,7 +1050,7 @@ struct FeedCard: View {
                         .font(.caption)
                 }
                 
-                Text(relativeTime(from: item.published_at))
+                Text(dateLabel)
                     .font(appearance.font(size: 11))
                     .foregroundColor(theme.colors.textMuted)
             }

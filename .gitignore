@@ -6,6 +6,7 @@ frontend/dist/
 xcuserdata/
 ios-swift/build/
 ios-swift/fastlane/report.xml
+ios-swift/fastlane/Preview.html
 
 # General
 *.pyc

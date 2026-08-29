@@ -80,6 +80,13 @@ struct PendingShareDrainSummary: Equatable {
     let failures: [CustomUrlAddResult]
 }
 
+/// Local app retrieval horizon; independent of the selected display range and
+/// the ingestion service's source-health freshness threshold.
+enum FeedDatePolicy {
+    static let maximumLookbackDays = 180
+    static let maximumLookbackAge: TimeInterval = TimeInterval(maximumLookbackDays) * 24 * 60 * 60
+}
+
 enum FeedItemPolicy {
     static func isLegacyYouTubeGoogleNewsFallback(_ item: FeedItem) -> Bool {
         guard PlatformRegistry.normalizeID(item.platform) == "youtube" else { return false }
@@ -856,6 +863,8 @@ class LocalDB: ObservableObject {
             } else {
                 // Merge/update fields if needed (like title length, content, published date)
                 let existing = currentMap[key]!
+                let mergedSource = existing.source == "custom_url_published" && item.source == "custom_url"
+                    ? existing.source : item.source ?? existing.source
                 let shouldReplaceTitle = (item.title?.isEmpty == false) &&
                     (existing.title == nil ||
                      existing.title?.contains("...") == true ||
@@ -887,7 +896,7 @@ class LocalDB: ObservableObject {
                         media_type: item.media_type.isEmpty ? existing.media_type : item.media_type,
                         published_at: Self.mergedPublishedAt(existing: existing, incoming: item),
                         fetched_at: item.fetched_at,
-                        source: item.source ?? existing.source
+                        source: mergedSource
                     )
                 } else {
                     merged = existing.with(
@@ -897,7 +906,7 @@ class LocalDB: ObservableObject {
                         thumbnail_url: item.thumbnail_url ?? existing.thumbnail_url,
                         published_at: Self.mergedPublishedAt(existing: existing, incoming: item),
                         fetched_at: item.fetched_at,
-                        source: item.source ?? existing.source
+                        source: mergedSource
                     )
                 }
                 currentMap[key] = merged
@@ -1001,6 +1010,12 @@ class LocalDB: ObservableObject {
     private static func mergedPublishedAt(existing: FeedItem, incoming: FeedItem) -> String {
         let existingDate = parseISO8601Date(existing.published_at)
         let incomingDate = parseISO8601Date(incoming.published_at)
+        // A verified custom-page publication date can correct the old bookmark
+        // added date backwards; a later metadata failure must not undo it.
+        if PlatformRegistry.normalizeID(incoming.platform) == "custom" {
+            if incoming.source == "custom_url_published", incomingDate != nil { return incoming.published_at }
+            if existing.source == "custom_url_published", existingDate != nil { return existing.published_at }
+        }
         guard let existingDate, let incomingDate else {
             return existingDate == nil ? incoming.published_at : existing.published_at
         }
@@ -1167,7 +1182,6 @@ class LocalDB: ObservableObject {
 
         let strictKeywordPlatforms = PlatformRegistry.strictKeywordPlatformIDs
             .union(["news", "tver"])
-        let discussionActivityPlatforms = Self.discussionActivityPlatforms
         let termsByKeyword = Dictionary(terms.map { ($0.keyword, $0) }, uniquingKeysWith: { first, _ in first })
 
         let candidates = feedItems.compactMap { item -> FeedQueryCandidate? in
@@ -1184,11 +1198,9 @@ class LocalDB: ObservableObject {
                 return nil
             }
             
-            // Discussion sources are activity-oriented. Direct 5ch DAT rows carry
-            // latest-reply dates, while fallback rows may only know thread creation;
-            // keep the established cutoff exemption for both representations.
-            let skipCutoff = discussionActivityPlatforms.contains(platformKey)
-            if let cutoff = cutoffDate, !skipCutoff {
+            // Apply the user's range to every source's available date, including
+            // discussion activity/creation dates. All Time remains unrestricted.
+            if let cutoff = cutoffDate {
                 guard let itemDate = parseISO8601Date(item.published_at), itemDate >= cutoff else {
                     return nil
                 }
