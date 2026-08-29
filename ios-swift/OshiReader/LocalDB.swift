@@ -863,6 +863,8 @@ class LocalDB: ObservableObject {
             } else {
                 // Merge/update fields if needed (like title length, content, published date)
                 let existing = currentMap[key]!
+                let mergedSource = existing.source == "custom_url_published" && item.source == "custom_url"
+                    ? existing.source : item.source ?? existing.source
                 let shouldReplaceTitle = (item.title?.isEmpty == false) &&
                     (existing.title == nil ||
                      existing.title?.contains("...") == true ||
@@ -894,7 +896,7 @@ class LocalDB: ObservableObject {
                         media_type: item.media_type.isEmpty ? existing.media_type : item.media_type,
                         published_at: Self.mergedPublishedAt(existing: existing, incoming: item),
                         fetched_at: item.fetched_at,
-                        source: item.source ?? existing.source
+                        source: mergedSource
                     )
                 } else {
                     merged = existing.with(
@@ -904,7 +906,7 @@ class LocalDB: ObservableObject {
                         thumbnail_url: item.thumbnail_url ?? existing.thumbnail_url,
                         published_at: Self.mergedPublishedAt(existing: existing, incoming: item),
                         fetched_at: item.fetched_at,
-                        source: item.source ?? existing.source
+                        source: mergedSource
                     )
                 }
                 currentMap[key] = merged
@@ -1008,6 +1010,12 @@ class LocalDB: ObservableObject {
     private static func mergedPublishedAt(existing: FeedItem, incoming: FeedItem) -> String {
         let existingDate = parseISO8601Date(existing.published_at)
         let incomingDate = parseISO8601Date(incoming.published_at)
+        // A verified custom-page publication date can correct the old bookmark
+        // added date backwards; a later metadata failure must not undo it.
+        if PlatformRegistry.normalizeID(incoming.platform) == "custom" {
+            if incoming.source == "custom_url_published", incomingDate != nil { return incoming.published_at }
+            if existing.source == "custom_url_published", existingDate != nil { return existing.published_at }
+        }
         guard let existingDate, let incomingDate else {
             return existingDate == nil ? incoming.published_at : existing.published_at
         }

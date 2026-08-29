@@ -988,6 +988,14 @@ struct FeedCard: View {
     @StateObject private var appearance = AppearanceManager.shared
     @StateObject private var i18n = I18nManager.shared
 
+    private var dateLabel: String {
+        let relative = relativeTime(from: item.published_at)
+        if PlatformRegistry.normalizeID(item.platform) == "custom", item.source != "custom_url_published" {
+            return "\(i18n.t("dateAdded")): \(relative)"
+        }
+        return relative
+    }
+
     private var accessibilitySummary: String {
         let meta = theme.metadata(for: item.platform)
         let parts: [String?] = [
@@ -996,7 +1004,7 @@ struct FeedCard: View {
             item.watch_term_keyword.isEmpty ? nil : item.watch_term_keyword,
             meta.name,
             isSaved ? i18n.t("tabSaved") : nil,
-            relativeTime(from: item.published_at)
+            dateLabel
         ]
         return parts.compactMap { $0 }.joined(separator: ", ")
     }
@@ -1042,7 +1050,7 @@ struct FeedCard: View {
                         .font(.caption)
                 }
                 
-                Text(relativeTime(from: item.published_at))
+                Text(dateLabel)
                     .font(appearance.font(size: 11))
                     .foregroundColor(theme.colors.textMuted)
             }

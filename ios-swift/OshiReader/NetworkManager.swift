@@ -238,6 +238,7 @@ class NetworkManager {
         let nowString = _networkISO8601.string(from: Date())
         var title = entry.title?.trimmingCharacters(in: .whitespacesAndNewlines)
         var description: String?
+        var publishedAt: String?
 
         do {
             var request = URLRequest(url: url, cachePolicy: .reloadRevalidatingCacheData)
@@ -252,6 +253,7 @@ class NetworkManager {
             if let html = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .shiftJIS) {
                 title = extractTagContent(named: "title", from: html) ?? title
                 description = extractMetaDescription(from: html)
+                publishedAt = Self.customURLPublishedDate(in: html)
             }
         } catch {
             AppLogger.scraping.error("Custom URL scrape failed for \(entry.url): \(error.localizedDescription)")
@@ -267,11 +269,36 @@ class NetworkManager {
             author: URL(string: normalized)?.host,
             thumbnail_url: nil,
             media_type: "article",
-            published_at: entry.added_at,
+            published_at: publishedAt ?? entry.added_at,
             watch_term_keyword: "",
             fetched_at: nowString,
-            source: "custom_url"
+            source: publishedAt == nil ? "custom_url" : "custom_url_published"
         ), true)
+    }
+
+    /// Trust explicit publication metadata only, never modification time or
+    /// HTTP/index dates. Undated bookmarks keep their separately labeled added date.
+    static func customURLPublishedDate(in html: String, now: Date = Date()) -> String? {
+        guard let tags = try? NSRegularExpression(pattern: #"<meta\b[^>]*>"#, options: .caseInsensitive),
+              let attributes = try? NSRegularExpression(pattern: #"([\w:-]+)\s*=\s*["']([^"']*)["']"#, options: .caseInsensitive) else { return nil }
+        var dates = [Date]()
+        for match in tags.matches(in: html, range: NSRange(html.startIndex..., in: html)) {
+            guard let range = Range(match.range, in: html) else { continue }
+            let tag = String(html[range])
+            var values = [String: String]()
+            for attribute in attributes.matches(in: tag, range: NSRange(tag.startIndex..., in: tag)) {
+                guard let key = Range(attribute.range(at: 1), in: tag),
+                      let value = Range(attribute.range(at: 2), in: tag) else { continue }
+                values[String(tag[key]).lowercased()] = String(tag[value])
+            }
+            let names = [values["property"], values["name"], values["itemprop"]].compactMap { $0?.lowercased() }
+            guard names.contains(where: { ["article:published_time", "datepublished", "pubdate"].contains($0) }),
+                  let content = values["content"],
+                  let date = parseISO8601Date(content),
+                  date <= now.addingTimeInterval(24 * 60 * 60) else { continue }
+            dates.append(date)
+        }
+        return dates.min().map { ISO8601DateFormatter().string(from: $0) }
     }
 
     private func normalizedCustomUrl(_ value: String) -> String {
