@@ -74,9 +74,6 @@ struct SettingsView: View {
                     .accessibilityIdentifier("settings.platformMenu")
                 }
 
-                // Section: Source Status (local refresh diagnostics)
-                SourceStatusSummarySection(theme: theme, i18n: i18n)
-
                 // Section: App configuration
                 Section {
                     NavigationLink {
@@ -144,6 +141,10 @@ struct SettingsView: View {
                     }
                     .accessibilityIdentifier("settings.privacyPolicyLink")
                 }
+
+                // Section: Source Status (local refresh diagnostics) — kept
+                // last so the day-to-day controls above stay above the fold.
+                SourceStatusSummarySection(theme: theme, i18n: i18n)
             }
             .font(appearance.font(size: 13))
             .accessibilityIdentifier("settings.screen")
