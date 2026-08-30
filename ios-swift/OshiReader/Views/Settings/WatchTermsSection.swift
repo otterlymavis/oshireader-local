@@ -268,7 +268,9 @@ private struct TermRowView: View {
         } label: {
             Image(systemName: term.notify_on_new ? "bell.fill" : "bell.slash")
                 .modifier(KeywordActionChrome(theme: theme, isActive: term.notify_on_new))
-                .opacity(notificationTermBeingUpdated != nil ? 0.4 : 1)
+                // Only the row whose bell is mid-update dims; the shared
+                // `disabled` guard below still serializes across rows.
+                .opacity(notificationTermBeingUpdated == term.id ? 0.4 : 1)
         }
         .buttonStyle(PlainButtonStyle())
         .disabled(notificationTermBeingUpdated != nil)

@@ -113,7 +113,7 @@ final class OshiReaderUITests: XCTestCase {
         XCTAssertTrue(mediaOnlyButton.waitForNonExistence(timeout: 3))
 
         tapTab(index: 4, labels: ["Settings"])
-        XCTAssertTrue(waitForElement(identifier: "settings.refreshStatus", timeout: 3, swipes: 8).exists)
+        XCTAssertTrue(waitForElement(identifier: "settings.refreshStatus", timeout: 3, swipes: 12).exists)
     }
 
     func testSourceStatusSummaryShowsHealthSummary() throws {
@@ -123,10 +123,12 @@ final class OshiReaderUITests: XCTestCase {
         app.buttons["feed.refreshButton"].tap()
 
         tapTab(index: 4, labels: ["Settings"])
+        // Source Status is the last section of the Settings form, so this needs
+        // a scroll budget that clears every section above it.
         let sourceSummary = waitForElement(
             identifier: "settings.sourceStatus",
             timeout: 1,
-            swipes: 5
+            swipes: 12
         )
         XCTAssertTrue(sourceSummary.exists)
         XCTAssertEqual(sourceSummary.elementType, .button)
