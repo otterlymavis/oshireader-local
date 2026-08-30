@@ -117,183 +117,196 @@ private struct TermRowView: View {
     @State private var showingSourceSelection = false
 
     var body: some View {
-        HStack {
-            NavigationLink(destination: AvatarEditorView(keyword: term.keyword)) {
-                ZStack {
-                    Circle()
-                        .fill(theme.colors.divider)
-                        .frame(width: 38, height: 38)
-                    if let avatarURL, let url = URL(string: avatarURL) {
-                        FeedThumbnailView(url: url, size: 38, cornerRadius: 19, placeholderText: "🎨")
-                            .clipShape(Circle())
-                    } else {
-                        Text("🎨")
-                            .font(.body)
+        VStack(alignment: .leading, spacing: 10) {
+            // Identity + the primary on/off control.
+            HStack(spacing: 12) {
+                NavigationLink(destination: AvatarEditorView(keyword: term.keyword)) {
+                    ZStack {
+                        Circle()
+                            .fill(theme.colors.divider)
+                            .frame(width: 38, height: 38)
+                        if let avatarURL, let url = URL(string: avatarURL) {
+                            FeedThumbnailView(url: url, size: 38, cornerRadius: 19, placeholderText: "🎨")
+                                .clipShape(Circle())
+                        } else {
+                            Text("🎨")
+                                .font(.body)
+                        }
                     }
                 }
-            }
-            .buttonStyle(PlainButtonStyle())
-            .accessibilityLabel(i18n.tFormat("editAvatarFmt", term.keyword))
-            .accessibilityIdentifier("settings.keywordAvatar.\(term.keyword)")
+                .buttonStyle(PlainButtonStyle())
+                .accessibilityLabel(i18n.tFormat("editAvatarFmt", term.keyword))
+                .accessibilityIdentifier("settings.keywordAvatar.\(term.keyword)")
 
-            VStack(alignment: .leading, spacing: 4) {
                 Text(term.keyword)
                     .font(.subheadline)
                     .fontWeight(.semibold)
                     .foregroundColor(theme.colors.text)
-                // Alias chips
-                if !term.aliases.isEmpty || addingAliasForId == term.id {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 4) {
-                            ForEach(term.aliases, id: \.self) { alias in
-                                HStack(spacing: 2) {
-                                    Text(alias)
-                                        .font(.caption2)
-                                        .foregroundColor(theme.colors.textSub)
-                                    Button {
-                                        let updated = term.aliases.filter { $0 != alias }
-                                        db.updateTerm(id: term.id, aliases: updated)
-                                    } label: {
-                                        Image(systemName: "xmark")
-                                            .font(.system(size: 8, weight: .bold))
-                                            .foregroundColor(theme.colors.textMuted)
-                                    }
-                                    .buttonStyle(.plain)
-                                    .accessibilityLabel(i18n.tFormat("removeAliasFmt", alias))
-                                }
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 3)
-                                .background(theme.colors.divider)
-                                .cornerRadius(99)
-                            }
-                            if addingAliasForId == term.id {
-                                TextField(i18n.t("keyword"), text: $newAliasText)
-                                    .font(.caption2)
-                                    .frame(width: 80)
-                                    .autocorrectionDisabled()
-                                    .textInputAutocapitalization(.never)
-                                    .submitLabel(.done)
-                                    .onSubmit { commitAlias() }
-                            }
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+
+                Spacer(minLength: 8)
+
+                Toggle(i18n.t("active"), isOn: Binding(
+                    get: { term.is_active },
+                    set: { next in
+                        db.updateTerm(id: term.id, isActive: next)
+                    }
+                ))
+                .labelsHidden()
+                .tint(theme.colors.primary)
+                .accessibilityLabel(i18n.t("active"))
+                .accessibilityIdentifier("settings.keywordToggle.\(term.keyword)")
+            }
+
+            // Secondary actions — one uniform, evenly spaced row of
+            // thumb-sized targets, each tinted when its feature is on.
+            HStack(spacing: 8) {
+                modeButton
+                sourceSelectionButton
+                bellButton
+                if showsGuaranteedPush {
+                    pushButton
+                }
+            }
+
+            aliasEditor
+        }
+        .padding(.vertical, 4)
+        .accessibilityIdentifier("settings.keywordRow.\(term.keyword)")
+    }
+
+    @ViewBuilder
+    private var aliasEditor: some View {
+        if !term.aliases.isEmpty || addingAliasForId == term.id {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 4) {
+                    ForEach(term.aliases, id: \.self) { alias in
+                        HStack(spacing: 2) {
+                            Text(alias)
+                                .font(.caption2)
+                                .foregroundColor(theme.colors.textSub)
                             Button {
-                                if addingAliasForId == term.id {
-                                    commitAlias()
-                                } else {
-                                    newAliasText = ""
-                                    addingAliasForId = term.id
-                                }
+                                let updated = term.aliases.filter { $0 != alias }
+                                db.updateTerm(id: term.id, aliases: updated)
                             } label: {
-                                Image(systemName: addingAliasForId == term.id ? "checkmark" : "plus")
-                                    .font(.system(size: 9, weight: .bold))
-                                    .foregroundColor(theme.colors.primary)
-                                    .frame(width: 20, height: 18)
-                                    .background(theme.colors.primaryBg)
-                                    .cornerRadius(99)
+                                Image(systemName: "xmark")
+                                    .font(.system(size: 8, weight: .bold))
+                                    .foregroundColor(theme.colors.textMuted)
                             }
                             .buttonStyle(.plain)
-                            .accessibilityLabel(addingAliasForId == term.id ? i18n.t("save") : i18n.t("addAlias"))
+                            .accessibilityLabel(i18n.tFormat("removeAliasFmt", alias))
                         }
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(theme.colors.divider)
+                        .cornerRadius(99)
                     }
-                } else {
-                    Button {
-                        newAliasText = ""
-                        addingAliasForId = term.id
-                    } label: {
-                        Label(i18n.t("addAlias"), systemImage: "plus")
+                    if addingAliasForId == term.id {
+                        TextField(i18n.t("keyword"), text: $newAliasText)
                             .font(.caption2)
-                            .foregroundColor(theme.colors.textMuted)
+                            .frame(width: 80)
+                            .autocorrectionDisabled()
+                            .textInputAutocapitalization(.never)
+                            .submitLabel(.done)
+                            .onSubmit { commitAlias() }
+                    }
+                    Button {
+                        if addingAliasForId == term.id {
+                            commitAlias()
+                        } else {
+                            newAliasText = ""
+                            addingAliasForId = term.id
+                        }
+                    } label: {
+                        Image(systemName: addingAliasForId == term.id ? "checkmark" : "plus")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundColor(theme.colors.primary)
+                            .frame(width: 20, height: 18)
+                            .background(theme.colors.primaryBg)
+                            .cornerRadius(99)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel(addingAliasForId == term.id ? i18n.t("save") : i18n.t("addAlias"))
                 }
             }
-            Spacer()
-
+        } else {
             Button {
-                let next = term.collection_mode == "all_info" ? "media_only" : "all_info"
-                db.updateTerm(id: term.id, collectionMode: next)
+                newAliasText = ""
+                addingAliasForId = term.id
             } label: {
-                Text(term.collection_mode == "media_only" ? "📹" : "📄")
-                    .font(.caption)
-                    .fontWeight(.bold)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 5)
-                    .background(theme.colors.divider)
-                    .foregroundColor(theme.colors.textSub)
-                    .clipShape(Capsule())
+                Label(i18n.t("addAlias"), systemImage: "plus")
+                    .font(.caption2)
+                    .foregroundColor(theme.colors.textMuted)
             }
-            .buttonStyle(PlainButtonStyle())
-            .accessibilityLabel(term.collection_mode == "media_only" ? i18n.t("mediaOnly") : i18n.t("allInfo"))
-            .accessibilityIdentifier("settings.keywordMode.\(term.keyword)")
-
-            sourceSelectionButton
-
-            // Push notifications bell button
-            Button {
-                guard notificationTermBeingUpdated == nil else { return }
-                let next = !term.notify_on_new
-                notificationTermBeingUpdated = term.id
-                Task { @MainActor in
-                    await onSetNotificationEnabled(next, term)
-                    notificationTermBeingUpdated = nil
-                }
-            } label: {
-                Image(systemName: term.notify_on_new ? "bell.fill" : "bell.slash")
-                    .foregroundColor(term.notify_on_new ? theme.colors.primary : theme.colors.textMuted)
-                    .font(.body)
-                    .padding(.horizontal, 8)
-            }
-            .buttonStyle(PlainButtonStyle())
-            .disabled(notificationTermBeingUpdated != nil)
-            .accessibilityLabel("Local alerts")
-            .accessibilityValue(term.notify_on_new ? "on" : "off")
-            .accessibilityIdentifier("settings.keywordBell.\(term.keyword)")
-
-            if showsGuaranteedPush {
-                Button {
-                    Task { await onSetPushEnabled(term.backendTermID == nil, term) }
-                } label: {
-                    Image(systemName: term.backendTermID == nil ? "antenna.radiowaves.left.and.right.slash" : "antenna.radiowaves.left.and.right")
-                        .foregroundColor(term.backendTermID == nil ? theme.colors.textMuted : theme.colors.primary)
-                        .font(.body)
-                        .padding(.horizontal, 6)
-                }
-                .buttonStyle(PlainButtonStyle())
-                .disabled(
-                    pushTermBeingUpdated != nil
-                        || manualPushTermBeingUpdated != nil
-                        || (term.backendTermID == nil && (pushTermLimit == 0 || pushTermCount >= pushTermLimit))
-                )
-                .accessibilityLabel("Guaranteed push")
-                .accessibilityValue(term.backendTermID == nil ? "off" : "on")
-                .accessibilityIdentifier("settings.keywordPush.\(term.keyword)")
-                .contextMenu {
-                    if PaidNotificationControlPolicy.showsPendingActions(backendTermID: term.backendTermID) {
-                        Button {
-                            Task { await onNotifyPushNow(term) }
-                        } label: {
-                            Label(i18n.t("paidPushNotifyNow"), systemImage: "bell.and.waves.left.and.right")
-                        }
-                        Button(role: .destructive) {
-                            Task { await onClearPushPending(term) }
-                        } label: {
-                            Label(i18n.t("paidPushClearPending"), systemImage: "bell.slash")
-                        }
-                    }
-                }
-            }
-
-            Toggle(i18n.t("active"), isOn: Binding(
-                get: { term.is_active },
-                set: { next in
-                    db.updateTerm(id: term.id, isActive: next)
-                }
-            ))
-            .labelsHidden()
-            .tint(theme.colors.primary)
-            .accessibilityLabel(i18n.t("active"))
-            .accessibilityIdentifier("settings.keywordToggle.\(term.keyword)")
+            .buttonStyle(.plain)
         }
-        .accessibilityIdentifier("settings.keywordRow.\(term.keyword)")
+    }
+
+    private var modeButton: some View {
+        Button {
+            let next = term.collection_mode == "all_info" ? "media_only" : "all_info"
+            db.updateTerm(id: term.id, collectionMode: next)
+        } label: {
+            Text(term.collection_mode == "media_only" ? "📹" : "📄")
+                .modifier(KeywordActionChrome(theme: theme, isActive: term.collection_mode == "media_only"))
+        }
+        .buttonStyle(PlainButtonStyle())
+        .accessibilityLabel(term.collection_mode == "media_only" ? i18n.t("mediaOnly") : i18n.t("allInfo"))
+        .accessibilityIdentifier("settings.keywordMode.\(term.keyword)")
+    }
+
+    private var bellButton: some View {
+        Button {
+            guard notificationTermBeingUpdated == nil else { return }
+            let next = !term.notify_on_new
+            notificationTermBeingUpdated = term.id
+            Task { @MainActor in
+                await onSetNotificationEnabled(next, term)
+                notificationTermBeingUpdated = nil
+            }
+        } label: {
+            Image(systemName: term.notify_on_new ? "bell.fill" : "bell.slash")
+                .modifier(KeywordActionChrome(theme: theme, isActive: term.notify_on_new))
+                .opacity(notificationTermBeingUpdated != nil ? 0.4 : 1)
+        }
+        .buttonStyle(PlainButtonStyle())
+        .disabled(notificationTermBeingUpdated != nil)
+        .accessibilityLabel("Local alerts")
+        .accessibilityValue(term.notify_on_new ? "on" : "off")
+        .accessibilityIdentifier("settings.keywordBell.\(term.keyword)")
+    }
+
+    private var pushButton: some View {
+        Button {
+            Task { await onSetPushEnabled(term.backendTermID == nil, term) }
+        } label: {
+            Image(systemName: term.backendTermID == nil ? "antenna.radiowaves.left.and.right.slash" : "antenna.radiowaves.left.and.right")
+                .modifier(KeywordActionChrome(theme: theme, isActive: term.backendTermID != nil))
+        }
+        .buttonStyle(PlainButtonStyle())
+        .disabled(
+            pushTermBeingUpdated != nil
+                || manualPushTermBeingUpdated != nil
+                || (term.backendTermID == nil && (pushTermLimit == 0 || pushTermCount >= pushTermLimit))
+        )
+        .accessibilityLabel("Guaranteed push")
+        .accessibilityValue(term.backendTermID == nil ? "off" : "on")
+        .accessibilityIdentifier("settings.keywordPush.\(term.keyword)")
+        .contextMenu {
+            if PaidNotificationControlPolicy.showsPendingActions(backendTermID: term.backendTermID) {
+                Button {
+                    Task { await onNotifyPushNow(term) }
+                } label: {
+                    Label(i18n.t("paidPushNotifyNow"), systemImage: "bell.and.waves.left.and.right")
+                }
+                Button(role: .destructive) {
+                    Task { await onClearPushPending(term) }
+                } label: {
+                    Label(i18n.t("paidPushClearPending"), systemImage: "bell.slash")
+                }
+            }
+        }
     }
 
     private func commitAlias() {
@@ -321,12 +334,8 @@ private struct TermRowView: View {
         Button {
             showingSourceSelection = true
         } label: {
-            Image(systemName: term.source_mode == .all ? "globe" : "line.3.horizontal.decrease.circle")
-                .font(.caption)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 5)
-                .background(theme.colors.divider)
-                .clipShape(Capsule())
+            Image(systemName: term.source_mode == .all ? "globe" : "line.3.horizontal.decrease.circle.fill")
+                .modifier(KeywordActionChrome(theme: theme, isActive: term.source_mode != .all))
         }
         .buttonStyle(.plain)
         .accessibilityLabel(i18n.t("sourceSelectionMenu"))
@@ -379,6 +388,25 @@ private struct TermRowView: View {
             .presentationDetents([.medium, .large])
             .accessibilityIdentifier("settings.keywordSourcesSheet.\(term.keyword)")
         }
+    }
+}
+
+/// Shared chrome for the Watch Term row's secondary action buttons so mode,
+/// sources, alerts, and guaranteed push read as one control group: a uniform
+/// rounded target that stretches to an equal share of the row width and tints
+/// itself when its feature is on.
+private struct KeywordActionChrome: ViewModifier {
+    @ObservedObject var theme: ThemeManager
+    let isActive: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .font(.system(size: 15, weight: .semibold))
+            .frame(maxWidth: .infinity, minHeight: 38)
+            .background(isActive ? theme.colors.primaryBg : theme.colors.divider)
+            .foregroundColor(isActive ? theme.colors.primary : theme.colors.textSub)
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 }
 
