@@ -35,7 +35,7 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         SWIFT_VERSION: "5.9"
         GENERATE_INFOPLIST_FILE: NO
-        PUSH_SUBSCRIPTION_PRODUCT_IDS: "com.otterpia.oshireader.hosted.monthly,com.otterpia.oshireader.hosted.yearly"
+        PUSH_SUBSCRIPTION_PRODUCT_IDS: "com.otterpia.oshireader.hosted.monthly,com.otterpia.oshireader.hosted.yearly,com.otterpia.oshireader.hosted.lifetime"
         APNS_ENVIRONMENT: development
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.utilities
         TARGETED_DEVICE_FAMILY: "1,2"

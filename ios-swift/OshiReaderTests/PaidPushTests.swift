@@ -64,6 +64,17 @@ final class PaidPushTests: XCTestCase {
     }
 
     @MainActor
+    func testOneWatchWordPlanUsesOnlyTheLifetimeProduct() {
+        XCTAssertTrue(
+            PlusStore.isOneWatchWordPlan(productID: "com.otterpia.oshireader.hosted.lifetime")
+        )
+        XCTAssertFalse(
+            PlusStore.isOneWatchWordPlan(productID: "com.otterpia.oshireader.hosted.monthly")
+        )
+        XCTAssertFalse(PlusStore.isOneWatchWordPlan(productID: "unconfigured.product"))
+    }
+
+    @MainActor
     func testNewestEntitlementRequestGenerationRemainsAuthoritative() {
         var gate = PaidEntitlementRequestGate()
         let olderInactive = gate.beginRequest()

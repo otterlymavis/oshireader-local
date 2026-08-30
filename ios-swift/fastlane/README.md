@@ -31,6 +31,23 @@ Upload OshiReader Local metadata to App Store Connect
 
 Download OshiReader Local metadata from App Store Connect
 
+### ios dev_device
+
+```sh
+[bundle exec] fastlane ios dev_device
+```
+
+Build the Debug app (OshiReader Local scheme) and install it on a connected
+iPhone so you can run a real StoreKit sandbox purchase against the hosted
+backend. Then, on the device: Settings -> Developer -> Sandbox Apple Account,
+sign in with an App Store Connect sandbox tester, and buy from the app's
+Settings -> Paid Backend screen.
+
+  fastlane ios dev_device                 # auto-detects a single paired iPhone
+  fastlane ios dev_device udid:<id>       # target a specific device
+  fastlane ios dev_device launch:false    # install only, do not relaunch
+
+
 ### ios paid_acceptance_archive
 
 ```sh

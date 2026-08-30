@@ -2,6 +2,28 @@ require "json"
 
 default_platform(:ios)
 
+# Absolute path to the `ios-swift/` directory (the folder that holds `fastlane/`).
+IOS_PROJECT_DIR = File.expand_path("..", __dir__)
+
+# Return { udid:, identifier: } for a single paired physical iPhone, or nil when
+# the count is not exactly one (the lane then asks for an explicit `udid:`).
+# `udid` is the hardware UDID that `xcodebuild -destination id=` expects;
+# `identifier` is the CoreDevice id that `devicectl --device` expects.
+def detect_connected_device
+  raw = `xcrun devicectl list devices --json-output - 2>/dev/null`
+  return nil if raw.strip.empty?
+  devices = (JSON.parse(raw).dig("result", "devices") || []).select do |device|
+    device.dig("connectionProperties", "pairingState") == "paired" &&
+      device.dig("hardwareProperties", "platform") == "iOS" &&
+      device.dig("hardwareProperties", "reality") == "physical"
+  end
+  return nil unless devices.length == 1
+  { udid: devices.first.dig("hardwareProperties", "udid"),
+    identifier: devices.first["identifier"] }
+rescue JSON::ParserError
+  nil
+end
+
 platform :ios do
   private_lane :paid_acceptance_build_number do
     configured = ENV.fetch("PAID_ACCEPTANCE_BUILD_NUMBER", "").strip
@@ -68,6 +90,85 @@ platform :ios do
       metadata_path: "./fastlane/metadata",
       run_precheck_before_submit: false
     )
+  end
+
+  desc <<~DESC
+    Build the Debug app (OshiReader Local scheme) and install it on a connected
+    iPhone so you can run a real StoreKit sandbox purchase against the hosted
+    backend. Then, on the device: Settings -> Developer -> Sandbox Apple Account,
+    sign in with an App Store Connect sandbox tester, and buy from the app's
+    Settings -> Paid Backend screen.
+
+      fastlane ios dev_device                 # auto-detects a single paired iPhone
+      fastlane ios dev_device udid:<id>       # target a specific device
+      fastlane ios dev_device launch:false    # install only, do not relaunch
+  DESC
+  lane :dev_device do |options|
+    manual = (options[:udid] || ENV["DEV_DEVICE_UDID"]).to_s.strip
+    if manual.empty?
+      detected = detect_connected_device
+      UI.user_error!(
+        "No single paired iPhone found. Connect one device (USB, unlocked, " \
+        "trusted), or pass udid:<id> (see `xcrun devicectl list devices`) or " \
+        "set DEV_DEVICE_UDID."
+      ) if detected.nil?
+      build_id   = detected[:udid]        # xcodebuild -destination id=
+      install_id = detected[:identifier]  # devicectl --device
+    else
+      # A manually supplied value is used verbatim for both tools.
+      build_id = install_id = manual
+    end
+    UI.message("Target device: #{build_id}")
+
+    # Reachability pre-flight: a device can be *paired* but not connected, which
+    # otherwise surfaces only as a 60s xcodebuild "destination ... unavailable"
+    # timeout ("developer disk image could not be mounted").
+    `xcrun devicectl device info lockState --device #{install_id.shellescape} --timeout 10 2>&1`
+    unless $?.success?
+      UI.user_error!(
+        "Device #{install_id} is paired but not reachable. Plug it in via USB, " \
+        "unlock it, confirm the Trust prompt, then re-run."
+      )
+    end
+
+    # Surface a signing-team mismatch before xcodebuild fails deep in signing.
+    settings = `xcrun xcodebuild -project #{IOS_PROJECT_DIR.shellescape}/OshiReader.xcodeproj -scheme 'OshiReader Local' -showBuildSettings 2>/dev/null`
+    team = settings[/\bDEVELOPMENT_TEAM = (\S+)/, 1]
+    if team && !`security find-identity -p codesigning -v 2>/dev/null`.include?(team)
+      UI.important(
+        "No local codesigning identity for team #{team}. If the build fails at " \
+        "signing, open Xcode > Settings > Accounts and add an Apple ID in that team."
+      )
+    end
+
+    # Keep the generated project in sync with project.yml before building.
+    sh("xcodegen", "generate",
+       "--spec", "#{IOS_PROJECT_DIR}/project.yml",
+       "--project", IOS_PROJECT_DIR)
+
+    derived_data = "#{IOS_PROJECT_DIR}/build/dev-device"
+    sh("xcodebuild",
+       "-project", "#{IOS_PROJECT_DIR}/OshiReader.xcodeproj",
+       "-scheme", "OshiReader Local",
+       "-configuration", "Debug",
+       "-destination", "id=#{build_id}",
+       "-derivedDataPath", derived_data,
+       "-allowProvisioningUpdates",
+       "build")
+
+    app_path = "#{derived_data}/Build/Products/Debug-iphoneos/OshiReader.app"
+    UI.user_error!("Build product missing at #{app_path}") unless File.directory?(app_path)
+
+    sh("xcrun", "devicectl", "device", "install", "app",
+       "--device", install_id, app_path)
+
+    unless options[:launch].to_s == "false"
+      sh("xcrun", "devicectl", "device", "process", "launch",
+         "--device", install_id, "--terminate-existing", "com.otterpia.oshireader")
+    end
+
+    UI.success("Installed on #{install_id}.")
+    UI.message("Next: sign the device into a sandbox tester, then buy in Settings -> Paid Backend.")
   end
 
   desc "Build a signed paid-catalog acceptance IPA without enabling the repository default catalog"

@@ -6,6 +6,8 @@ The core app is local-only: ingestion runs on-device in `ios-swift/OshiReader/In
 
 Optional paid products add hosted polling, backend feed refresh, and guaranteed push. They never replace on-device ingestion or local storage: every refresh still runs the free local collectors and safely merges any paid backend results. When `PUSH_SUBSCRIPTION_PRODUCT_IDS` is empty, purchase controls and every backend synchronization path stay disabled.
 
+The Local catalog offers monthly and yearly subscriptions for up to 10 watch words, plus a non-consumable one-time plan for 1 watch word. A release is not ready until App Store Connect contains all three products and the hosted backend maps each product ID to the same watch-word limit; lifetime purchase, restore, subscription coexistence, and fallback after subscription expiry must be verified together.
+
 Paid release candidates must pass the automated contract gate and the separate TestFlight/device checklist in [Paid release acceptance](docs/paid-release-acceptance.md). Simulator and build results do not substitute for sandbox purchase, entitled backend, physical-device APNs, or real background-execution proof.
 
 ## Project Structure

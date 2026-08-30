@@ -5,13 +5,21 @@
   "products": [
     {
       "id": "com.otterpia.oshireader.hosted.monthly",
+      "type": "auto_renewable",
       "duration": "monthly",
       "push_term_limit": 10
     },
     {
       "id": "com.otterpia.oshireader.hosted.yearly",
+      "type": "auto_renewable",
       "duration": "yearly",
       "push_term_limit": 10
+    },
+    {
+      "id": "com.otterpia.oshireader.hosted.lifetime",
+      "type": "non_consumable",
+      "duration": "lifetime",
+      "push_term_limit": 1
     }
   ]
 }
