@@ -181,12 +181,13 @@ final class PlusStore: ObservableObject {
         do {
             if case .success(let verification) = try await product.purchase() {
                 await handle(verification)
-                // `handle` applies the single-transaction `verifyTransaction`
-                // response; with the mixed 1-term / 10-term catalog that can
-                // momentarily reflect just the product that was bought. Follow
-                // with the aggregate `entitlementStatus` so a lifetime purchase
-                // on top of an active subscription settles on the real limit —
-                // same trailing refresh `init` and `restorePurchases` already do.
+                // `handle` already applies the `verifyTransaction` result,
+                // which is contractually the account's aggregate entitlement.
+                // Re-fetch via `entitlementStatus` as a second reconcile so a
+                // lifetime purchase made while a subscription is active still
+                // settles on the aggregate limit even if `verifyTransaction`
+                // lags a rollout — the same trailing refresh that `init` and
+                // `restorePurchases` do.
                 await refreshStatus()
             }
         } catch { errorMessage = error.localizedDescription }
