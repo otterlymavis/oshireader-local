@@ -81,7 +81,10 @@ def main() -> int:
         if proposed is not None and proposed >= minimum_gross_monthly
         else minimum_gross_monthly
     )
-    minimum_gross_one_time = minimum_gross_monthly * ONE_TIME_COST_HORIZON_MONTHS
+    # Build the one-time floor on the same basis as the annual suggestion
+    # (`annual_monthly_basis` = the accepted monthly price when it clears the
+    # floor, else the floor itself) so the two derived numbers stay consistent.
+    minimum_gross_one_time = annual_monthly_basis * ONE_TIME_COST_HORIZON_MONTHS
     proposed_one_time = args.one_time_price
     output = {
         "currency": "EUR",

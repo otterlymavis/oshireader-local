@@ -179,7 +179,16 @@ final class PlusStore: ObservableObject {
         errorMessage = nil
         defer { isPurchasing = false }
         do {
-            if case .success(let verification) = try await product.purchase() { await handle(verification) }
+            if case .success(let verification) = try await product.purchase() {
+                await handle(verification)
+                // `handle` applies the single-transaction `verifyTransaction`
+                // response; with the mixed 1-term / 10-term catalog that can
+                // momentarily reflect just the product that was bought. Follow
+                // with the aggregate `entitlementStatus` so a lifetime purchase
+                // on top of an active subscription settles on the real limit —
+                // same trailing refresh `init` and `restorePurchases` already do.
+                await refreshStatus()
+            }
         } catch { errorMessage = error.localizedDescription }
     }
 

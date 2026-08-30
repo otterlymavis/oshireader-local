@@ -86,7 +86,8 @@ jobs:
           backend_client = Path("ios-swift/OshiReader/BackendClient.swift").read_text(encoding="utf-8")
           paid_backend = Path("ios-swift/OshiReader/PaidBackendFeedCoordinator.swift").read_text(encoding="utf-8")
           plus_store = Path("ios-swift/OshiReader/PlusStore.swift").read_text(encoding="utf-8")
-          settings_view = Path("ios-swift/OshiReader/Views/SettingsView.swift").read_text(encoding="utf-8")
+          paid_backend_view = Path("ios-swift/OshiReader/Views/Settings/PaidBackendSettingsView.swift").read_text(encoding="utf-8")
+          i18n = Path("ios-swift/OshiReader/I18n.swift").read_text(encoding="utf-8")
           fastfile = Path("ios-swift/fastlane/Fastfile").read_text(encoding="utf-8")
           checks = {
               "Local bundle identifier": "PRODUCT_BUNDLE_IDENTIFIER: com.otterpia.oshireader" in project,
@@ -150,10 +151,23 @@ jobs:
                   'static let consentKey = "paid_backend.diagnostics_opt_in"',
                   "PaidHostedDiagnosticReporter",
               )),
-              "active-paid diagnostics setting": all(value in settings_view for value in (
+              "active-paid diagnostics setting": all(value in paid_backend_view for value in (
                   "paidDiagnosticsEnabled",
                   "plusStore.hasActiveEntitlement",
               )),
+              "one-term plan constant matches the catalog's lifetime product": (
+                  'static let oneWatchWordProductID = "com.otterpia.oshireader.hosted.lifetime"'
+                  in plus_store
+              ),
+              "one-term plan label is wired and states the catalog limit": (
+                  '"paidOneTimeWatchWordPlan"' in i18n
+                  and 'isOneWatchWordPlan(productID: product.id)' in paid_backend_view
+                  and next(
+                      p["push_term_limit"]
+                      for p in catalog["products"]
+                      if p["id"] == "com.otterpia.oshireader.hosted.lifetime"
+                  ) == 1
+              ),
               "no client-triggered global poll": "func triggerPoll(" not in backend_client,
               "no client admin credential API": "/api/credentials" not in backend_client,
           }
