@@ -1437,12 +1437,13 @@ private let viewportFixJS = """
 (function () {
   var desiredContent = 'width=device-width, initial-scale=1';
   function applyViewport() {
+    // Only normalize a viewport the page already declares (strips
+    // user-scalable=no / maximum-scale so pinch-zoom works). Pages with
+    // no viewport meta are legacy fixed-width desktop layouts
+    // (e.g. girlschannel.net) — WebKit shrinks those to fit, and forcing
+    // width=device-width would blow them up to 1:1 and look zoomed in.
     var meta = document.querySelector('meta[name="viewport"]');
-    if (!meta) {
-      meta = document.createElement('meta');
-      meta.setAttribute('name', 'viewport');
-      (document.head || document.documentElement).appendChild(meta);
-    }
+    if (!meta) return;
     if (meta.getAttribute('content') !== desiredContent) {
       meta.setAttribute('content', desiredContent);
     }
