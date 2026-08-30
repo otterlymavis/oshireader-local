@@ -74,6 +74,11 @@ struct PaidBackendSettingsView: View {
                                 Text(plusStore.billingLabel(for: product))
                                     .font(.caption2)
                                     .foregroundColor(theme.colors.textMuted)
+                                if PlusStore.isOneWatchWordPlan(productID: product.id) {
+                                    Text(i18n.t("paidOneTimeWatchWordPlan"))
+                                        .font(.caption2)
+                                        .foregroundColor(theme.colors.textMuted)
+                                }
                             }
                             Spacer()
                             if plusStore.currentProductID == product.id {

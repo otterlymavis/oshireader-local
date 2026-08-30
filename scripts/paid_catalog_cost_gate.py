@@ -16,6 +16,11 @@ TARGET_COST_COVERAGE = Decimal("2")
 # post-year-1 subscription rate: this computes a *price floor*, so assuming the
 # worse (higher) commission keeps the floor conservative rather than a bug.
 APPLE_NET_SHARE = Decimal("0.70")
+# A non-consumable buyer pays once but keeps costing money to serve. Price its
+# floor at this many months of the subscription floor so a one-time sale is not
+# a guaranteed loss against the recurring tiers. Deliberately conservative:
+# raise it, never lower it, without a retention measurement that justifies less.
+ONE_TIME_COST_HORIZON_MONTHS = Decimal("18")
 
 
 def money(value: Decimal) -> str:
@@ -43,6 +48,14 @@ def main() -> int:
         type=nonnegative_decimal,
         help="Optional proposed Apple monthly price to evaluate against the gate.",
     )
+    parser.add_argument(
+        "--one-time-price",
+        type=nonnegative_decimal,
+        help=(
+            "Optional proposed Apple price for the non-consumable tier, evaluated "
+            f"against {ONE_TIME_COST_HORIZON_MONTHS} months of the subscription floor."
+        ),
+    )
     args = parser.parse_args()
 
     categories = {
@@ -68,6 +81,11 @@ def main() -> int:
         if proposed is not None and proposed >= minimum_gross_monthly
         else minimum_gross_monthly
     )
+    # Build the one-time floor on the same basis as the annual suggestion
+    # (`annual_monthly_basis` = the accepted monthly price when it clears the
+    # floor, else the floor itself) so the two derived numbers stay consistent.
+    minimum_gross_one_time = annual_monthly_basis * ONE_TIME_COST_HORIZON_MONTHS
+    proposed_one_time = args.one_time_price
     output = {
         "currency": "EUR",
         "soak_days": 7,
@@ -77,19 +95,26 @@ def main() -> int:
         "extrapolated_monthly_cost": money(monthly_cost),
         "reserved_monthly_cost": money(reserved_monthly_cost),
         "minimum_gross_monthly_price": money(minimum_gross_monthly),
+        "minimum_gross_one_time_price": money(minimum_gross_one_time),
         "suggested_annual_price_at_ten_months": money(annual_monthly_basis * Decimal("10")),
         "assumptions": {
             "operational_reserve": "20%",
             "target_cost_coverage": "2x",
             "apple_commission": "30%",
+            "one_time_cost_horizon_months": str(ONE_TIME_COST_HORIZON_MONTHS),
         },
     }
     if proposed is not None:
         output["proposed_monthly_price"] = money(proposed)
         output["price_gate_passed"] = proposed >= minimum_gross_monthly
+    if proposed_one_time is not None:
+        output["proposed_one_time_price"] = money(proposed_one_time)
+        output["one_time_price_gate_passed"] = proposed_one_time >= minimum_gross_one_time
 
     print(json.dumps(output, indent=2, sort_keys=True))
-    return 0 if proposed is None or proposed >= minimum_gross_monthly else 2
+    monthly_ok = proposed is None or proposed >= minimum_gross_monthly
+    one_time_ok = proposed_one_time is None or proposed_one_time >= minimum_gross_one_time
+    return 0 if monthly_ok and one_time_ok else 2
 
 
 if __name__ == "__main__":

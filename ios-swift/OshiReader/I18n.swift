@@ -316,6 +316,12 @@ class I18nManager: ObservableObject {
             "zh-TW": "還原購買項目",
             "zh-CN": "恢复购买"
         ],
+        "paidOneTimeWatchWordPlan": [
+            "en": "One-time purchase · 1 watch word",
+            "ja": "買い切り · ウォッチキーワード1件",
+            "zh-TW": "一次買斷 · 1 個關注關鍵字",
+            "zh-CN": "一次买断 · 1 个关注关键词"
+        ],
         "paidPushPausedSelection": [
             "en": "Guaranteed push is paused. Disable terms until usage is within your current limit.",
             "ja": "確実なプッシュは一時停止中です。使用量が現在の上限内に収まるまでキーワードを無効にしてください。",

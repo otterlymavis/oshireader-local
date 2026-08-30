@@ -78,6 +78,7 @@ final class PaidAPNSLifecycleCoordinator {
 @MainActor
 final class PlusStore: ObservableObject {
     static let shared = PlusStore()
+    static let oneWatchWordProductID = "com.otterpia.oshireader.hosted.lifetime"
 
     static var productIDs: [String] {
         let raw = Bundle.main.object(forInfoDictionaryKey: "PushSubscriptionProductIDs") as? String ?? ""
@@ -101,6 +102,10 @@ final class PlusStore: ObservableObject {
         raw.split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
+    }
+
+    static func isOneWatchWordPlan(productID: String) -> Bool {
+        productID == oneWatchWordProductID
     }
 
     @Published private(set) var products: [Product] = []
@@ -174,7 +179,16 @@ final class PlusStore: ObservableObject {
         errorMessage = nil
         defer { isPurchasing = false }
         do {
-            if case .success(let verification) = try await product.purchase() { await handle(verification) }
+            if case .success(let verification) = try await product.purchase() {
+                await handle(verification)
+                // `handle` applies the single-transaction `verifyTransaction`
+                // response; with the mixed 1-term / 10-term catalog that can
+                // momentarily reflect just the product that was bought. Follow
+                // with the aggregate `entitlementStatus` so a lifetime purchase
+                // on top of an active subscription settles on the real limit —
+                // same trailing refresh `init` and `restorePurchases` already do.
+                await refreshStatus()
+            }
         } catch { errorMessage = error.localizedDescription }
     }
 
@@ -197,6 +211,13 @@ final class PlusStore: ObservableObject {
     private func handle(_ result: VerificationResult<Transaction>) async {
         let generation = entitlementRequestGate.beginRequest()
         do {
+            // `verifyTransaction` must return the account's *aggregate* best
+            // entitlement, not just the one implied by this single transaction.
+            // The catalog mixes a 1-term non-consumable with the 10-term
+            // subscriptions, and `syncCurrentEntitlements` replays every owned
+            // transaction in expiry order — without an aggregate response,
+            // buying the lifetime tier while a subscription is active would
+            // otherwise clamp the limit to 1.
             let status = try await BackendClient.shared.verifyTransaction(result.jwsRepresentation)
             if entitlementRequestGate.isCurrent(generation) {
                 await apply(status)
