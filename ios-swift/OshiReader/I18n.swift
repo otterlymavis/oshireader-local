@@ -490,6 +490,24 @@ class I18nManager: ObservableObject {
             "zh-TW": "+ 別名",
             "zh-CN": "+ 别名"
         ],
+        "aliases": [
+            "en": "Aliases",
+            "ja": "別名",
+            "zh-TW": "別名",
+            "zh-CN": "别名"
+        ],
+        "editAvatar": [
+            "en": "Edit avatar",
+            "ja": "アバターを編集",
+            "zh-TW": "編輯頭像",
+            "zh-CN": "编辑头像"
+        ],
+        "guaranteedPush": [
+            "en": "Guaranteed push",
+            "ja": "確実なプッシュ",
+            "zh-TW": "保證推播",
+            "zh-CN": "保证推送"
+        ],
         "aliasLimitReached": [
             "en": "You can add up to 5 aliases per keyword.",
             "ja": "キーワードごとに追加できる別名は5件までです。",

@@ -65,6 +65,7 @@
 		7A25A83CCF90673F8E2BB8A0 /* OshiReaderWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = 767B63640366C3537A66102B /* OshiReaderWidget.swift */; };
 		7DF1A94CE5DC06966EF67058 /* PlusStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFEE73C3EA123E2E45BE416F /* PlusStore.swift */; };
 		7DFACC0D4D12882AE7987817 /* PendingShare.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA6698BAA13BEAE4F52D45E7 /* PendingShare.swift */; };
+		801E0EF4B45D95AF6851665D /* WatchTermDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B46F32BCDD8CADC205B2E597 /* WatchTermDetailView.swift */; };
 		826EC19F1D7063EA95A52C98 /* OshiReaderNotificationService.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = B646777321341E655C843687 /* OshiReaderNotificationService.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		8295B9798BAB2CD8379BEACD /* IngestionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12A70A437B3A48A6BBA842CF /* IngestionService.swift */; };
 		84E6A3B31ECACD65FB2F003A /* AppGroup.swift in Sources */ = {isa = PBXBuildFile; fileRef = 459E75CAD522B9781519DCDF /* AppGroup.swift */; };
@@ -245,6 +246,7 @@
 		AF44B302F88B980D4CE83D1A /* AvatarCompositionsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AvatarCompositionsTests.swift; sourceTree = "<group>"; };
 		B01690CFB0C0B6AC9A112E65 /* CredentialsSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CredentialsSettingsView.swift; sourceTree = "<group>"; };
 		B3C7AB5D135169FD79851DA6 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
+		B46F32BCDD8CADC205B2E597 /* WatchTermDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchTermDetailView.swift; sourceTree = "<group>"; };
 		B646777321341E655C843687 /* OshiReaderNotificationService.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = OshiReaderNotificationService.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		B65740337942B3153894F17F /* QuietHoursTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuietHoursTests.swift; sourceTree = "<group>"; };
 		BA4656BA51F509A9A84ED250 /* NetworkManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkManager.swift; sourceTree = "<group>"; };
@@ -354,6 +356,7 @@
 				01AEADFDC09C5DAA861E5F07 /* SettingsSupport.swift */,
 				38E2A4AD366F04A8FA48CA53 /* SettingsView.swift */,
 				86DFBED5896E9A350F1637BD /* SourceStatusSection.swift */,
+				B46F32BCDD8CADC205B2E597 /* WatchTermDetailView.swift */,
 				6DEBA1F48479A10565476E2B /* WatchTermsSection.swift */,
 			);
 			path = Settings;
@@ -844,6 +847,7 @@
 				6395E431A0ADD140ECEACBFE /* SourceStatusSection.swift in Sources */,
 				56ECEE1891E6C7AD085796BB /* Theme.swift in Sources */,
 				6981317FF64555AC90CF5868 /* WallpaperRenderer.swift in Sources */,
+				801E0EF4B45D95AF6851665D /* WatchTermDetailView.swift in Sources */,
 				8D0AC947B753E66F01023769 /* WatchTermsSection.swift in Sources */,
 				C7868506F2B4BC5F5D81ED34 /* WidgetSnapshot.swift in Sources */,
 			);
