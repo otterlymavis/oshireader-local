@@ -1,7 +1,5 @@
 import Foundation
 
-private let _notificationNavigationISO8601 = ISO8601DateFormatter()
-
 @MainActor
 final class NotificationNavigationManager: ObservableObject {
     static let shared = NotificationNavigationManager()
@@ -121,7 +119,7 @@ final class NotificationNavigationManager: ObservableObject {
               let url = stringValue(userInfo["item_url"])
                 ?? stringValue(previewItem?["url"])
                 ?? stringValue(userInfo["url"]) else { return nil }
-        let now = _notificationNavigationISO8601.string(from: Date())
+        let now = iso8601String(from: Date())
         let platform = Self.normalizedNotificationPlatform(
             stringValue(userInfo["item_platform"])
                 ?? stringValue(previewItem?["platform"])

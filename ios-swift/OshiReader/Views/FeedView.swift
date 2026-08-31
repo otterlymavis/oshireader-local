@@ -297,14 +297,7 @@ struct FeedView: View {
                     }
                     return
                 }
-                let sourceRevision = db.dataRevision
-                Task {
-                    let customItems = await NetworkManager.shared.scrapeCustomUrls(db.customUrls)
-                    let currentItems = db.currentCustomFeedItems(customItems)
-                    if !currentItems.isEmpty {
-                        _ = db.mergeItems(newItems: currentItems, sourceRevision: sourceRevision)
-                    }
-                }
+                db.scrapeAndMergeCustomURLsSoon()
                 customUrlString = ""
                 customUrlTitle = ""
                 showAddUrlSheet = false

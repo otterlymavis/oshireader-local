@@ -29,8 +29,7 @@ class I18nManager: ObservableObject {
     }
 
     private func storageKey(_ key: String) -> String {
-        guard let profileID else { return key }
-        return LocalProfileStore.defaultsKey(key, profileID: profileID)
+        LocalProfileStore.scopedDefaultsKey(key, profileID: profileID)
     }
     
     private let translations: [String: [String: String]] = [
@@ -82,35 +81,11 @@ class I18nManager: ObservableObject {
             "zh-TW": "全部",
             "zh-CN": "全部"
         ],
-        "showsAllPlatformsHint": [
-            "en": "Shows all platforms",
-            "ja": "すべてのプラットフォームを表示",
-            "zh-TW": "顯示所有平台",
-            "zh-CN": "显示所有平台"
-        ],
-        "deselectFilterHint": [
-            "en": "Double-tap to deselect",
-            "ja": "ダブルタップして選択を解除",
-            "zh-TW": "點兩下以取消選取",
-            "zh-CN": "双击取消选择"
-        ],
-        "filterByPlatformHint": [
-            "en": "Double-tap to filter by %@",
-            "ja": "ダブルタップして%@で絞り込む",
-            "zh-TW": "點兩下以依 %@ 篩選",
-            "zh-CN": "双击按 %@ 筛选"
-        ],
         "filter": [
             "en": "Filter",
             "ja": "フィルター",
             "zh-TW": "篩選",
             "zh-CN": "筛选"
-        ],
-        "activeFiltersCount": [
-            "en": "%d active",
-            "ja": "有効: %d件",
-            "zh-TW": "已啟用 %d 項",
-            "zh-CN": "已启用 %d 项"
         ],
         "allInfo": [
             "en": "All Info",
@@ -436,12 +411,6 @@ class I18nManager: ObservableObject {
             "zh-TW": "刪除",
             "zh-CN": "删除"
         ],
-        "removeNamed": [
-            "en": "Remove %@",
-            "ja": "%@を削除",
-            "zh-TW": "移除 %@",
-            "zh-CN": "移除 %@"
-        ],
         "save": [
             "en": "Save",
             "ja": "保存",
@@ -460,29 +429,11 @@ class I18nManager: ObservableObject {
             "zh-TW": "OK",
             "zh-CN": "OK"
         ],
-        "search": [
-            "en": "Search",
-            "ja": "検索",
-            "zh-TW": "搜尋",
-            "zh-CN": "搜索"
-        ],
         "edit": [
             "en": "Edit",
             "ja": "編集",
             "zh-TW": "編輯",
             "zh-CN": "编辑"
-        ],
-        "offlineSaved": [
-            "en": "Saved for Offline",
-            "ja": "オフライン保存済み",
-            "zh-TW": "已儲存 — 可離線閱讀",
-            "zh-CN": "已保存 — 可离线阅读"
-        ],
-        "savedTitle": [
-            "en": "Bookmarked Pages",
-            "ja": "ブックマーク一覧",
-            "zh-TW": "已儲存",
-            "zh-CN": "已保存"
         ],
         "addAlias": [
             "en": "+ alias",
@@ -538,12 +489,6 @@ class I18nManager: ObservableObject {
             "zh-TW": "在「設定」中新增關鍵字以開始獲取結果。",
             "zh-CN": "在「设置」中添加关键字以开始获取结果。"
         ],
-        "searchPlaceholder": [
-            "en": "Search articles...",
-            "ja": "記事を検索...",
-            "zh-TW": "搜尋文章...",
-            "zh-CN": "搜索文章..."
-        ],
         "clearSearch": [
             "en": "Clear search",
             "ja": "検索をクリア",
@@ -556,18 +501,6 @@ class I18nManager: ObservableObject {
             "zh-TW": "設定",
             "zh-CN": "设置"
         ],
-        "wallpaper": [
-            "en": "Wallpaper",
-            "ja": "壁紙設定",
-            "zh-TW": "壁紙設定",
-            "zh-CN": "壁纸设置"
-        ],
-        "selectWallpaper": [
-            "en": "Choose from stickers",
-            "ja": "ステッカー画像から設定",
-            "zh-TW": "從貼紙選擇",
-            "zh-CN": "从贴纸选择"
-        ],
         "clearWallpaper": [
             "en": "Clear Wallpaper",
             "ja": "壁紙をクリア",
@@ -579,12 +512,6 @@ class I18nManager: ObservableObject {
             "ja": "言語",
             "zh-TW": "語言",
             "zh-CN": "语言"
-        ],
-        "stats": [
-            "en": "Statistics",
-            "ja": "統計情報",
-            "zh-TW": "儲存空間",
-            "zh-CN": "存储空间"
         ],
         "watchTerms": [
             "en": "Keywords",
@@ -730,12 +657,6 @@ class I18nManager: ObservableObject {
             "zh-TW": "下一篇文章",
             "zh-CN": "下一篇文章"
         ],
-        "invalidURL": [
-            "en": "Invalid URL",
-            "ja": "URLが無効です",
-            "zh-TW": "網址無效",
-            "zh-CN": "网址无效"
-        ],
         "image": [
             "en": "Image",
             "ja": "画像",
@@ -754,47 +675,17 @@ class I18nManager: ObservableObject {
             "zh-TW": "分享",
             "zh-CN": "分享"
         ],
-        "imageReadFailed": [
-            "en": "Could not read this image.",
-            "ja": "この画像を読み込めませんでした。",
-            "zh-TW": "無法讀取此圖片。",
-            "zh-CN": "无法读取此图片。"
-        ],
         "photosAccessRequired": [
             "en": "Photos access is required to save images.",
             "ja": "画像を保存するには写真へのアクセスが必要です。",
             "zh-TW": "需要相簿存取權限才能儲存圖片。",
             "zh-CN": "需要照片访问权限才能保存图片。"
         ],
-        "imageSaveFailed": [
-            "en": "Could not save this image.",
-            "ja": "この画像を保存できませんでした。",
-            "zh-TW": "無法儲存此圖片。",
-            "zh-CN": "无法保存此图片。"
-        ],
         "readerTitle": [
             "en": "Reader",
             "ja": "リーダー",
             "zh-TW": "閱讀器",
             "zh-CN": "阅读器"
-        ],
-        "noLargeImagesFound": [
-            "en": "No large images found on this page.",
-            "ja": "このページに大きな画像は見つかりませんでした。",
-            "zh-TW": "此頁面找不到大型圖片。",
-            "zh-CN": "此页面找不到大图。"
-        ],
-        "oneImageSavedToPhotos": [
-            "en": "Saved 1 image to Photos.",
-            "ja": "画像を1件、写真に保存しました。",
-            "zh-TW": "已儲存 1 張圖片到照片。",
-            "zh-CN": "已保存 1 张图片到照片。"
-        ],
-        "imagesSavedToPhotos": [
-            "en": "Saved %d images to Photos.",
-            "ja": "画像を%d件、写真に保存しました。",
-            "zh-TW": "已儲存 %d 張圖片到照片。",
-            "zh-CN": "已保存 %d 张图片到照片。"
         ],
         "saveSelectedImages": [
             "en": "Save (%d)",
@@ -826,48 +717,6 @@ class I18nManager: ObservableObject {
             "zh-TW": "沒有圖片可以儲存。",
             "zh-CN": "没有图片可以保存。"
         ],
-        "noImagesSaved": [
-            "en": "No images could be saved.",
-            "ja": "画像を保存できませんでした。",
-            "zh-TW": "沒有圖片可儲存。",
-            "zh-CN": "没有图片可保存。"
-        ],
-        "readerModeTextShort": [
-            "en": "Text",
-            "ja": "本文",
-            "zh-TW": "文字",
-            "zh-CN": "文字"
-        ],
-        "readerModeWebShort": [
-            "en": "Web",
-            "ja": "Web",
-            "zh-TW": "網頁",
-            "zh-CN": "网页"
-        ],
-        "readerTheme": [
-            "en": "Reader Theme",
-            "ja": "リーダーテーマ",
-            "zh-TW": "閱讀器主題",
-            "zh-CN": "阅读器主题"
-        ],
-        "decreaseTextSize": [
-            "en": "Decrease text size",
-            "ja": "文字を小さくする",
-            "zh-TW": "縮小文字",
-            "zh-CN": "缩小文字"
-        ],
-        "increaseTextSize": [
-            "en": "Increase text size",
-            "ja": "文字を大きくする",
-            "zh-TW": "放大文字",
-            "zh-CN": "放大文字"
-        ],
-        "avatarEditor": [
-            "en": "Avatar Editor",
-            "ja": "アバターエディタ",
-            "zh-TW": "頭像編輯器",
-            "zh-CN": "头像编辑器"
-        ],
         "editAvatarFor": [
             "en": "Edit avatar for %@",
             "ja": "%@のアバターを編集",
@@ -879,24 +728,6 @@ class I18nManager: ObservableObject {
             "ja": "ダブルタップしてアバターエディタを開く",
             "zh-TW": "點兩下以開啟頭像編輯器",
             "zh-CN": "双击打开头像编辑器"
-        ],
-        "cropMode": [
-            "en": "Crop / Move Mode",
-            "ja": "切り抜き / 移動",
-            "zh-TW": "裁剪 / 移動",
-            "zh-CN": "裁剪 / 移动"
-        ],
-        "crop": [
-            "en": "Crop",
-            "ja": "切り抜き",
-            "zh-TW": "裁剪",
-            "zh-CN": "裁剪"
-        ],
-        "move": [
-            "en": "Move",
-            "ja": "移動",
-            "zh-TW": "移動",
-            "zh-CN": "移动"
         ],
         "zoomIn": [
             "en": "Zoom +",
@@ -927,12 +758,6 @@ class I18nManager: ObservableObject {
             "ja": "合わせる",
             "zh-TW": "符合",
             "zh-CN": "适应"
-        ],
-        "fit": [
-            "en": "Fit",
-            "ja": "フィット",
-            "zh-TW": "適合",
-            "zh-CN": "适合"
         ],
         "scaleUp": [
             "en": "Scale Up",
@@ -996,24 +821,6 @@ class I18nManager: ObservableObject {
             "zh-TW": "通知",
             "zh-CN": "通知"
         ],
-        "localAlertsSection": [
-            "en": "Local Alerts",
-            "ja": "ローカル通知",
-            "zh-TW": "本機提醒",
-            "zh-CN": "本地提醒"
-        ],
-        "localAlertsFooter": [
-            "en": "OshiReader checks for new items on this device and shows local digest alerts. iOS controls when background refresh runs, so alerts are best-effort and not instant push notifications.",
-            "ja": "OshiReaderはこのデバイス上で新着を確認し、ローカルのまとめ通知を表示します。バックグラウンド更新のタイミングはiOSが制御するため、通知はベストエフォートで、即時のプッシュ通知ではありません。",
-            "zh-TW": "OshiReader 會在此裝置上檢查新項目，並顯示本機摘要提醒。背景重新整理時間由 iOS 控制，因此提醒是盡力提供，不是即時推播通知。",
-            "zh-CN": "OshiReader 会在此设备上检查新内容，并显示本地摘要提醒。后台刷新时间由 iOS 控制，因此提醒是尽力提供，不是即时推送通知。"
-        ],
-        "localAlertPermission": [
-            "en": "Local Alert Permission",
-            "ja": "ローカル通知の許可",
-            "zh-TW": "本機提醒權限",
-            "zh-CN": "本地提醒权限"
-        ],
         "localAlertBackgroundRefresh": [
             "en": "Background Refresh",
             "ja": "バックグラウンド更新",
@@ -1038,12 +845,6 @@ class I18nManager: ObservableObject {
             "zh-TW": "受 iOS 限制",
             "zh-CN": "受 iOS 限制"
         ],
-        "pushNotifications": [
-            "en": "Push Notifications",
-            "ja": "プッシュ通知",
-            "zh-TW": "推播通知",
-            "zh-CN": "推送通知"
-        ],
         "notificationSetupHint": [
             "en": "Allow notifications to receive alerts for new matches.",
             "ja": "新しい一致の通知を受け取るには、通知を許可してください。",
@@ -1061,30 +862,6 @@ class I18nManager: ObservableObject {
             "ja": "iOS設定を開く",
             "zh-TW": "開啟 iOS 設定",
             "zh-CN": "打开 iOS 设置"
-        ],
-        "sendTestNotification": [
-            "en": "Send Test Notification",
-            "ja": "テスト通知を送信",
-            "zh-TW": "傳送測試通知",
-            "zh-CN": "发送测试通知"
-        ],
-        "notifLocalSending": [
-            "en": "Sending local test…",
-            "ja": "ローカルテストを送信中…",
-            "zh-TW": "正在傳送本機測試…",
-            "zh-CN": "正在发送本地测试…"
-        ],
-        "notifLocalTestSent": [
-            "en": "Local test notification sent.",
-            "ja": "ローカルテスト通知を送信しました。",
-            "zh-TW": "已傳送本機測試通知。",
-            "zh-CN": "已发送本地测试通知。"
-        ],
-        "notifLocalTestFailed": [
-            "en": "Local notification test failed. Check iOS notification settings.",
-            "ja": "ローカル通知テストに失敗しました。iOSの通知設定を確認してください。",
-            "zh-TW": "本機通知測試失敗，請檢查 iOS 通知設定。",
-            "zh-CN": "本地通知测试失败，请检查 iOS 通知设置。"
         ],
         "paidPushNotifyNow": [
             "en": "Notify Now",
@@ -1170,18 +947,6 @@ class I18nManager: ObservableObject {
             "zh-TW": "未知",
             "zh-CN": "未知"
         ],
-        "notificationsOn": [
-            "en": "Notifications On",
-            "ja": "通知オン",
-            "zh-TW": "通知開啟",
-            "zh-CN": "通知开启"
-        ],
-        "notificationsOff": [
-            "en": "Notifications Off",
-            "ja": "通知オフ",
-            "zh-TW": "通知關閉",
-            "zh-CN": "通知关闭"
-        ],
         "notificationDigestTitle": [
             "en": "New Items Overnight",
             "ja": "夜間に新着アイテム",
@@ -1247,12 +1012,6 @@ class I18nManager: ObservableObject {
             "ja": "API設定",
             "zh-TW": "API設定",
             "zh-CN": "API设置"
-        ],
-        "privacySection": [
-            "en": "Privacy",
-            "ja": "プライバシー",
-            "zh-TW": "隱私",
-            "zh-CN": "隐私"
         ],
         "dataSection": [
             "en": "Data",
@@ -1370,18 +1129,6 @@ class I18nManager: ObservableObject {
             "zh-TW": "選取",
             "zh-CN": "选择"
         ],
-        "chooseSources": [
-            "en": "Choose sources",
-            "ja": "ソースを選択",
-            "zh-TW": "選擇來源",
-            "zh-CN": "选择来源"
-        ],
-        "sourcesSelectedCount": [
-            "en": "%d sources selected",
-            "ja": "%d件のソースを選択中",
-            "zh-TW": "已選取 %d 個來源",
-            "zh-CN": "已选择 %d 个来源"
-        ],
         "add": [
             "en": "Add",
             "ja": "追加",
@@ -1418,12 +1165,6 @@ class I18nManager: ObservableObject {
             "zh-TW": "樣式",
             "zh-CN": "样式"
         ],
-        "style": [
-            "en": "Style",
-            "ja": "スタイル",
-            "zh-TW": "樣式",
-            "zh-CN": "样式"
-        ],
         "styleColourful": [
             "en": "Colourful",
             "ja": "カラフル",
@@ -1441,18 +1182,6 @@ class I18nManager: ObservableObject {
             "ja": "フォント",
             "zh-TW": "字型",
             "zh-CN": "字体"
-        ],
-        "fontNormal": [
-            "en": "Normal",
-            "ja": "標準",
-            "zh-TW": "標準",
-            "zh-CN": "标准"
-        ],
-        "fontComicSans": [
-            "en": "Comic Sans",
-            "ja": "Comic Sans",
-            "zh-TW": "Comic Sans",
-            "zh-CN": "Comic Sans"
         ],
         "fontSize": [
             "en": "Font Size",
@@ -1628,54 +1357,6 @@ class I18nManager: ObservableObject {
             "zh-TW": "個人檔案套件太大。",
             "zh-CN": "个人档案包太大。"
         ],
-        "amebloBlogs": [
-            "en": "Ameblo blogs",
-            "ja": "Amebloブログ",
-            "zh-TW": "Ameblo 部落格",
-            "zh-CN": "Ameblo 博客"
-        ],
-        "amebloBlogsFooter": [
-            "en": "Add Ameba blog URLs to search their RSS feeds for every active watch term. Up to 20 blogs.",
-            "ja": "AmebaブログのURLを追加すると、すべての有効なキーワードでRSSフィードを検索します。最大20件まで追加できます。",
-            "zh-TW": "新增 Ameba 部落格網址後，會針對每個啟用的追蹤關鍵字搜尋其 RSS feed。最多 20 個部落格。",
-            "zh-CN": "添加 Ameba 博客网址后，会针对每个启用的追踪关键字搜索其 RSS feed。最多 20 个博客。"
-        ],
-        "blogTitleOptional": [
-            "en": "Blog title (optional)",
-            "ja": "ブログタイトル（任意）",
-            "zh-TW": "部落格標題（選填）",
-            "zh-CN": "博客标题（可选）"
-        ],
-        "amebloInvalidURL": [
-            "en": "Enter an Ameblo blog URL such as https://ameblo.jp/blog-id.",
-            "ja": "https://ameblo.jp/blog-id のようなAmebloブログURLを入力してください。",
-            "zh-TW": "請輸入 Ameblo 部落格網址，例如 https://ameblo.jp/blog-id。",
-            "zh-CN": "请输入 Ameblo 博客网址，例如 https://ameblo.jp/blog-id。"
-        ],
-        "amebloDuplicate": [
-            "en": "This Ameblo blog is already configured.",
-            "ja": "このAmebloブログはすでに設定されています。",
-            "zh-TW": "此 Ameblo 部落格已設定。",
-            "zh-CN": "此 Ameblo 博客已配置。"
-        ],
-        "amebloLimitReached": [
-            "en": "You can configure up to 20 Ameblo blogs.",
-            "ja": "Amebloブログは最大20件まで設定できます。",
-            "zh-TW": "最多可設定 20 個 Ameblo 部落格。",
-            "zh-CN": "最多可配置 20 个 Ameblo 博客。"
-        ],
-        "addAmebloBlog": [
-            "en": "Add Ameblo blog",
-            "ja": "Amebloブログを追加",
-            "zh-TW": "新增 Ameblo 部落格",
-            "zh-CN": "添加 Ameblo 博客"
-        ],
-        "amebloEnabled": [
-            "en": "Ameblo is enabled",
-            "ja": "Amebloは有効です",
-            "zh-TW": "Ameblo 已啟用",
-            "zh-CN": "Ameblo 已启用"
-        ],
         "clearAllData": [
             "en": "Clear All Data",
             "ja": "データをすべて削除",
@@ -1687,12 +1368,6 @@ class I18nManager: ObservableObject {
             "ja": "データをすべて削除しますか？",
             "zh-TW": "清除所有資料？",
             "zh-CN": "清除所有数据？"
-        ],
-        "clearAllDataTitle": [
-            "en": "Clear All Data?",
-            "ja": "すべてのデータを削除しますか？",
-            "zh-TW": "要清除所有資料嗎？",
-            "zh-CN": "要清除所有数据吗？"
         ],
         "clearAllDataMessage": [
             "en": "This removes keywords, feed items, saved pages, custom URLs, avatars, hidden items, wallpaper, and source order from this device.",
@@ -1707,12 +1382,6 @@ class I18nManager: ObservableObject {
             "ja": "推しリスト ✨",
             "zh-TW": "推清單 ✨",
             "zh-CN": "推清单 ✨"
-        ],
-        "myOshiTitle": [
-            "en": "My Oshi",
-            "ja": "推しリスト",
-            "zh-TW": "推",
-            "zh-CN": "推"
         ],
         "oshiTrackingCount": [
             "en": "%d tracked",
@@ -1785,12 +1454,6 @@ class I18nManager: ObservableObject {
             "ja": "フィードから記事を選択してください",
             "zh-TW": "請從動態選擇文章",
             "zh-CN": "请从动态选择文章"
-        ],
-        "loadMoreRemaining": [
-            "en": "Load more (%d remaining)",
-            "ja": "さらに読み込む（残り%d件）",
-            "zh-TW": "載入更多（剩餘 %d）",
-            "zh-CN": "加载更多（剩余 %d）"
         ],
         "feedLoadMoreFmt": [
             "en": "Load more (%d remaining)",
@@ -1882,18 +1545,6 @@ class I18nManager: ObservableObject {
             "zh-TW": "移除別名「%@」",
             "zh-CN": "移除别名「%@」"
         ],
-        "notifyOnNewToggle": [
-            "en": "Notify on New Items",
-            "ja": "新着通知",
-            "zh-TW": "新項目通知",
-            "zh-CN": "新项目通知"
-        ],
-        "editAvatarFmt": [
-            "en": "Edit Avatar for %@",
-            "ja": "%@のアバターを編集",
-            "zh-TW": "編輯 %@ 的頭像",
-            "zh-CN": "编辑 %@ 的头像"
-        ],
         "noCustomUrlsAdded": [
             "en": "No custom URLs added yet",
             "ja": "カスタムURLが登録されていません",
@@ -1905,24 +1556,6 @@ class I18nManager: ObservableObject {
             "ja": "検索リンクから記事を選択してください",
             "zh-TW": "請選擇搜尋結果閱讀",
             "zh-CN": "请选择搜索结果阅读"
-        ],
-        "savedURLs": [
-            "en": "Saved URLs",
-            "ja": "保存済みURL",
-            "zh-TW": "已儲存網址",
-            "zh-CN": "已保存网址"
-        ],
-        "enterKeyword": [
-            "en": "Enter keyword",
-            "ja": "キーワードを入力",
-            "zh-TW": "輸入關鍵字",
-            "zh-CN": "输入关键字"
-        ],
-        "addWatchKeywordsHint": [
-            "en": "Add watch keywords in Settings, or type a keyword here.",
-            "ja": "設定でキーワードを追加するか、ここにキーワードを入力してください。",
-            "zh-TW": "請在設定中新增追蹤關鍵字，或在此輸入關鍵字。",
-            "zh-CN": "请在设置中添加追踪关键字，或在此输入关键字。"
         ],
         "exportBackup": [
             "en": "Export Local Backup",

@@ -241,6 +241,15 @@ final class LocalProfileStore: ObservableObject {
         return "profile.\(id).\(key)"
     }
 
+    /// Like `defaultsKey(_:profileID:)`, but leaves `key` unscoped when
+    /// `profileID` is nil instead of falling back to the active profile.
+    /// Shared by the per-profile managers (`I18nManager`, `ThemeManager`,
+    /// `AppearanceManager`) whose keys are unscoped until `configure(profileID:)`.
+    static func scopedDefaultsKey(_ key: String, profileID: UUID?) -> String {
+        guard let profileID else { return key }
+        return defaultsKey(key, profileID: profileID)
+    }
+
     private func normalizedName(_ name: String) -> String {
         name.trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -274,10 +283,7 @@ final class LocalProfileStore: ObservableObject {
     }
 
     private func migrateLegacyData(to profileID: UUID) {
-        let names = [
-            "terms", "feed_items", "saved_pages", "custom_urls", "ameblo_blogs",
-            "subscribed_platforms", "oshi_avatars", "oshi_compositions", "hidden_items"
-        ]
+        let names = ProfileDataFiles.all
         let target = directoryURL(for: profileID)
         for name in names {
             let source = documentsDirectory.appendingPathComponent("\(name).json")

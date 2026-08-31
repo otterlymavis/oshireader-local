@@ -1,7 +1,5 @@
 import SwiftUI
 
-private let _searchISO8601 = ISO8601DateFormatter()
-
 struct SearchLink: Identifiable {
     let id: String
     let group: String
@@ -10,7 +8,7 @@ struct SearchLink: Identifiable {
     let platform: String
     let makeUrl: (String) -> String
 
-    func feedItem(keyword: String, now: String = _searchISO8601.string(from: Date())) -> FeedItem {
+    func feedItem(keyword: String, now: String = iso8601String(from: Date())) -> FeedItem {
         let query = keyword.trimmingCharacters(in: .whitespacesAndNewlines)
         let url = makeUrl(query)
         let isCustom = group == "Custom"

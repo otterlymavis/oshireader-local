@@ -6,8 +6,6 @@ private let _bloggerImageRegex = try? NSRegularExpression(
 )
 private let _japaneseScriptRegex = try? NSRegularExpression(pattern: "\\p{Hiragana}|\\p{Katakana}|\\p{Han}")
 private let _bloggerThumbSuffixRegex = try? NSRegularExpression(pattern: "/s72-c$")
-private let _networkISO8601 = ISO8601DateFormatter()
-
 private enum _ScraperRegex {
     static let titleTag = try? NSRegularExpression(
         pattern: #"<title[^>]*>([^<]{1,240})</title>"#,
@@ -235,7 +233,7 @@ class NetworkManager {
         let normalized = normalizedCustomUrl(entry.url)
         guard let url = URL(string: normalized) else { return (nil, false) }
 
-        let nowString = _networkISO8601.string(from: Date())
+        let nowString = iso8601String(from: Date())
         var title = entry.title?.trimmingCharacters(in: .whitespacesAndNewlines)
         var description: String?
         var publishedAt: String?
@@ -298,7 +296,7 @@ class NetworkManager {
                   date <= now.addingTimeInterval(24 * 60 * 60) else { continue }
             dates.append(date)
         }
-        return dates.min().map { ISO8601DateFormatter().string(from: $0) }
+        return dates.min().map { iso8601String(from: $0) }
     }
 
     private func normalizedCustomUrl(_ value: String) -> String {
@@ -406,8 +404,6 @@ class RSSParserDelegate: NSObject, XMLParserDelegate {
         "yyyy-MM-dd'T'HH:mm:ss'Z'",
         "yyyy-MM-dd"
     ]
-    private let _iso8601Out = ISO8601DateFormatter()
-
     func parser(_ parser: XMLParser, didStartElement elementName: String, namespaceURI: String?, qualifiedName qName: String?, attributes attributeDict: [String: String] = [:]) {
         let rawElementName = (qName ?? elementName).lowercased()
         let localElementName = Self.feedElementName(
@@ -601,7 +597,7 @@ class RSSParserDelegate: NSObject, XMLParserDelegate {
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
         let parsedDate = dateStrings.compactMap(parseDate).max()
-        item.pubDate = parsedDate.map { _iso8601Out.string(from: $0) }
+        item.pubDate = parsedDate.map { iso8601String(from: $0) }
 
         items.append(item)
         currentItem = nil

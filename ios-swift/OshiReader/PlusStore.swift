@@ -119,7 +119,6 @@ final class PlusStore: ObservableObject {
     @Published private(set) var isPurchasing = false
     @Published var errorMessage: String?
 
-    private static let iso8601 = ISO8601DateFormatter()
     private var updatesTask: Task<Void, Never>?
     private let apnsLifecycle = PaidAPNSLifecycleCoordinator()
     private var entitlementRequestGate = PaidEntitlementRequestGate()
@@ -258,7 +257,7 @@ final class PlusStore: ObservableObject {
         pushTermCount = status.push_term_count
         pushDeliveryState = status.push_delivery_state
         currentProductID = status.product_id
-        expiresAt = status.expires_at.flatMap { Self.iso8601.date(from: $0) }
+        expiresAt = status.expires_at.flatMap(parseISO8601Date)
         await apnsLifecycle.reconcile(
             isEntitlementActive: status.is_active,
             isPushEligible: pushTermLimit > 0
