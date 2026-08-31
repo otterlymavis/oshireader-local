@@ -73,22 +73,18 @@ final class OshiReaderUITests: XCTestCase {
     func testExistingKeywordSourceSelectionAllowsMultipleSelectionsWithoutReopening() throws {
         tapTab(index: 4, labels: ["Settings"])
 
-        guard let sourceSelection = waitForAnyButton(
-            exactly: ["Source Selection", "ソース選択", "來源選擇", "来源选择"],
-            timeout: 2,
-            swipes: 3
-        ) else {
-            XCTFail("Could not find the seeded keyword's source-selection menu")
-            return
-        }
-        sourceSelection.tap()
+        // Source selection now lives on the per-term detail screen, reached by
+        // tapping the Watch Term row.
+        let row = waitForElement(identifier: "settings.keywordRow.UITest Oshi", timeout: 3, swipes: 5)
+        XCTAssertTrue(row.exists, "Could not find the seeded keyword's row")
+        row.tap()
 
         let youtube = app.descendants(matching: .any)["settings.keywordSource.UITest Oshi.youtube"]
         XCTAssertTrue(youtube.waitForExistence(timeout: 3))
         youtube.tap()
 
         let niconico = app.descendants(matching: .any)["settings.keywordSource.UITest Oshi.niconico"]
-        XCTAssertTrue(niconico.waitForExistence(timeout: 3), "Source selection closed after the first choice")
+        XCTAssertTrue(niconico.waitForExistence(timeout: 3), "Source list closed after the first choice")
         niconico.tap()
     }
 
@@ -312,13 +308,15 @@ final class OshiReaderUITests: XCTestCase {
         // The catalog (`config/paid-catalog.json` + `PUSH_SUBSCRIPTION_PRODUCT_IDS`)
         // enables paid push by default, so the guaranteed-push section renders
         // for every launch. Entitlement stays inactive under UI tests, so the
-        // per-term push control is present but disabled. The per-term antenna
-        // control stays inline on the Watch Terms rows; the section-level status
-        // moved to the Paid Backend drill-down page.
+        // per-term push control is present but disabled. That per-term control
+        // now lives on the Watch Term detail screen (tap the row); the
+        // section-level status is on the Paid Backend drill-down page.
         tapTab(index: 4, labels: ["Settings"])
+        XCTAssertTrue(openTermDetail(keyword: "UITest Oshi"), "Could not open the seeded keyword's detail")
         let pushControl = waitForAnyButton(exactly: ["Guaranteed push"], timeout: 3, swipes: 3)
         XCTAssertNotNil(pushControl)
         XCTAssertFalse(pushControl?.isEnabled ?? true, "Push control should be disabled without an active entitlement")
+        navigateBack()
 
         XCTAssertTrue(openSettingsSubpage(link: "settings.paidBackendLink", screenIdentifier: "settings.paidBackendScreen"))
         XCTAssertTrue(
@@ -332,7 +330,9 @@ final class OshiReaderUITests: XCTestCase {
         app.launch()
         tapTab(index: 4, labels: ["Settings"])
 
+        XCTAssertTrue(openTermDetail(keyword: "UITest Oshi"))
         XCTAssertNotNil(waitForAnyButton(exactly: ["Guaranteed push"], timeout: 3, swipes: 3))
+        navigateBack()
         XCTAssertTrue(openSettingsSubpage(link: "settings.paidBackendLink", screenIdentifier: "settings.paidBackendScreen"))
         XCTAssertTrue(
             waitForElement(identifier: "settings.guaranteedPushSection", timeout: 3, swipes: 4).exists
@@ -469,6 +469,16 @@ final class OshiReaderUITests: XCTestCase {
     private func navigateBack() {
         let backButton = app.navigationBars.buttons.element(boundBy: 0)
         if backButton.waitForExistence(timeout: 2) { backButton.tap() }
+    }
+
+    /// Tap a Watch Term row to open its detail screen (collection mode, source
+    /// selection, guaranteed push, alias editing all live there now).
+    @discardableResult
+    private func openTermDetail(keyword: String) -> Bool {
+        let row = waitForElement(identifier: "settings.keywordRow.\(keyword)", timeout: 3, swipes: 6)
+        guard row.waitForExistence(timeout: 2) else { return false }
+        row.tap()
+        return true
     }
 
     private func firstExistingButton(containing text: String) -> XCUIElement? {
