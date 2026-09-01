@@ -908,9 +908,41 @@ final class FeedMergingTests: XCTestCase {
             (center.requests.last?.content.userInfo["preview_item"] as? [String: Any])?["content_text"] as? String,
             "Enabled second details"
         )
-        XCTAssertEqual(center.requests.last?.content.threadIdentifier, "oshireader-enabled oshi")
+        XCTAssertEqual(center.requests.last?.content.threadIdentifier, center.requests.last?.identifier)
+        XCTAssertEqual(Set(center.requests.map(\.content.threadIdentifier)).count, 2)
         XCTAssertEqual(center.requests.last?.content.targetContentIdentifier, "note:enabled-2")
         XCTAssertNil(center.requests.first?.trigger)
+    }
+
+    @MainActor
+    func testNotificationBurstSchedulesEveryItemIndividually() async throws {
+        let previousQuietHours = QuietHoursSettings.current()
+        QuietHoursSettings(enabled: false, startMinuteOfDay: 22 * 60, endMinuteOfDay: 8 * 60).save()
+        defer { previousQuietHours.save() }
+
+        let center = MockNotificationCenter(status: .authorized)
+        let manager = NotificationManager(center: center)
+        let term = WatchTerm(id: "burst", keyword: "Burst Oshi", notify_on_new: true)
+        let nowString = ISO8601DateFormatter().string(from: Date())
+        let items = (1...4).map { index in
+            FeedItem(
+                id: "news:burst-\(index)", platform: "news", url: "https://example.com/burst-\(index)",
+                title: "Burst item \(index)", content_text: nil, author: nil, thumbnail_url: nil,
+                media_type: "article", published_at: nowString, watch_term_keyword: term.keyword,
+                fetched_at: nowString
+            )
+        }
+
+        await manager.notifyForNewItems(items, terms: [term], includeAttachments: false)
+
+        XCTAssertEqual(center.requests.count, 4)
+        XCTAssertEqual(
+            Set(center.requests.map(\.identifier)),
+            Set((1...4).map { "oshireader-new-term-burst-news:burst-\($0)" })
+        )
+        XCTAssertEqual(Set(center.requests.map(\.content.subtitle)), Set((1...4).map { "Burst item \($0)" }))
+        XCTAssertEqual(Set(center.requests.map(\.content.threadIdentifier)), Set(center.requests.map(\.identifier)))
+        XCTAssertTrue(center.requests.allSatisfy { $0.trigger == nil })
     }
 
     @MainActor
@@ -1682,6 +1714,7 @@ final class FeedMergingTests: XCTestCase {
         XCTAssertTrue(center.requests.isEmpty)
     }
 }
+
 private final class MockNotificationCenter: NotificationCenterClient {
     private(set) var status: UNAuthorizationStatus
     private let grantsAuthorization: Bool
