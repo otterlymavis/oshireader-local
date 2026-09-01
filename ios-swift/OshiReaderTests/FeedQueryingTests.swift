@@ -230,6 +230,13 @@ final class FeedQueryingTests: XCTestCase {
         )
     }
 
+    func testReaderWebViewRequestsGirlsChannelMobileLayout() {
+        XCTAssertEqual(WebViewHelper.customUserAgent(for: "girlschannel"), WebViewHelper.mobileUserAgent)
+        XCTAssertEqual(WebViewHelper.customUserAgent(for: "GirlsChannel"), WebViewHelper.mobileUserAgent)
+        XCTAssertEqual(WebViewHelper.customUserAgent(for: "twitter"), WebViewHelper.mobileUserAgent)
+        XCTAssertNil(WebViewHelper.customUserAgent(for: "oricon"))
+    }
+
     func testReaderViewBuildsDisplayRouteForEveryRegisteredSource() throws {
         let now = ISO8601DateFormatter().string(from: Date())
         let urlsByPlatform = [
