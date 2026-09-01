@@ -400,60 +400,16 @@ final class NotificationManager: ObservableObject {
             return
         }
 
-        // Cap individual notifications per keyword. A term that just had
-        // "notify on new" enabled — or a re-subscribed platform — can pull in
-        // dozens of <3-day-old items in one merge; one banner per item is
-        // hostile and iOS silently drops past 64 pending. Above the cap, send
-        // a single "N new items" summary per keyword instead.
-        let countsByKeyword = Dictionary(grouping: matchingItems, by: \.watch_term_keyword)
-            .mapValues(\.count)
-        let burstKeywords = Set(
-            countsByKeyword.filter { $0.value > Self.maxIndividualNotificationsPerKeyword }.keys
-        )
-        for keyword in burstKeywords.sorted() {
-            guard !Task.isCancelled, generation == localNotificationGeneration else { return }
-            guard let term = notifiedTermsByKeyword[keyword] else { continue }
-            let newest = matchingItems
-                .filter { $0.watch_term_keyword == keyword }
-                .sorted(by: feedItemSortPrecedes)
-                .first
-            let content = UNMutableNotificationContent()
-            content.title = keyword
-            content.body = I18nManager.shared.tFormat(
-                "notificationDigestBodyFmt",
-                countsByKeyword[keyword] ?? 0
-            )
-            content.sound = .default
-            content.categoryIdentifier = Self.categoryIdentifier
-            content.threadIdentifier = notificationThreadIdentifier(for: keyword)
-            if let newest {
-                content.userInfo = notificationUserInfo(for: newest)
-                content.targetContentIdentifier = newest.id
-            }
-            let request = UNNotificationRequest(
-                identifier: Self.notificationIdentifier(forTermID: term.id, itemID: "summary"),
-                content: content,
-                trigger: nil
-            )
-            do {
-                guard !Task.isCancelled, generation == localNotificationGeneration else { return }
-                center.removePendingNotificationRequests(withIdentifiers: [request.identifier])
-                try await center.add(request)
-            } catch {
-                AppLogger.notifications.error("Notification summary scheduling failed for \(keyword): \(error.localizedDescription)")
-            }
-        }
-
         // Notification Center displays the most recently delivered request at
         // the top. Submit oldest-to-newest so its visible stack matches the
         // feed's newest-to-oldest updated/publication-date order. Reverse the
         // shared feed comparator so ties remain deterministic too.
         let deliveryItems = matchingItems
-            .filter { !burstKeywords.contains($0.watch_term_keyword) }
             .sorted(by: feedItemSortPrecedes).reversed()
         for item in deliveryItems {
             guard !Task.isCancelled, generation == localNotificationGeneration else { return }
             guard let term = notifiedTermsByKeyword[item.watch_term_keyword] else { continue }
+            let notificationIdentifier = Self.notificationIdentifier(forTermID: term.id, itemID: item.id)
             let content = UNMutableNotificationContent()
             content.title = item.watch_term_keyword
             let itemTitle = cleanDisplayText(item.title)
@@ -474,11 +430,13 @@ final class NotificationManager: ObservableObject {
                 content.attachments = [attachment]
             }
             content.userInfo = notificationUserInfo(for: item)
-            content.threadIdentifier = notificationThreadIdentifier(for: item.watch_term_keyword)
+            // A unique thread prevents iOS from visually grouping separate
+            // feed items into one per-keyword notification stack.
+            content.threadIdentifier = notificationIdentifier
             content.targetContentIdentifier = item.id
 
             let request = UNNotificationRequest(
-                identifier: Self.notificationIdentifier(forTermID: term.id, itemID: item.id),
+                identifier: notificationIdentifier,
                 content: content,
                 trigger: nil
             )
@@ -536,10 +494,6 @@ final class NotificationManager: ObservableObject {
 
     private static let alertSubtitleLimit = 50
     private static let alertBodyLimit = 100
-    /// Above this many new items for one keyword in a single merge, deliver one
-    /// "N new items" summary instead of a banner per item (see `notifyForNewItems`).
-    private static let maxIndividualNotificationsPerKeyword = 3
-
     private static func limitedAlertText(_ value: String, limit: Int) -> String {
         value.count <= limit ? value : "\(value.prefix(limit - 3))..."
     }
@@ -593,13 +547,6 @@ final class NotificationManager: ObservableObject {
         }
         userInfo["preview_item"] = previewItem
         return userInfo
-    }
-
-    private func notificationThreadIdentifier(for keyword: String) -> String {
-        let normalized = keyword
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-        return normalized.isEmpty ? "oshireader-new-items" : "oshireader-\(normalized)"
     }
 
     private func notificationAttachment(for item: FeedItem?) async -> UNNotificationAttachment? {

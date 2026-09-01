@@ -730,6 +730,8 @@ struct ReaderView: View {
 }
 
 struct WebViewHelper: UIViewRepresentable, Equatable {
+    static let mobileUserAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1"
+
     let url: URL
     let cacheId: String
     let cacheGeneration: Int
@@ -768,6 +770,15 @@ struct WebViewHelper: UIViewRepresentable, Equatable {
             lhs.imageSelectionActionCounter == rhs.imageSelectionActionCounter &&
             lhs.imageSelectionAction == rhs.imageSelectionAction &&
             lhs.saveAllImagesCounter == rhs.saveAllImagesCounter
+    }
+
+    static func customUserAgent(for platform: String) -> String? {
+        switch PlatformRegistry.normalizeID(platform) {
+        case "girlschannel", "twitter":
+            return mobileUserAgent
+        default:
+            return nil
+        }
     }
 
     private static let uiTestImageFixtureHTML = """
@@ -809,14 +820,13 @@ struct WebViewHelper: UIViewRepresentable, Equatable {
         webView.isOpaque = false
         webView.backgroundColor = .clear
         webView.scrollView.backgroundColor = .clear
-        if PlatformRegistry.normalizeID(platform) == "twitter" {
-            webView.customUserAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1"
-        }
+        webView.customUserAgent = Self.customUserAgent(for: platform)
         return webView
     }
 
     func updateUIView(_ uiView: WKWebView, context: Context) {
         context.coordinator.parent = self
+        uiView.customUserAgent = Self.customUserAgent(for: platform)
         let requestURL = url.absoluteString
         if context.coordinator.currentRequestURL != requestURL {
             context.coordinator.currentRequestURL = requestURL
