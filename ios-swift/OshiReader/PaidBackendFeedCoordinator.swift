@@ -166,8 +166,6 @@ final class PaidBackendFeedCoordinator: ObservableObject {
     @Published private(set) var lastRefreshedAt: Date?
     @Published var errorMessage: String?
 
-    private static let iso8601 = ISO8601DateFormatter()
-
     private var scheduledSync: Task<Void, Never>?
     /// Single-flight guard for `synchronizeActiveProfileTerms()`. Without it,
     /// two overlapping runs (e.g. `refresh()` racing `scheduleSynchronization()`
@@ -321,7 +319,7 @@ final class PaidBackendFeedCoordinator: ObservableObject {
             let cursorKey = Self.refreshCursorKey(profileID: profileID, platform: platform)
             let refreshCutoff = Date()
             let since = refreshCursor(forKey: cursorKey).map {
-                Self.iso8601.string(from: $0.addingTimeInterval(-incrementalOverlap))
+                iso8601String(from: $0.addingTimeInterval(-incrementalOverlap))
             }
             let fetched: [FeedItem]
             if backendTermIDs.isEmpty {
@@ -333,7 +331,7 @@ final class PaidBackendFeedCoordinator: ObservableObject {
                     request == .background ? 100 : 200,
                     FeedDatePolicy.maximumLookbackDays,
                     since,
-                    Self.iso8601.string(from: refreshCutoff)
+                    iso8601String(from: refreshCutoff)
                 )
             }
             guard LocalProfileStore.shared.activeProfileID == profileID,

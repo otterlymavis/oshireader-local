@@ -75,6 +75,13 @@ func parseISO8601Date(_ value: String) -> Date? {
     _ISO8601Cache.cachedDate(from: value)
 }
 
+/// ISO 8601 string (`.withInternetDateTime`, no fractional seconds) — the
+/// canonical output format for every `*_at` timestamp the app writes. Pairs
+/// with `parseISO8601Date` for reads; both reuse one cached formatter.
+func iso8601String(from date: Date) -> String {
+    _ISO8601Cache.withoutFractional.string(from: date)
+}
+
 private let _relativeDateTimeFormatter: RelativeDateTimeFormatter = {
     let formatter = RelativeDateTimeFormatter()
     formatter.unitsStyle = .abbreviated
@@ -83,6 +90,20 @@ private let _relativeDateTimeFormatter: RelativeDateTimeFormatter = {
 
 func relativeTimeString(from date: Date, relativeTo reference: Date = Date()) -> String {
     _relativeDateTimeFormatter.localizedString(for: date, relativeTo: reference)
+}
+
+/// Whether `keyword` matches `loweredHaystack`, which the caller must have
+/// already lowercased. A single-token keyword matches as a substring; a
+/// whitespace-separated multi-token keyword matches when every token is
+/// present. Shared by ingestion-time filtering (`IngestionService`) and
+/// query-time strict matching (`LocalDB`) so the two rules never diverge.
+func keywordMatches(loweredHaystack: String, keyword: String) -> Bool {
+    let needle = keyword.lowercased()
+    if needle.isEmpty { return true }
+    if loweredHaystack.contains(needle) { return true }
+    let parts = keyword.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }
+    guard parts.count > 1 else { return false }
+    return parts.allSatisfy { loweredHaystack.contains($0.lowercased()) }
 }
 
 private enum _DisplayTextRegex {

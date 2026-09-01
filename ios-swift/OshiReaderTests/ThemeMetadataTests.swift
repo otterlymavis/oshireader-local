@@ -51,6 +51,18 @@ final class ThemeMetadataTests: XCTestCase {
         XCTAssertEqual(yahooAliasMeta.name, "YahooNews")
         XCTAssertEqual(yahooAliasMeta.icon, "🇯🇵")
         
+        // Name and icon come from PlatformRegistry, not a second copy in
+        // ThemeManager, so they match what Settings shows.
+        let newsMeta = manager.metadata(for: "news")
+        XCTAssertEqual(newsMeta.name, PlatformRegistry.definition(for: "news")?.name)
+        XCTAssertEqual(newsMeta.name, "General News")
+        XCTAssertEqual(newsMeta.accent, Color.purple)
+
+        // A registry platform with no explicit tint falls back to the primary.
+        let customRegistryMeta = manager.metadata(for: "custom")
+        XCTAssertEqual(customRegistryMeta.name, "Custom Feeds")
+        XCTAssertEqual(customRegistryMeta.accent, manager.colors.primary)
+
         let customMeta = manager.metadata(for: "unknown_platform")
         XCTAssertEqual(customMeta.name, "Unknown_Platform")
         XCTAssertEqual(customMeta.icon, "🌐")

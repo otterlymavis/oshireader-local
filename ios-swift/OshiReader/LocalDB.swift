@@ -71,6 +71,26 @@ private struct LocalRestoreManifest: Codable {
     let sourcesOrder: [String]?
 }
 
+/// The profile-scoped JSON stores persisted under each profile's directory,
+/// one `<name>.json` file per entry. Single source of truth for every path
+/// that enumerates all of them — legacy migration, `clearAllData`,
+/// backup-import encoding, and the restore-manifest validation, which
+/// compares against this set exactly. Add a store here and every one of those
+/// paths picks it up.
+enum ProfileDataFiles {
+    static let all: [String] = [
+        "terms",
+        "feed_items",
+        "saved_pages",
+        "custom_urls",
+        "ameblo_blogs",
+        "subscribed_platforms",
+        "oshi_avatars",
+        "oshi_compositions",
+        "hidden_items",
+    ]
+}
+
 /// What `LocalDB.processPendingShares()` did with a drained batch, so the UI
 /// can tell the user when a share silently didn't make it in (duplicate,
 /// invalid, or the custom-URL limit was hit) instead of just going quiet —
@@ -124,7 +144,6 @@ class LocalDB: ObservableObject {
     private static var discussionActivityPlatforms: Set<String> {
         PlatformRegistry.dateCutoffExemptPlatformIDs
     }
-    private static let iso8601 = ISO8601DateFormatter()
     
     // Published states for views
     @Published var terms: [WatchTerm] = []
@@ -601,12 +620,7 @@ class LocalDB: ObservableObject {
         let manifestURL = docsDirectory.appendingPathComponent("restore_manifest.json")
         guard FileManager.default.fileExists(atPath: manifestURL.path) else { return }
         let manifest = try JSONDecoder().decode(LocalRestoreManifest.self, from: Data(contentsOf: manifestURL))
-        let expectedFiles: Set<String> = [
-            "terms", "feed_items", "saved_pages", "custom_urls",
-            "subscribed_platforms", "oshi_avatars", "oshi_compositions", "hidden_items",
-            "ameblo_blogs"
-        ]
-        guard Set(manifest.files) == expectedFiles,
+        guard Set(manifest.files) == Set(ProfileDataFiles.all),
               manifest.stagingDirectory.hasPrefix(".oshireader-restore-"),
               !manifest.stagingDirectory.contains("/") else {
             throw NSError(domain: "OshiReaderBackup", code: 6, userInfo: [NSLocalizedDescriptionKey: "Invalid restore manifest"])
@@ -1220,7 +1234,7 @@ class LocalDB: ObservableObject {
                 let aliases = termsByKeyword[item.watch_term_keyword]?.aliases ?? []
                 let matchingKeywords = [item.watch_term_keyword] + aliases
                 let haystack = Self.keywordHaystack(for: item)
-                if !matchingKeywords.contains(where: { Self.matchesKeyword(haystack: haystack, kw: $0) }) {
+                if !matchingKeywords.contains(where: { keywordMatches(loweredHaystack: haystack, keyword: $0) }) {
                     return nil
                 }
             }
@@ -1394,22 +1408,6 @@ class LocalDB: ObservableObject {
         return ((primaryText?.isEmpty == false ? primaryText : item.content_text) ?? "").lowercased()
     }
 
-    private static func matchesKeyword(item: FeedItem, kw: String) -> Bool {
-        matchesKeyword(haystack: keywordHaystack(for: item), kw: kw)
-    }
-
-    private static func matchesKeyword(haystack: String, kw: String) -> Bool {
-        let needle = kw.lowercased()
-        if needle.isEmpty { return true }
-        if haystack.contains(needle) { return true }
-
-        let parts = kw.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }
-        if parts.count > 1 {
-            return parts.allSatisfy { haystack.contains($0.lowercased()) }
-        }
-        return false
-    }
-    
     // MARK: - Bookmarks (Saved)
     func getSaved() -> [SavedPage] {
         return savedPages
@@ -1426,7 +1424,7 @@ class LocalDB: ObservableObject {
                     url: item.url,
                     title: item.title,
                     platform: item.platform,
-                    saved_at: Self.iso8601.string(from: Date()),
+                    saved_at: iso8601String(from: Date()),
                     source: item.source
                 )
                 self.savedPages.insert(page, at: 0)
@@ -1627,13 +1625,28 @@ class LocalDB: ObservableObject {
     /// way `removeCustomUrl` does.
     func addCustomUrl(url: String, title: String) -> CustomUrlAddResult {
         dispatchPrecondition(condition: .onQueue(.main))
-        guard let entry = Self.normalizedCustomUrlEntry(url: url, title: title, addedAt: Self.iso8601.string(from: Date())) else { return .invalidURL }
+        guard let entry = Self.normalizedCustomUrlEntry(url: url, title: title, addedAt: iso8601String(from: Date())) else { return .invalidURL }
         guard !customUrls.contains(where: { $0.id == entry.id }) else { return .duplicate }
         guard customUrls.count < Self.maximumCustomUrls else { return .limitReached }
         advanceDataRevision()
         customUrls.insert(entry, at: 0)
         saveToFile(name: "custom_urls", value: customUrls)
         return .added
+    }
+
+    /// Re-scrapes every configured custom URL and merges anything new. This is
+    /// the shared tail of "a custom feed was just added" — whether from the
+    /// in-app sheet or a drained Share-extension queue. Fire-and-forget: it
+    /// pins the current `dataRevision` and returns immediately.
+    func scrapeAndMergeCustomURLsSoon() {
+        let sourceRevision = dataRevision
+        Task { @MainActor in
+            let customItems = await NetworkManager.shared.scrapeCustomUrls(self.customUrls)
+            let currentItems = self.currentCustomFeedItems(customItems)
+            if !currentItems.isEmpty {
+                _ = self.mergeItems(newItems: currentItems, sourceRevision: sourceRevision)
+            }
+        }
     }
 
     /// Drains whatever the Share Extension queued (see `PendingShareStore`)
@@ -1656,14 +1669,7 @@ class LocalDB: ObservableObject {
             }
         }
         guard addedCount > 0 else { return PendingShareDrainSummary(addedCount: 0, failures: failures) }
-        let sourceRevision = dataRevision
-        Task { @MainActor in
-            let customItems = await NetworkManager.shared.scrapeCustomUrls(self.customUrls)
-            let currentItems = self.currentCustomFeedItems(customItems)
-            if !currentItems.isEmpty {
-                _ = self.mergeItems(newItems: currentItems, sourceRevision: sourceRevision)
-            }
-        }
+        scrapeAndMergeCustomURLsSoon()
         return PendingShareDrainSummary(addedCount: addedCount, failures: failures)
     }
 
@@ -1730,17 +1736,7 @@ class LocalDB: ObservableObject {
     // MARK: - Data Reset
     @MainActor
     func clearAllData() {
-        let fileNames = [
-            "terms",
-            "feed_items",
-            "saved_pages",
-            "custom_urls",
-            "ameblo_blogs",
-            "subscribed_platforms",
-            "oshi_avatars",
-            "oshi_compositions",
-            "hidden_items"
-        ]
+        let fileNames = ProfileDataFiles.all
 
         flushPendingWrites()
         dataRevision += 1
@@ -1822,7 +1818,7 @@ class LocalDB: ObservableObject {
         flushPendingHiddenItemsSave()
         flushPendingTermsSave()
         let backup = LocalBackup(
-            exportedAt: Self.iso8601.string(from: Date()),
+            exportedAt: iso8601String(from: Date()),
             terms: terms,
             feedItems: feedItems,
             savedPages: savedPages,
@@ -1935,6 +1931,11 @@ class LocalDB: ObservableObject {
             ("oshi_compositions", encoder.encode(backup.compositions)),
             ("hidden_items", encoder.encode(normalizedHiddenItems))
         ]
+        // These tuples can't consume `ProfileDataFiles.all` directly (each name
+        // is paired with a distinct encode), but a drift from it would fail the
+        // restore-manifest check at import time — catch it here in dev instead.
+        assert(encodedFiles.map(\.0) == ProfileDataFiles.all,
+               "backup-import store list drifted from ProfileDataFiles.all")
 
         return PreparedBackupImport(
             terms: normalizedTerms,
@@ -2121,7 +2122,7 @@ class LocalDB: ObservableObject {
         // this key in its initializer) is first accessed by the view tree.
         UserDefaults.standard.set("en", forKey: profileKey("selected_lang"))
 
-        let now = Self.iso8601.string(from: Date())
+        let now = iso8601String(from: Date())
         let term = WatchTerm(id: "ui-term-oshitest", keyword: "UITest Oshi", collection_mode: "all_info", is_active: true, created_at: now)
         let feedItem = FeedItem(
             id: "ui-feed-reader",
@@ -2169,7 +2170,7 @@ class LocalDB: ObservableObject {
         let mediaPlatformIDs = PlatformRegistry.mediaPlatformIDs
         let allPlatformFeedItems = PlatformRegistry.all.enumerated().map { index, platform in
             let publishedAt = usesAllPlatformSortFixture
-                ? Self.iso8601.string(from: Date().addingTimeInterval(TimeInterval(-index * 60)))
+                ? iso8601String(from: Date().addingTimeInterval(TimeInterval(-index * 60)))
                 : now
             return FeedItem(
                 id: platform.id == "youtube" ? "youtube:ui-platform-youtube" : "ui-platform-\(platform.id)",

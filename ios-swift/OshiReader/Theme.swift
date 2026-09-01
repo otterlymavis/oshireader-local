@@ -193,8 +193,7 @@ class ThemeManager: ObservableObject {
     }
 
     private func storageKey(_ key: String) -> String {
-        guard let profileID else { return key }
-        return LocalProfileStore.defaultsKey(key, profileID: profileID)
+        LocalProfileStore.scopedDefaultsKey(key, profileID: profileID)
     }
     
     var colors: AppColors {
@@ -243,68 +242,52 @@ class ThemeManager: ObservableObject {
         return result
     }
 
+    /// Per-source accent / background / foreground tints, keyed by canonical
+    /// platform id. Names and icons are **not** here — they come from
+    /// `PlatformRegistry` (the single source of truth) via `metadata(for:)`.
+    /// A platform absent from this table falls back to the app's primary tint.
+    private static let platformTints: [String: (accent: Color, bg: Color, fg: Color)] = [
+        "youtube": (Color.red, Color(red: 1.0, green: 0.9, blue: 0.9), Color.red),
+        "tver": (Color.blue, Color(red: 0.9, green: 0.95, blue: 1.0), Color.blue),
+        "niconico": (Color.black, Color.gray.opacity(0.2), Color.primary),
+        "yahoonews": (Color(red: 0.86, green: 0.0, blue: 0.0), Color(red: 1.0, green: 0.92, blue: 0.92), Color(red: 0.86, green: 0.0, blue: 0.0)),
+        "mdpr": (Color.pink, Color(red: 1.0, green: 0.9, blue: 0.95), Color.pink),
+        "oricon": (Color(red: 0.86, green: 0.12, blue: 0.22), Color(red: 1.0, green: 0.92, blue: 0.94), Color(red: 0.86, green: 0.12, blue: 0.22)),
+        "twitter": (Color.black, Color.gray.opacity(0.2), Color.primary),
+        "5ch": (Color.orange, Color(red: 1.0, green: 0.95, blue: 0.9), Color.orange),
+        "girlschannel": (Color.pink, Color(red: 1.0, green: 0.92, blue: 0.95), Color.pink),
+        "note": (Color(red: 0.1, green: 0.7, blue: 0.5), Color(red: 0.9, green: 0.97, blue: 0.95), Color(red: 0.1, green: 0.7, blue: 0.5)),
+        "news": (Color.purple, Color(red: 0.96, green: 0.9, blue: 1.0), Color.purple),
+        "smartnews": (Color(red: 0.80, green: 0.00, blue: 0.00), Color(red: 1.0, green: 0.92, blue: 0.92), Color(red: 0.80, green: 0.00, blue: 0.00)),
+        "ameblo": (Color(red: 1.00, green: 0.42, blue: 0.00), Color(red: 1.0, green: 0.94, blue: 0.88), Color(red: 1.00, green: 0.42, blue: 0.00)),
+        "aera": (Color(red: 0.00, green: 0.27, blue: 0.58), Color(red: 0.90, green: 0.94, blue: 1.0), Color(red: 0.00, green: 0.27, blue: 0.58)),
+        "hochi": (Color(red: 0.82, green: 0.10, blue: 0.10), Color(red: 1.0, green: 0.92, blue: 0.92), Color(red: 0.82, green: 0.10, blue: 0.10)),
+        "sponichi": (Color(red: 0.00, green: 0.27, blue: 0.60), Color(red: 0.90, green: 0.94, blue: 1.0), Color(red: 0.00, green: 0.27, blue: 0.60)),
+        "livedoor": (Color(red: 0.88, green: 0.00, blue: 0.20), Color(red: 1.0, green: 0.92, blue: 0.94), Color(red: 0.88, green: 0.00, blue: 0.20)),
+        "mantanweb": (Color(red: 0.07, green: 0.53, blue: 0.25), Color(red: 0.90, green: 1.0, blue: 0.93), Color(red: 0.07, green: 0.53, blue: 0.25)),
+        "realsound": (Color(red: 0.18, green: 0.36, blue: 0.72), Color(red: 0.91, green: 0.95, blue: 1.0), Color(red: 0.18, green: 0.36, blue: 0.72)),
+        "cinemacafe": (Color(red: 0.56, green: 0.20, blue: 0.64), Color(red: 0.96, green: 0.91, blue: 0.98), Color(red: 0.56, green: 0.20, blue: 0.64)),
+        "thetv": (Color(red: 0.02, green: 0.36, blue: 0.78), Color(red: 0.90, green: 0.95, blue: 1.0), Color(red: 0.02, green: 0.36, blue: 0.78)),
+        "natalie": (Color(red: 0.86, green: 0.14, blue: 0.22), Color(red: 1.0, green: 0.92, blue: 0.94), Color(red: 0.86, green: 0.14, blue: 0.22)),
+        "billboardjapan": (Color(red: 0.05, green: 0.38, blue: 0.72), Color(red: 0.90, green: 0.95, blue: 1.0), Color(red: 0.05, green: 0.38, blue: 0.72)),
+        "soompi": (Color(red: 0.74, green: 0.16, blue: 0.30), Color(red: 1.0, green: 0.92, blue: 0.95), Color(red: 0.74, green: 0.16, blue: 0.30)),
+        "allkpop": (Color(red: 0.48, green: 0.24, blue: 0.70), Color(red: 0.96, green: 0.92, blue: 1.0), Color(red: 0.48, green: 0.24, blue: 0.70)),
+        "kpopofficial": (Color(red: 0.04, green: 0.52, blue: 0.54), Color(red: 0.90, green: 0.98, blue: 0.98), Color(red: 0.04, green: 0.52, blue: 0.54)),
+        "barks": (Color(red: 0.13, green: 0.13, blue: 0.13), Color(red: 0.93, green: 0.93, blue: 0.93), Color(red: 0.13, green: 0.13, blue: 0.13)),
+    ]
+
     private func uncachedMetadata(for platform: String, normalizedPlatform: String) -> PlatformMetadata {
-        switch normalizedPlatform {
-        case "youtube":
-            return PlatformMetadata(name: "YouTube", icon: "📹", accent: Color.red, bg: Color(red: 1.0, green: 0.9, blue: 0.9), fg: Color.red)
-        case "tver":
-            return PlatformMetadata(name: "TVer", icon: "📺", accent: Color.blue, bg: Color(red: 0.9, green: 0.95, blue: 1.0), fg: Color.blue)
-        case "niconico":
-            return PlatformMetadata(name: "NicoNico", icon: "💬", accent: Color.black, bg: Color.gray.opacity(0.2), fg: Color.primary)
-        case "yahoonews":
-            return PlatformMetadata(name: "YahooNews", icon: "🇯🇵", accent: Color(red: 0.86, green: 0.0, blue: 0.0), bg: Color(red: 1.0, green: 0.92, blue: 0.92), fg: Color(red: 0.86, green: 0.0, blue: 0.0))
-        case "mdpr":
-            return PlatformMetadata(name: "ModelPress", icon: "💅", accent: Color.pink, bg: Color(red: 1.0, green: 0.9, blue: 0.95), fg: Color.pink)
-        case "oricon":
-            return PlatformMetadata(name: "Oricon", icon: "🎤", accent: Color(red: 0.86, green: 0.12, blue: 0.22), bg: Color(red: 1.0, green: 0.92, blue: 0.94), fg: Color(red: 0.86, green: 0.12, blue: 0.22))
-        case "twitter":
-            return PlatformMetadata(name: "X", icon: "𝕏", accent: Color.black, bg: Color.gray.opacity(0.2), fg: Color.primary)
-        case "5ch":
-            return PlatformMetadata(name: "5ch", icon: "💬", accent: Color.orange, bg: Color(red: 1.0, green: 0.95, blue: 0.9), fg: Color.orange)
-        case "girlschannel":
-            return PlatformMetadata(name: "GirlsChannel", icon: "👭", accent: Color.pink, bg: Color(red: 1.0, green: 0.92, blue: 0.95), fg: Color.pink)
-        case "note":
-            return PlatformMetadata(name: "Note", icon: "📝", accent: Color(red: 0.1, green: 0.7, blue: 0.5), bg: Color(red: 0.9, green: 0.97, blue: 0.95), fg: Color(red: 0.1, green: 0.7, blue: 0.5))
-        case "news":
-            return PlatformMetadata(name: "News", icon: "📰", accent: Color.purple, bg: Color(red: 0.96, green: 0.9, blue: 1.0), fg: Color.purple)
-        case "smartnews":
-            return PlatformMetadata(name: "SmartNews", icon: "📰", accent: Color(red: 0.80, green: 0.00, blue: 0.00), bg: Color(red: 1.0, green: 0.92, blue: 0.92), fg: Color(red: 0.80, green: 0.00, blue: 0.00))
-        case "ameblo":
-            return PlatformMetadata(name: "Ameblo", icon: "✏️", accent: Color(red: 1.00, green: 0.42, blue: 0.00), bg: Color(red: 1.0, green: 0.94, blue: 0.88), fg: Color(red: 1.00, green: 0.42, blue: 0.00))
-        case "aera":
-            return PlatformMetadata(name: "AERA dot.", icon: "📝", accent: Color(red: 0.00, green: 0.27, blue: 0.58), bg: Color(red: 0.90, green: 0.94, blue: 1.0), fg: Color(red: 0.00, green: 0.27, blue: 0.58))
-        case "hochi":
-            return PlatformMetadata(name: "Hochi", icon: "🏅", accent: Color(red: 0.82, green: 0.10, blue: 0.10), bg: Color(red: 1.0, green: 0.92, blue: 0.92), fg: Color(red: 0.82, green: 0.10, blue: 0.10))
-        case "sponichi":
-            return PlatformMetadata(name: "Sponichi", icon: "⚽", accent: Color(red: 0.00, green: 0.27, blue: 0.60), bg: Color(red: 0.90, green: 0.94, blue: 1.0), fg: Color(red: 0.00, green: 0.27, blue: 0.60))
-        case "livedoor":
-            return PlatformMetadata(name: "Livedoor", icon: "🔴", accent: Color(red: 0.88, green: 0.00, blue: 0.20), bg: Color(red: 1.0, green: 0.92, blue: 0.94), fg: Color(red: 0.88, green: 0.00, blue: 0.20))
-        case "mantanweb":
-            return PlatformMetadata(name: "Mantan Web", icon: "🎌", accent: Color(red: 0.07, green: 0.53, blue: 0.25), bg: Color(red: 0.90, green: 1.0, blue: 0.93), fg: Color(red: 0.07, green: 0.53, blue: 0.25))
-        case "realsound":
-            return PlatformMetadata(name: "Real Sound", icon: "🎧", accent: Color(red: 0.18, green: 0.36, blue: 0.72), bg: Color(red: 0.91, green: 0.95, blue: 1.0), fg: Color(red: 0.18, green: 0.36, blue: 0.72))
-        case "cinemacafe":
-            return PlatformMetadata(name: "CinemaCafe", icon: "🎬", accent: Color(red: 0.56, green: 0.20, blue: 0.64), bg: Color(red: 0.96, green: 0.91, blue: 0.98), fg: Color(red: 0.56, green: 0.20, blue: 0.64))
-        case "thetv":
-            return PlatformMetadata(name: "TheTV", icon: "📺", accent: Color(red: 0.02, green: 0.36, blue: 0.78), bg: Color(red: 0.90, green: 0.95, blue: 1.0), fg: Color(red: 0.02, green: 0.36, blue: 0.78))
-        case "natalie":
-            return PlatformMetadata(name: "Natalie", icon: "🎵", accent: Color(red: 0.86, green: 0.14, blue: 0.22), bg: Color(red: 1.0, green: 0.92, blue: 0.94), fg: Color(red: 0.86, green: 0.14, blue: 0.22))
-        case "billboardjapan":
-            return PlatformMetadata(name: "Billboard Japan", icon: "📈", accent: Color(red: 0.05, green: 0.38, blue: 0.72), bg: Color(red: 0.90, green: 0.95, blue: 1.0), fg: Color(red: 0.05, green: 0.38, blue: 0.72))
-        case "soompi":
-            return PlatformMetadata(name: "Soompi", icon: "🇰🇷", accent: Color(red: 0.74, green: 0.16, blue: 0.30), bg: Color(red: 1.0, green: 0.92, blue: 0.95), fg: Color(red: 0.74, green: 0.16, blue: 0.30))
-        case "allkpop":
-            return PlatformMetadata(name: "allkpop", icon: "🎤", accent: Color(red: 0.48, green: 0.24, blue: 0.70), bg: Color(red: 0.96, green: 0.92, blue: 1.0), fg: Color(red: 0.48, green: 0.24, blue: 0.70))
-        case "kpopofficial":
-            return PlatformMetadata(name: "KpopOfficial", icon: "🗓️", accent: Color(red: 0.04, green: 0.52, blue: 0.54), bg: Color(red: 0.90, green: 0.98, blue: 0.98), fg: Color(red: 0.04, green: 0.52, blue: 0.54))
-        case "barks":
-            return PlatformMetadata(name: "BARKS", icon: "🎸", accent: Color(red: 0.13, green: 0.13, blue: 0.13), bg: Color(red: 0.93, green: 0.93, blue: 0.93), fg: Color(red: 0.13, green: 0.13, blue: 0.13))
-        default:
-            if let definition = PlatformRegistry.definition(for: normalizedPlatform) {
-                return PlatformMetadata(name: definition.name, icon: definition.icon, accent: colors.primary, bg: colors.primaryBg, fg: colors.primary)
-            }
+        guard let definition = PlatformRegistry.definition(for: normalizedPlatform) else {
             return PlatformMetadata(name: platform.capitalized, icon: "🌐", accent: colors.primary, bg: colors.primaryBg, fg: colors.primary)
         }
+        let tint = Self.platformTints[normalizedPlatform]
+        return PlatformMetadata(
+            name: definition.name,
+            icon: definition.icon,
+            accent: tint?.accent ?? colors.primary,
+            bg: tint?.bg ?? colors.primaryBg,
+            fg: tint?.fg ?? colors.primary
+        )
     }
 }
 
@@ -340,8 +323,7 @@ class AppearanceManager: ObservableObject {
     }
 
     private func storageKey(_ key: String) -> String {
-        guard let profileID else { return key }
-        return LocalProfileStore.defaultsKey(key, profileID: profileID)
+        LocalProfileStore.scopedDefaultsKey(key, profileID: profileID)
     }
 
     // Returns a DynamicTypeSize override when the user has chosen a larger-than-system

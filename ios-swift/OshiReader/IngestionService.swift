@@ -306,11 +306,6 @@ final class IngestionService {
     private let googleNewsPacer = RequestStartPacer(intervalNanoseconds: 200_000_000)
     private static let maximumTransportAttempts = 2
     private static let retryDelayNanoseconds: UInt64 = 100_000_000
-    private static let outputISO8601: ISO8601DateFormatter = {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime]
-        return formatter
-    }()
     private static let titleCleanupRegexLock = NSLock()
     private static var titleCleanupRegexes: [String: NSRegularExpression] = [:]
     private static let defaultTitleCleanupPatterns = [
@@ -3116,15 +3111,7 @@ final class IngestionService {
     }
 
     private func matchesKeyword(title: String, desc: String, kw: String) -> Bool {
-        let haystack = "\(title) \(desc)".lowercased()
-        let needle = kw.lowercased()
-        if needle.isEmpty { return true }
-        if haystack.contains(needle) { return true }
-        let parts = kw.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }
-        if parts.count > 1 {
-            return parts.allSatisfy { haystack.contains($0.lowercased()) }
-        }
-        return false
+        keywordMatches(loweredHaystack: "\(title) \(desc)".lowercased(), keyword: kw)
     }
 
     private func validPublishedDate(_ value: String?) -> String? {
@@ -3182,7 +3169,7 @@ final class IngestionService {
     }
 
     private func isoString(_ date: Date) -> String {
-        Self.outputISO8601.string(from: date)
+        iso8601String(from: date)
     }
 
     private func nowISO() -> String { isoString(now()) }
