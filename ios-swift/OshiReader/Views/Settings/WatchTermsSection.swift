@@ -130,7 +130,7 @@ private struct TermRowView: View {
             HStack(spacing: 12) {
                 avatar
 
-                VStack(alignment: .leading, spacing: 3) {
+                VStack(alignment: .leading, spacing: 6) {
                     Text(term.keyword)
                         .font(.subheadline)
                         .fontWeight(.semibold)
