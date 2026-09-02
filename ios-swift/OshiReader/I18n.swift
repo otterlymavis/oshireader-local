@@ -959,6 +959,12 @@ class I18nManager: ObservableObject {
             "zh-TW": "在安靜時段中有 %d 則新項目。",
             "zh-CN": "在安静时段中有 %d 条新项目。"
         ],
+        "notificationBurstOverflowBodyFmt": [
+            "en": "%d more new items.",
+            "ja": "他に%d件の新着アイテムがあります。",
+            "zh-TW": "另有 %d 則新項目。",
+            "zh-CN": "另有 %d 条新项目。"
+        ],
         "manyActiveTermsWarning": [
             "en": "%d active watch terms — refresh may take longer. Upgrade to OshiReader+ for faster refresh.",
             "ja": "アクティブなキーワードが%d件あります。更新に時間がかかる場合があります。OshiReader+にアップグレードすると更新が速くなります。",

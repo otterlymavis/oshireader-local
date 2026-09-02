@@ -400,12 +400,20 @@ final class NotificationManager: ObservableObject {
             return
         }
 
-        // Notification Center displays the most recently delivered request at
-        // the top. Submit oldest-to-newest so its visible stack matches the
-        // feed's newest-to-oldest updated/publication-date order. Reverse the
-        // shared feed comparator so ties remain deterministic too.
-        let deliveryItems = matchingItems
-            .sorted(by: feedItemSortPrecedes).reversed()
+        // One banner per new item, newest kept individual. A large first-time
+        // burst (a term that just enabled "notify on new", a re-subscribed
+        // platform) would otherwise schedule dozens of requests in one loop and
+        // push past iOS's ~64-pending ceiling, silently dropping the rest — so
+        // cap the individual banners and fold the older remainder into one
+        // per-keyword summary.
+        let newestFirst = matchingItems.sorted(by: feedItemSortPrecedes)
+        let individualItems = Array(newestFirst.prefix(Self.maxIndividualNotificationsPerRefresh))
+        let overflowItems = Array(newestFirst.dropFirst(Self.maxIndividualNotificationsPerRefresh))
+
+        // Notification Center shows the most recently delivered request at the
+        // top. Submit oldest-to-newest so the visible stack matches the feed's
+        // newest-first order; ties stay deterministic via the shared comparator.
+        let deliveryItems = individualItems.sorted(by: feedItemSortPrecedes).reversed()
         for item in deliveryItems {
             guard !Task.isCancelled, generation == localNotificationGeneration else { return }
             guard let term = notifiedTermsByKeyword[item.watch_term_keyword] else { continue }
@@ -453,6 +461,34 @@ final class NotificationManager: ObservableObject {
                 AppLogger.notifications.error("Notification scheduling failed for \(item.watch_term_keyword): \(error.localizedDescription)")
             }
         }
+
+        guard !overflowItems.isEmpty else { return }
+        let overflowByKeyword = Dictionary(grouping: overflowItems, by: \.watch_term_keyword)
+        for keyword in overflowByKeyword.keys.sorted() {
+            guard !Task.isCancelled, generation == localNotificationGeneration else { return }
+            guard let term = notifiedTermsByKeyword[keyword],
+                  let overflow = overflowByKeyword[keyword], !overflow.isEmpty else { continue }
+            let newest = overflow.sorted(by: feedItemSortPrecedes).first
+            let identifier = Self.notificationIdentifier(forTermID: term.id, itemID: "summary")
+            let content = UNMutableNotificationContent()
+            content.title = keyword
+            content.body = I18nManager.shared.tFormat("notificationBurstOverflowBodyFmt", overflow.count)
+            content.sound = .default
+            content.categoryIdentifier = Self.categoryIdentifier
+            content.threadIdentifier = identifier
+            if let newest {
+                content.userInfo = notificationUserInfo(for: newest)
+                content.targetContentIdentifier = newest.id
+            }
+            let request = UNNotificationRequest(identifier: identifier, content: content, trigger: nil)
+            do {
+                guard !Task.isCancelled, generation == localNotificationGeneration else { return }
+                center.removePendingNotificationRequests(withIdentifiers: [identifier])
+                try await center.add(request)
+            } catch {
+                AppLogger.notifications.error("Notification summary scheduling failed for \(keyword): \(error.localizedDescription)")
+            }
+        }
     }
 
     private static let quietHoursDigestIdentifier = "oshireader-quiet-hours-digest"
@@ -494,6 +530,10 @@ final class NotificationManager: ObservableObject {
 
     private static let alertSubtitleLimit = 50
     private static let alertBodyLimit = 100
+    /// Cap on individual "new item" banners scheduled in one refresh. Beyond
+    /// this the older remainder folds into one per-keyword summary, so a large
+    /// first-time burst can't push past iOS's ~64-pending ceiling.
+    private static let maxIndividualNotificationsPerRefresh = 24
     private static func limitedAlertText(_ value: String, limit: Int) -> String {
         value.count <= limit ? value : "\(value.prefix(limit - 3))..."
     }
