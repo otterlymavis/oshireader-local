@@ -946,6 +946,48 @@ final class FeedMergingTests: XCTestCase {
     }
 
     @MainActor
+    func testNotificationBurstOverflowFoldsRemainderIntoPerKeywordSummary() async throws {
+        let previousQuietHours = QuietHoursSettings.current()
+        QuietHoursSettings(enabled: false, startMinuteOfDay: 22 * 60, endMinuteOfDay: 8 * 60).save()
+        defer { previousQuietHours.save() }
+
+        let center = MockNotificationCenter(status: .authorized)
+        let manager = NotificationManager(center: center)
+        let term = WatchTerm(id: "burst", keyword: "Burst Oshi", notify_on_new: true)
+        // Staggered timestamps so newest-first order is index 27 -> 1.
+        let items = (1...27).map { index in
+            FeedItem(
+                id: "news:burst-\(index)", platform: "news", url: "https://example.com/burst-\(index)",
+                title: "Burst item \(index)", content_text: nil, author: nil, thumbnail_url: nil,
+                media_type: "article",
+                published_at: ISO8601DateFormatter().string(from: Date().addingTimeInterval(TimeInterval(index))),
+                watch_term_keyword: term.keyword,
+                fetched_at: ISO8601DateFormatter().string(from: Date())
+            )
+        }
+
+        await manager.notifyForNewItems(items, terms: [term], includeAttachments: false)
+
+        // 24 newest scheduled individually (index 4...27) + one summary for the rest.
+        XCTAssertEqual(center.requests.count, 25)
+        let summaries = center.requests.filter { $0.identifier == "oshireader-new-term-burst-summary" }
+        XCTAssertEqual(summaries.count, 1)
+        let summary = try XCTUnwrap(summaries.first)
+        XCTAssertEqual(summary.content.title, "Burst Oshi")
+        XCTAssertTrue(summary.content.body.contains("3"), "summary should count the 3 overflow items, got \(summary.content.body)")
+        XCTAssertEqual(summary.content.threadIdentifier, summary.identifier)
+        XCTAssertEqual(summary.content.targetContentIdentifier, "news:burst-3")
+        XCTAssertNil(summary.trigger)
+
+        let individual = center.requests.filter { $0.identifier != summary.identifier }
+        XCTAssertEqual(
+            Set(individual.map(\.identifier)),
+            Set((4...27).map { "oshireader-new-term-burst-news:burst-\($0)" })
+        )
+        XCTAssertEqual(Set(individual.map(\.content.threadIdentifier)), Set(individual.map(\.identifier)))
+    }
+
+    @MainActor
     func testLocalNotificationUsesPlusAlertLimitsAndSuppressesDuplicateBody() async throws {
         let center = MockNotificationCenter(status: .authorized)
         let manager = NotificationManager(center: center)
