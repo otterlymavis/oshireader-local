@@ -169,12 +169,31 @@ final class PlusStore: ObservableObject {
         }
     }
 
+    private var loadProductsTask: Task<Void, Never>?
+
+    /// A screen's `.task` is cancelled by SwiftUI when it disappears, but the
+    /// load itself is owned by this singleton and keeps running. Coalesce
+    /// concurrent callers onto that one in-flight `Task` — otherwise a screen
+    /// that reappears while the retry loop is still sleeping would see
+    /// `isLoadingProducts == true`, no-op, and never learn the outcome once
+    /// the original (now-orphaned) attempt finishes.
     func loadProductsIfNeeded() async {
         // UI tests render the paid section (to assert it exists) but must not
         // hit real StoreKit — a failed lookup sets `errorMessage`, which adds a
         // row and shifts every element below it mid-test.
         guard !Self.isUITesting else { return }
-        guard products.isEmpty, !isLoadingProducts, !Self.productIDs.isEmpty else { return }
+        if let loadProductsTask {
+            await loadProductsTask.value
+            return
+        }
+        guard products.isEmpty, !Self.productIDs.isEmpty else { return }
+        let task = Task { await self.performProductLoad() }
+        loadProductsTask = task
+        await task.value
+        loadProductsTask = nil
+    }
+
+    private func performProductLoad() async {
         isLoadingProducts = true
         defer { isLoadingProducts = false }
         errorMessage = nil
@@ -188,9 +207,6 @@ final class PlusStore: ObservableObject {
                     return
                 }
             } catch {
-                // SwiftUI cancels `.task` work when this screen disappears. Do
-                // not turn that expected lifecycle event into a visible error.
-                guard !Task.isCancelled else { return }
                 if !ProductLoadRetryPolicy.shouldRetry(afterAttempt: attempt) {
                     errorMessage = error.localizedDescription
                     return
@@ -198,16 +214,11 @@ final class PlusStore: ObservableObject {
             }
 
             guard ProductLoadRetryPolicy.shouldRetry(afterAttempt: attempt) else { return }
-            do {
-                try await Task.sleep(nanoseconds: 700_000_000)
-            } catch {
-                return
-            }
+            try? await Task.sleep(nanoseconds: 700_000_000)
         }
     }
 
     func reloadProducts() async {
-        guard !isLoadingProducts else { return }
         products = []
         errorMessage = nil
         await loadProductsIfNeeded()
