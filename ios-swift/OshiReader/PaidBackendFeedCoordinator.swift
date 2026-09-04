@@ -188,6 +188,7 @@ final class PaidBackendFeedCoordinator: ObservableObject {
     private let reportHostedFailure: (PaidHostedDiagnosticOperation, Error) async -> Void
     private let synchronizeHostedTerms: (() async throws -> [Int])?
     private let fetchHostedFeed: (String?, [Int], Int, Int, String?, String) async throws -> [FeedItem]
+    private let mergeHostedItems: ([FeedItem], Int?, Bool) -> Int
 
     init(
         paidBackendConfigured: (() -> Bool)? = nil,
@@ -199,7 +200,8 @@ final class PaidBackendFeedCoordinator: ObservableObject {
         refreshEntitlement: (() async -> Void)? = nil,
         reportHostedFailure: ((PaidHostedDiagnosticOperation, Error) async -> Void)? = nil,
         synchronizeHostedTerms: (() async throws -> [Int])? = nil,
-        fetchHostedFeed: ((String?, [Int], Int, Int, String?, String) async throws -> [FeedItem])? = nil
+        fetchHostedFeed: ((String?, [Int], Int, Int, String?, String) async throws -> [FeedItem])? = nil,
+        mergeHostedItems: (([FeedItem], Int?, Bool) -> Int)? = nil
     ) {
         self.paidBackendConfigured = paidBackendConfigured ?? { PlusStore.shouldSyncBackend }
         self.activeEntitlement = activeEntitlement ?? { PlusStore.shared.hasActiveEntitlement }
@@ -221,6 +223,16 @@ final class PaidBackendFeedCoordinator: ObservableObject {
         self.fetchHostedFeed = fetchHostedFeed ?? { platform, termIDs, pageSize, days, since, until in
             try await BackendClient.shared.fetchAllBackendFeed(
                 platform: platform, termIDs: termIDs, pageSize: pageSize, days: days, since: since, until: until
+            )
+        }
+        self.mergeHostedItems = mergeHostedItems ?? { items, sourceRevision, shouldNotify in
+            LocalDB.shared.mergeItems(
+                newItems: items,
+                sourceRevision: sourceRevision,
+                // A missing cursor means this is the initial 180-day baseline,
+                // not a set of items that just appeared. Keep that backfill
+                // silent; subsequent incremental hosted refreshes can alert.
+                notificationHandler: shouldNotify ? nil : { _, _ in }
             )
         }
     }
@@ -318,7 +330,8 @@ final class PaidBackendFeedCoordinator: ObservableObject {
             }
             let cursorKey = Self.refreshCursorKey(profileID: profileID, platform: platform)
             let refreshCutoff = Date()
-            let since = refreshCursor(forKey: cursorKey).map {
+            let previousRefresh = refreshCursor(forKey: cursorKey)
+            let since = previousRefresh.map {
                 iso8601String(from: $0.addingTimeInterval(-incrementalOverlap))
             }
             let fetched: [FeedItem]
@@ -352,7 +365,11 @@ final class PaidBackendFeedCoordinator: ObservableObject {
                 guard let localKeyword = activeKeywords[key] else { return nil }
                 return item.with(watch_term_keyword: localKeyword)
             }
-            let added = LocalDB.shared.mergeItems(newItems: relevant, sourceRevision: sourceRevision)
+            let added = mergeHostedItems(
+                relevant,
+                sourceRevision,
+                previousRefresh != nil
+            )
             UserDefaults.standard.set(refreshCutoff.timeIntervalSince1970, forKey: cursorKey)
             lastRefreshSucceeded = true
             lastRefreshedAt = Date()

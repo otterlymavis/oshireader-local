@@ -291,6 +291,24 @@ class I18nManager: ObservableObject {
             "zh-TW": "還原購買項目",
             "zh-CN": "恢复购买"
         ],
+        "paidLoadingPurchases": [
+            "en": "Loading purchase options…",
+            "ja": "購入オプションを読み込み中…",
+            "zh-TW": "正在載入購買選項…",
+            "zh-CN": "正在加载购买选项…"
+        ],
+        "paidPurchasesUnavailable": [
+            "en": "Purchase options could not be loaded from the App Store.",
+            "ja": "App Storeから購入オプションを読み込めませんでした。",
+            "zh-TW": "無法從 App Store 載入購買選項。",
+            "zh-CN": "无法从 App Store 加载购买选项。"
+        ],
+        "paidReloadPurchases": [
+            "en": "Reload Purchase Options",
+            "ja": "購入オプションを再読み込み",
+            "zh-TW": "重新載入購買選項",
+            "zh-CN": "重新加载购买选项"
+        ],
         "paidOneTimeWatchWordPlan": [
             "en": "One-time purchase · 1 watch word",
             "ja": "買い切り · ウォッチキーワード1件",

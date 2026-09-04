@@ -74,6 +74,12 @@ final class PaidPushTests: XCTestCase {
         XCTAssertFalse(PlusStore.isOneWatchWordPlan(productID: "unconfigured.product"))
     }
 
+    func testProductLoadingRetriesAreBounded() {
+        XCTAssertTrue(ProductLoadRetryPolicy.shouldRetry(afterAttempt: 1))
+        XCTAssertTrue(ProductLoadRetryPolicy.shouldRetry(afterAttempt: 2))
+        XCTAssertFalse(ProductLoadRetryPolicy.shouldRetry(afterAttempt: 3))
+    }
+
     @MainActor
     func testNewestEntitlementRequestGenerationRemainsAuthoritative() {
         var gate = PaidEntitlementRequestGate()
@@ -960,6 +966,7 @@ extension PaidPushTests {
         db.feedItems = []
         var windows: [Int] = []
         var cursors: [String?] = []
+        var notificationPolicies: [Bool] = []
         let published = ISO8601DateFormatter().string(from: Date().addingTimeInterval(-120 * 86400))
         let coordinator = PaidBackendFeedCoordinator(
             paidBackendConfigured: { true }, activeEntitlement: { true },
@@ -972,6 +979,14 @@ extension PaidPushTests {
                 return [FeedItem(id: "news:backfill", platform: "news", url: "https://example.com/backfill",
                     title: "Backfill Oshi", content_text: nil, author: nil, thumbnail_url: nil, media_type: "article",
                     published_at: published, watch_term_keyword: "Backfill Oshi", fetched_at: until)]
+            },
+            mergeHostedItems: { items, sourceRevision, shouldNotify in
+                notificationPolicies.append(shouldNotify)
+                return db.mergeItems(
+                    newItems: items,
+                    sourceRevision: sourceRevision,
+                    notificationHandler: shouldNotify ? nil : { _, _ in }
+                )
             }
         )
         let first = await coordinator.refresh(.foreground, sourceRevision: db.dataRevision, profileID: profileID)
@@ -983,5 +998,6 @@ extension PaidPushTests {
         XCTAssertEqual(windows, [180, 180])
         XCTAssertNil(cursors[0])
         XCTAssertNotNil(cursors[1])
+        XCTAssertEqual(notificationPolicies, [false, true])
     }
 }

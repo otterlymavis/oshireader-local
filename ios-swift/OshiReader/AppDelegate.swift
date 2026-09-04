@@ -13,6 +13,9 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         NotificationManager.shared.registerNotificationCategories()
         application.setMinimumBackgroundFetchInterval(BackgroundRefreshManager.minimumInterval)
         BackgroundRefreshManager.shared.register()
+        // Queue an initial opportunity immediately. The scene-background hook
+        // submits again at the lifecycle boundary where iOS can run the work.
+        BackgroundRefreshManager.shared.schedule()
         // Eagerly instantiate so its Combine subscription to LocalDB's
         // dataRevision starts this launch — otherwise a session that never
         // opens Settings (the only other place this singleton is touched)
@@ -58,10 +61,10 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         }
     }
 
-    func applicationDidEnterBackground(_ application: UIApplication) {
-        LocalDB.shared.flushPendingWrites()
-        BackgroundRefreshManager.shared.schedule()
-    }
+    // Backgrounding work (flush pending writes, queue the next refresh) is
+    // driven from `OshiReaderApp`'s `scenePhase` observer — the single path,
+    // since scene-based SwiftUI apps do not reliably deliver
+    // `applicationDidEnterBackground` here.
 
     func application(
         _ application: UIApplication,

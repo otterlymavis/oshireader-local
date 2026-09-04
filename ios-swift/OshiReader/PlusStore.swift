@@ -15,6 +15,14 @@ struct PaidEntitlementRequestGate {
     }
 }
 
+struct ProductLoadRetryPolicy {
+    static let maximumAttempts = 3
+
+    static func shouldRetry(afterAttempt attempt: Int) -> Bool {
+        attempt < maximumAttempts
+    }
+}
+
 @MainActor
 final class PaidAPNSLifecycleCoordinator {
     private let hasCachedRegistration: () -> Bool
@@ -169,8 +177,40 @@ final class PlusStore: ObservableObject {
         guard products.isEmpty, !isLoadingProducts, !Self.productIDs.isEmpty else { return }
         isLoadingProducts = true
         defer { isLoadingProducts = false }
-        do { products = try await Product.products(for: Self.productIDs).sorted { $0.price < $1.price } }
-        catch { errorMessage = error.localizedDescription }
+        errorMessage = nil
+
+        for attempt in 1...ProductLoadRetryPolicy.maximumAttempts {
+            do {
+                let loadedProducts = try await Product.products(for: Self.productIDs)
+                    .sorted { $0.price < $1.price }
+                guard loadedProducts.isEmpty else {
+                    products = loadedProducts
+                    return
+                }
+            } catch {
+                // SwiftUI cancels `.task` work when this screen disappears. Do
+                // not turn that expected lifecycle event into a visible error.
+                guard !Task.isCancelled else { return }
+                if !ProductLoadRetryPolicy.shouldRetry(afterAttempt: attempt) {
+                    errorMessage = error.localizedDescription
+                    return
+                }
+            }
+
+            guard ProductLoadRetryPolicy.shouldRetry(afterAttempt: attempt) else { return }
+            do {
+                try await Task.sleep(nanoseconds: 700_000_000)
+            } catch {
+                return
+            }
+        }
+    }
+
+    func reloadProducts() async {
+        guard !isLoadingProducts else { return }
+        products = []
+        errorMessage = nil
+        await loadProductsIfNeeded()
     }
 
     func purchase(_ product: Product) async {
