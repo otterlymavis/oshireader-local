@@ -942,11 +942,15 @@ final class FeedMergingTests: XCTestCase {
         )
         XCTAssertEqual(Set(center.requests.map(\.content.subtitle)), Set((1...4).map { "Burst item \($0)" }))
         XCTAssertEqual(Set(center.requests.map(\.content.threadIdentifier)), Set(center.requests.map(\.identifier)))
-        XCTAssertTrue(center.requests.allSatisfy { $0.trigger == nil })
+        XCTAssertNil(center.requests.first?.trigger)
+        let delayedIntervals = center.requests.dropFirst().compactMap {
+            ($0.trigger as? UNTimeIntervalNotificationTrigger)?.timeInterval
+        }
+        XCTAssertEqual(delayedIntervals, [5, 10, 15])
     }
 
     @MainActor
-    func testNotificationBurstOverflowFoldsRemainderIntoPerKeywordSummary() async throws {
+    func testNotificationBurstKeepsEveryItemIndividualWithoutSummary() async throws {
         let previousQuietHours = QuietHoursSettings.current()
         QuietHoursSettings(enabled: false, startMinuteOfDay: 22 * 60, endMinuteOfDay: 8 * 60).save()
         defer { previousQuietHours.save() }
@@ -968,23 +972,141 @@ final class FeedMergingTests: XCTestCase {
 
         await manager.notifyForNewItems(items, terms: [term], includeAttachments: false)
 
-        // 24 newest scheduled individually (index 4...27) + one summary for the rest.
-        XCTAssertEqual(center.requests.count, 25)
-        let summaries = center.requests.filter { $0.identifier == "oshireader-new-term-burst-summary" }
-        XCTAssertEqual(summaries.count, 1)
-        let summary = try XCTUnwrap(summaries.first)
-        XCTAssertEqual(summary.content.title, "Burst Oshi")
-        XCTAssertTrue(summary.content.body.contains("3"), "summary should count the 3 overflow items, got \(summary.content.body)")
-        XCTAssertEqual(summary.content.threadIdentifier, summary.identifier)
-        XCTAssertEqual(summary.content.targetContentIdentifier, "news:burst-3")
-        XCTAssertNil(summary.trigger)
-
-        let individual = center.requests.filter { $0.identifier != summary.identifier }
+        XCTAssertEqual(center.requests.count, 27)
+        XCTAssertFalse(center.requests.contains { $0.identifier.hasSuffix("-summary") })
         XCTAssertEqual(
-            Set(individual.map(\.identifier)),
-            Set((4...27).map { "oshireader-new-term-burst-news:burst-\($0)" })
+            Set(center.requests.map(\.identifier)),
+            Set((1...27).map { "oshireader-new-term-burst-news:burst-\($0)" })
         )
-        XCTAssertEqual(Set(individual.map(\.content.threadIdentifier)), Set(individual.map(\.identifier)))
+        XCTAssertEqual(Set(center.requests.map(\.content.threadIdentifier)), Set(center.requests.map(\.identifier)))
+        XCTAssertNil(center.requests.first?.trigger)
+        XCTAssertEqual(
+            (center.requests.last?.trigger as? UNTimeIntervalNotificationTrigger)?.timeInterval,
+            130
+        )
+    }
+
+    @MainActor
+    func testNotificationQueuePreservesOverflowUntilPendingCapacityIsAvailable() async throws {
+        let previousQuietHours = QuietHoursSettings.current()
+        QuietHoursSettings(enabled: false, startMinuteOfDay: 22 * 60, endMinuteOfDay: 8 * 60).save()
+        defer { previousQuietHours.save() }
+
+        let suiteName = "FeedMergingTests.notification-overflow.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let profileID = UUID()
+        let center = MockNotificationCenter(status: .authorized)
+        let manager = NotificationManager(
+            center: center,
+            notificationQueueDefaults: defaults,
+            notificationQueueProfileIDProvider: { profileID },
+            maximumPendingNotificationRequests: 3
+        )
+        let term = WatchTerm(id: "capacity", keyword: "Capacity Oshi", notify_on_new: true)
+        let nowString = ISO8601DateFormatter().string(from: Date())
+        let items = (1...5).map { index in
+            FeedItem(
+                id: "news:capacity-\(index)", platform: "news", url: "https://example.com/capacity-\(index)",
+                title: "Capacity item \(index)", content_text: nil, author: nil, thumbnail_url: nil,
+                media_type: "article", published_at: nowString, watch_term_keyword: term.keyword,
+                fetched_at: nowString
+            )
+        }
+
+        await manager.notifyForNewItems(items, terms: [term], includeAttachments: false)
+
+        XCTAssertEqual(center.requests.count, 3)
+        XCTAssertEqual(manager.queuedIndividualNotificationCount, 2)
+
+        let freedIdentifiers = center.requests.prefix(2).map(\.identifier)
+        center.removePendingNotificationRequests(withIdentifiers: freedIdentifiers)
+        let relaunchedManager = NotificationManager(
+            center: center,
+            notificationQueueDefaults: defaults,
+            notificationQueueProfileIDProvider: { profileID },
+            maximumPendingNotificationRequests: 3
+        )
+        await relaunchedManager.refreshAuthorizationStatus()
+        await relaunchedManager.drainQueuedIndividualNotifications()
+
+        XCTAssertEqual(center.requests.count, 3)
+        XCTAssertEqual(relaunchedManager.queuedIndividualNotificationCount, 0)
+        XCTAssertEqual(
+            Set(freedIdentifiers).union(center.requests.map(\.identifier)),
+            Set((1...5).map { "oshireader-new-term-capacity-news:capacity-\($0)" })
+        )
+    }
+
+    @MainActor
+    func testNotificationQueueContinuesSpacingAcrossRefreshes() async throws {
+        let previousQuietHours = QuietHoursSettings.current()
+        QuietHoursSettings(enabled: false, startMinuteOfDay: 22 * 60, endMinuteOfDay: 8 * 60).save()
+        defer { previousQuietHours.save() }
+
+        let center = MockNotificationCenter(status: .authorized)
+        let manager = NotificationManager(center: center)
+        let term = WatchTerm(id: "serial", keyword: "Serial Oshi", notify_on_new: true)
+        let nowString = ISO8601DateFormatter().string(from: Date())
+        func item(_ index: Int) -> FeedItem {
+            FeedItem(
+                id: "news:serial-\(index)", platform: "news", url: "https://example.com/serial-\(index)",
+                title: "Serial item \(index)", content_text: nil, author: nil, thumbnail_url: nil,
+                media_type: "article", published_at: nowString, watch_term_keyword: term.keyword,
+                fetched_at: nowString
+            )
+        }
+
+        await manager.notifyForNewItems([item(1), item(2)], terms: [term], includeAttachments: false)
+        await manager.notifyForNewItems([item(3), item(4)], terms: [term], includeAttachments: false)
+
+        XCTAssertEqual(center.requests.count, 4)
+        let intervals = center.requests.compactMap {
+            ($0.trigger as? UNTimeIntervalNotificationTrigger)?.timeInterval
+        }
+        XCTAssertEqual(intervals.count, 3)
+        XCTAssertEqual(intervals[0], 5, accuracy: 0.5)
+        XCTAssertGreaterThanOrEqual(intervals[1], 9)
+        XCTAssertEqual(intervals[2] - intervals[1], 5, accuracy: 0.5)
+    }
+
+    @MainActor
+    func testQuietHoursQueuesEachItemForIndividualDeliveryAfterWindow() async throws {
+        let previousQuietHours = QuietHoursSettings.current()
+        QuietHoursSettings(enabled: true, startMinuteOfDay: 22 * 60, endMinuteOfDay: 8 * 60).save()
+        defer { previousQuietHours.save() }
+
+        let calendar = Calendar.current
+        let fixedNow = try XCTUnwrap(calendar.date(
+            bySettingHour: 23,
+            minute: 0,
+            second: 0,
+            of: Date()
+        ))
+        let center = MockNotificationCenter(status: .authorized)
+        let manager = NotificationManager(center: center, nowProvider: { fixedNow })
+        let term = WatchTerm(id: "quiet-individual", keyword: "Quiet Oshi", notify_on_new: true)
+        let nowString = ISO8601DateFormatter().string(from: fixedNow)
+        let items = (1...2).map { index in
+            FeedItem(
+                id: "news:quiet-individual-\(index)", platform: "news",
+                url: "https://example.com/quiet-individual-\(index)", title: "Quiet item \(index)",
+                content_text: nil, author: nil, thumbnail_url: nil, media_type: "article",
+                published_at: nowString, watch_term_keyword: term.keyword, fetched_at: nowString
+            )
+        }
+
+        await manager.notifyForNewItems(items, terms: [term], includeAttachments: false)
+
+        XCTAssertEqual(center.requests.count, 2)
+        XCTAssertFalse(center.requests.contains { $0.identifier == "oshireader-quiet-hours-digest" })
+        let intervals = center.requests.compactMap {
+            ($0.trigger as? UNTimeIntervalNotificationTrigger)?.timeInterval
+        }
+        XCTAssertEqual(intervals.count, 2)
+        XCTAssertGreaterThan(intervals[0], 0)
+        XCTAssertEqual(intervals[1] - intervals[0], 5, accuracy: 0.5)
     }
 
     @MainActor
@@ -1244,7 +1366,7 @@ final class FeedMergingTests: XCTestCase {
     }
 
     @MainActor
-    func testRepeatedTermDigestReplacesPendingNotification() async throws {
+    func testRepeatedIndividualItemReplacesPendingNotification() async throws {
         let center = MockNotificationCenter(status: .authorized)
         let manager = NotificationManager(center: center)
         let nowString = ISO8601DateFormatter().string(from: Date())
@@ -1261,7 +1383,9 @@ final class FeedMergingTests: XCTestCase {
 
         XCTAssertEqual(center.requests.count, 1)
         XCTAssertEqual(center.requests.first?.identifier, "oshireader-new-term-digest-news:digest")
-        XCTAssertEqual(center.removedPendingIdentifiers.count, 2)
+        XCTAssertTrue(
+            center.removedPendingIdentifiers.joined().contains("oshireader-new-term-digest-news:digest")
+        )
     }
 
     @MainActor

@@ -25,6 +25,14 @@ extension UNUserNotificationCenter: NotificationCenterClient {
     }
 }
 
+private struct QueuedIndividualNotification: Codable, Equatable {
+    let identifier: String
+    let termID: String
+    let item: FeedItem
+    let includeAttachments: Bool
+    let notBefore: Date
+}
+
 @MainActor
 final class NotificationManager: ObservableObject {
     static let shared = NotificationManager()
@@ -43,6 +51,10 @@ final class NotificationManager: ObservableObject {
     private let registeredTokenProvider: () -> String?
     private let retrySleeper: (UInt64) async throws -> Void
     private let registrationRetryDelays: [UInt64]
+    private let notificationQueueDefaults: UserDefaults
+    private let notificationQueueProfileIDProvider: () -> UUID
+    private let nowProvider: () -> Date
+    private let maximumPendingNotificationRequests: Int
     private let maximumAttachmentBytes: Int64 = 10 * 1024 * 1024
     private var localNotificationGeneration = 0
     private var authorizationRequestTask: Task<(granted: Bool, status: UNAuthorizationStatus), Never>?
@@ -51,6 +63,10 @@ final class NotificationManager: ObservableObject {
     private var registrationRetryTask: Task<Void, Never>?
     private var registrationRetryAttempt = 0
     private var tokenRegistrationWaiters: [UUID: CheckedContinuation<Bool, Never>] = [:]
+    private var notificationQueueProfileID: UUID
+    private var queuedIndividualNotifications: [QueuedIndividualNotification]
+    private var isDrainingIndividualNotifications = false
+    private var individualNotificationDrainWaiters: [CheckedContinuation<Void, Never>] = []
 
     init(
         center: NotificationCenterClient = UNUserNotificationCenter.current(),
@@ -69,17 +85,37 @@ final class NotificationManager: ObservableObject {
         registrationRetryDelays: [UInt64] = [1, 5, 30, 120],
         retrySleeper: @escaping (UInt64) async throws -> Void = { seconds in
             try await Task.sleep(nanoseconds: seconds * 1_000_000_000)
-        }
+        },
+        notificationQueueDefaults: UserDefaults = .standard,
+        notificationQueueProfileIDProvider: @escaping () -> UUID = {
+            LocalProfileStore.shared.currentProfileIDThreadSafe
+        },
+        nowProvider: @escaping () -> Date = Date.init,
+        maximumPendingNotificationRequests: Int = 60
     ) {
+        let initialQueueProfileID = notificationQueueProfileIDProvider()
         self.center = center
         self.remoteRegistration = remoteRegistration
         self.registerDeviceToken = registerDeviceToken
         self.registeredTokenProvider = registeredTokenProvider
         self.registrationRetryDelays = registrationRetryDelays
         self.retrySleeper = retrySleeper
+        self.notificationQueueDefaults = notificationQueueDefaults
+        self.notificationQueueProfileIDProvider = notificationQueueProfileIDProvider
+        self.nowProvider = nowProvider
+        self.maximumPendingNotificationRequests = maximumPendingNotificationRequests
+        self.notificationQueueProfileID = initialQueueProfileID
+        self.queuedIndividualNotifications = Self.loadQueuedIndividualNotifications(
+            defaults: notificationQueueDefaults,
+            profileID: initialQueueProfileID
+        )
         self.lastRegisteredDeviceToken = initialRegisteredDeviceToken ?? registeredTokenProvider()
         Task {
             await refreshAuthorizationStatus()
+            guard canScheduleNotifications else { return }
+            center.removePendingNotificationRequests(withIdentifiers: [Self.quietHoursDigestIdentifier])
+            QuietHoursDigestState.clear(defaults: notificationQueueDefaults)
+            await drainQueuedIndividualNotifications()
         }
     }
 
@@ -289,12 +325,19 @@ final class NotificationManager: ObservableObject {
 
     func clearLocalNotifications() {
         localNotificationGeneration &+= 1
+        loadNotificationQueueForCurrentProfileIfNeeded()
+        queuedIndividualNotifications.removeAll()
+        persistQueuedIndividualNotifications()
+        QuietHoursDigestState.clear(defaults: notificationQueueDefaults)
         center.removeAllPendingNotificationRequests()
         center.removeAllDeliveredNotifications()
     }
 
     func clearNotification(forTermID termID: String) async {
         localNotificationGeneration &+= 1
+        loadNotificationQueueForCurrentProfileIfNeeded()
+        queuedIndividualNotifications.removeAll { $0.termID == termID }
+        persistQueuedIndividualNotifications()
         let prefix = Self.notificationIdentifierPrefix(forTermID: termID)
         let pendingIDs = await center.pendingNotificationRequests()
             .map(\.identifier)
@@ -389,151 +432,203 @@ final class NotificationManager: ObservableObject {
                 && $0.source != IngestionService.unverifiedDateGoogleNewsSource
                 && $0.source != IngestionService.fiveChThreadCreatedSource
         }
-        let itemsByKeyword = Dictionary(grouping: matchingItems) {
-            $0.watch_term_keyword
-        }
-
         let quietHours = QuietHoursSettings.current()
-        let now = Date()
-        if quietHours.contains(now) {
-            await scheduleQuietHoursDigest(itemsByKeyword: itemsByKeyword, settings: quietHours, now: now)
-            return
-        }
+        let now = nowProvider()
+        let notBefore = quietHours.contains(now) ? quietHours.nextEndDate(after: now) : now
 
-        // One banner per new item, newest kept individual. A large first-time
-        // burst (a term that just enabled "notify on new", a re-subscribed
-        // platform) would otherwise schedule dozens of requests in one loop and
-        // push past iOS's ~64-pending ceiling, silently dropping the rest — so
-        // cap the individual banners and fold the older remainder into one
-        // per-keyword summary.
-        let newestFirst = matchingItems.sorted(by: feedItemSortPrecedes)
-        let individualItems = Array(newestFirst.prefix(Self.maxIndividualNotificationsPerRefresh))
-        let overflowItems = Array(newestFirst.dropFirst(Self.maxIndividualNotificationsPerRefresh))
+        // Migrate away from the former single Quiet Hours/overflow digest.
+        center.removePendingNotificationRequests(withIdentifiers: [Self.quietHoursDigestIdentifier])
+        QuietHoursDigestState.clear(defaults: notificationQueueDefaults)
 
-        // Notification Center shows the most recently delivered request at the
-        // top. Submit oldest-to-newest so the visible stack matches the feed's
-        // newest-first order; ties stay deterministic via the shared comparator.
-        let deliveryItems = individualItems.sorted(by: feedItemSortPrecedes).reversed()
+        loadNotificationQueueForCurrentProfileIfNeeded()
+        let pendingIDs = Set(await center.pendingNotificationRequests().map(\.identifier))
+        guard !Task.isCancelled, generation == localNotificationGeneration else { return }
+
+        // Keep every match as an individual queued alert. Existing entries are
+        // replaced in place so a newer activity update keeps its queue position
+        // while refreshing the content that will eventually be delivered.
+        let deliveryItems = matchingItems.sorted(by: feedItemSortPrecedes).reversed()
         for item in deliveryItems {
-            guard !Task.isCancelled, generation == localNotificationGeneration else { return }
             guard let term = notifiedTermsByKeyword[item.watch_term_keyword] else { continue }
             let notificationIdentifier = Self.notificationIdentifier(forTermID: term.id, itemID: item.id)
-            let content = UNMutableNotificationContent()
-            content.title = item.watch_term_keyword
-            let itemTitle = cleanDisplayText(item.title)
-            let itemBody = cleanDisplayText(item.content_text)
-            if let itemTitle, !itemTitle.isEmpty {
-                content.subtitle = Self.limitedAlertText(itemTitle, limit: Self.alertSubtitleLimit)
-            }
-            if let itemBody, !itemBody.isEmpty, itemBody != itemTitle {
-                content.body = Self.limitedAlertText(itemBody, limit: Self.alertBodyLimit)
-            } else if content.subtitle.isEmpty {
-                let fallback = item.url.isEmpty ? "1 new item found." : item.url
-                content.body = Self.limitedAlertText(fallback, limit: Self.alertBodyLimit)
-            }
-            content.sound = .default
-            content.categoryIdentifier = Self.categoryIdentifier
-            if includeAttachments,
-               let attachment = await notificationAttachment(for: item) {
-                content.attachments = [attachment]
-            }
-            content.userInfo = notificationUserInfo(for: item)
-            // A unique thread prevents iOS from visually grouping separate
-            // feed items into one per-keyword notification stack.
-            content.threadIdentifier = notificationIdentifier
-            content.targetContentIdentifier = item.id
-
-            let request = UNNotificationRequest(
+            let queued = QueuedIndividualNotification(
                 identifier: notificationIdentifier,
-                content: content,
-                trigger: nil
+                termID: term.id,
+                item: item,
+                includeAttachments: includeAttachments,
+                notBefore: notBefore
             )
-            do {
-                guard !Task.isCancelled, generation == localNotificationGeneration else { return }
-                center.removePendingNotificationRequests(withIdentifiers: [request.identifier])
-                try await center.add(request)
-                guard !Task.isCancelled, generation == localNotificationGeneration else {
-                    center.removePendingNotificationRequests(withIdentifiers: [request.identifier])
-                    center.removeDeliveredNotifications(withIdentifiers: [request.identifier])
-                    return
-                }
-            } catch {
-                AppLogger.notifications.error("Notification scheduling failed for \(item.watch_term_keyword): \(error.localizedDescription)")
+            if pendingIDs.contains(notificationIdentifier) {
+                center.removePendingNotificationRequests(withIdentifiers: [notificationIdentifier])
+            }
+            if let existingIndex = queuedIndividualNotifications.firstIndex(where: { $0.identifier == notificationIdentifier }) {
+                queuedIndividualNotifications[existingIndex] = queued
+            } else {
+                queuedIndividualNotifications.append(queued)
             }
         }
-
-        guard !overflowItems.isEmpty else { return }
-        let overflowByKeyword = Dictionary(grouping: overflowItems, by: \.watch_term_keyword)
-        for keyword in overflowByKeyword.keys.sorted() {
-            guard !Task.isCancelled, generation == localNotificationGeneration else { return }
-            guard let term = notifiedTermsByKeyword[keyword],
-                  let overflow = overflowByKeyword[keyword], !overflow.isEmpty else { continue }
-            let newest = overflow.sorted(by: feedItemSortPrecedes).first
-            let identifier = Self.notificationIdentifier(forTermID: term.id, itemID: "summary")
-            let content = UNMutableNotificationContent()
-            content.title = keyword
-            content.body = I18nManager.shared.tFormat("notificationBurstOverflowBodyFmt", overflow.count)
-            content.sound = .default
-            content.categoryIdentifier = Self.categoryIdentifier
-            content.threadIdentifier = identifier
-            if let newest {
-                content.userInfo = notificationUserInfo(for: newest)
-                content.targetContentIdentifier = newest.id
-            }
-            let request = UNNotificationRequest(identifier: identifier, content: content, trigger: nil)
-            do {
-                guard !Task.isCancelled, generation == localNotificationGeneration else { return }
-                center.removePendingNotificationRequests(withIdentifiers: [identifier])
-                try await center.add(request)
-            } catch {
-                AppLogger.notifications.error("Notification summary scheduling failed for \(keyword): \(error.localizedDescription)")
-            }
-        }
+        persistQueuedIndividualNotifications()
+        await drainQueuedIndividualNotifications(generation: generation)
     }
 
     private static let quietHoursDigestIdentifier = "oshireader-quiet-hours-digest"
 
-    /// Accumulates this batch's per-keyword counts into today's running
-    /// total and (re)schedules a single trailing digest for the window's
-    /// end time — removing and re-adding the same pending request each call
-    /// so repeated refreshes during quiet hours coalesce into one
-    /// notification instead of stacking up.
-    private func scheduleQuietHoursDigest(itemsByKeyword: [String: [FeedItem]], settings: QuietHoursSettings, now: Date) async {
-        let newCounts = itemsByKeyword.mapValues(\.count)
-        guard newCounts.values.reduce(0, +) > 0 else { return }
-        let state = QuietHoursDigestState.accumulating(newCounts, settings: settings, now: now)
-        state.save()
+    private static let alertSubtitleLimit = 50
+    private static let alertBodyLimit = 100
+    private static let individualDeliverySpacing: TimeInterval = 5
+    private static let individualNotificationQueueKey = "individual_notification_queue"
+    private static let individualNotificationIdentifierPrefix = "oshireader-new-term-"
 
-        let content = UNMutableNotificationContent()
-        content.title = I18nManager.shared.t("notificationDigestTitle")
-        content.body = I18nManager.shared.tFormat("notificationDigestBodyFmt", state.totalCount)
-        content.sound = .default
-        content.categoryIdentifier = Self.categoryIdentifier
+    var queuedIndividualNotificationCount: Int {
+        loadNotificationQueueForCurrentProfileIfNeeded()
+        return queuedIndividualNotifications.count
+    }
 
-        let triggerDate = settings.nextEndDate(after: now)
-        let triggerComponents = Calendar.current.dateComponents(
-            [.year, .month, .day, .hour, .minute, .second],
-            from: triggerDate
-        )
-        let request = UNNotificationRequest(
-            identifier: Self.quietHoursDigestIdentifier,
-            content: content,
-            trigger: UNCalendarNotificationTrigger(dateMatching: triggerComponents, repeats: false)
-        )
-        center.removePendingNotificationRequests(withIdentifiers: [Self.quietHoursDigestIdentifier])
-        do {
-            try await center.add(request)
-        } catch {
-            AppLogger.notifications.error("Quiet-hours digest scheduling failed: \(error.localizedDescription)")
+    func drainQueuedIndividualNotifications(generation requestedGeneration: Int? = nil) async {
+        loadNotificationQueueForCurrentProfileIfNeeded()
+        if isDrainingIndividualNotifications {
+            await withCheckedContinuation { continuation in
+                individualNotificationDrainWaiters.append(continuation)
+            }
+            if !queuedIndividualNotifications.isEmpty {
+                await drainQueuedIndividualNotifications(generation: requestedGeneration)
+            }
+            return
+        }
+        guard canScheduleNotifications else { return }
+        isDrainingIndividualNotifications = true
+        defer {
+            isDrainingIndividualNotifications = false
+            let waiters = individualNotificationDrainWaiters
+            individualNotificationDrainWaiters.removeAll()
+            for waiter in waiters { waiter.resume() }
+        }
+
+        let generation = requestedGeneration ?? localNotificationGeneration
+        var pending = await center.pendingNotificationRequests()
+        guard !Task.isCancelled, generation == localNotificationGeneration else { return }
+
+        let pendingIDs = Set(pending.map(\.identifier))
+        queuedIndividualNotifications.removeAll { pendingIDs.contains($0.identifier) }
+        persistQueuedIndividualNotifications()
+
+        var availableSlots = max(0, maximumPendingNotificationRequests - pending.count)
+        guard availableSlots > 0 else { return }
+
+        let now = nowProvider()
+        let managedPending = pending.filter {
+            $0.identifier.hasPrefix(Self.individualNotificationIdentifierPrefix)
+        }
+        let latestTriggeredDelivery = managedPending.compactMap {
+            ($0.trigger as? UNTimeIntervalNotificationTrigger)?.nextTriggerDate()
+        }.max()
+        var deliveryCursor = latestTriggeredDelivery ?? now.addingTimeInterval(-Self.individualDeliverySpacing)
+        if managedPending.contains(where: { $0.trigger == nil }) {
+            deliveryCursor = max(deliveryCursor, now)
+        }
+
+        while availableSlots > 0, let queued = queuedIndividualNotifications.first {
+            guard !Task.isCancelled, generation == localNotificationGeneration else { return }
+            let deliveryDate = max(
+                queued.notBefore,
+                deliveryCursor.addingTimeInterval(Self.individualDeliverySpacing)
+            )
+            let content = await notificationContent(for: queued)
+            guard !Task.isCancelled, generation == localNotificationGeneration else { return }
+            let delay = deliveryDate.timeIntervalSince(now)
+            let trigger = delay <= 0
+                ? nil
+                : UNTimeIntervalNotificationTrigger(timeInterval: max(1, delay), repeats: false)
+            let request = UNNotificationRequest(
+                identifier: queued.identifier,
+                content: content,
+                trigger: trigger
+            )
+            do {
+                center.removePendingNotificationRequests(withIdentifiers: [queued.identifier])
+                try await center.add(request)
+                guard !Task.isCancelled, generation == localNotificationGeneration else {
+                    center.removePendingNotificationRequests(withIdentifiers: [queued.identifier])
+                    center.removeDeliveredNotifications(withIdentifiers: [queued.identifier])
+                    return
+                }
+                if queuedIndividualNotifications.first == queued {
+                    queuedIndividualNotifications.removeFirst()
+                    persistQueuedIndividualNotifications()
+                }
+                pending.append(request)
+                availableSlots -= 1
+                deliveryCursor = deliveryDate
+            } catch {
+                AppLogger.notifications.error("Notification scheduling failed for \(queued.item.watch_term_keyword): \(error.localizedDescription)")
+                return
+            }
         }
     }
 
-    private static let alertSubtitleLimit = 50
-    private static let alertBodyLimit = 100
-    /// Cap on individual "new item" banners scheduled in one refresh. Beyond
-    /// this the older remainder folds into one per-keyword summary, so a large
-    /// first-time burst can't push past iOS's ~64-pending ceiling.
-    private static let maxIndividualNotificationsPerRefresh = 24
+    private func notificationContent(for queued: QueuedIndividualNotification) async -> UNMutableNotificationContent {
+        let item = queued.item
+        let content = UNMutableNotificationContent()
+        content.title = item.watch_term_keyword
+        let itemTitle = cleanDisplayText(item.title)
+        let itemBody = cleanDisplayText(item.content_text)
+        if let itemTitle, !itemTitle.isEmpty {
+            content.subtitle = Self.limitedAlertText(itemTitle, limit: Self.alertSubtitleLimit)
+        }
+        if let itemBody, !itemBody.isEmpty, itemBody != itemTitle {
+            content.body = Self.limitedAlertText(itemBody, limit: Self.alertBodyLimit)
+        } else if content.subtitle.isEmpty {
+            let fallback = item.url.isEmpty ? "1 new item found." : item.url
+            content.body = Self.limitedAlertText(fallback, limit: Self.alertBodyLimit)
+        }
+        content.sound = .default
+        content.categoryIdentifier = Self.categoryIdentifier
+        if queued.includeAttachments,
+           let attachment = await notificationAttachment(for: item) {
+            content.attachments = [attachment]
+        }
+        content.userInfo = notificationUserInfo(for: item)
+        content.threadIdentifier = queued.identifier
+        content.targetContentIdentifier = item.id
+        return content
+    }
+
+    private func loadNotificationQueueForCurrentProfileIfNeeded() {
+        let currentProfileID = notificationQueueProfileIDProvider()
+        guard currentProfileID != notificationQueueProfileID else { return }
+        notificationQueueProfileID = currentProfileID
+        queuedIndividualNotifications = Self.loadQueuedIndividualNotifications(
+            defaults: notificationQueueDefaults,
+            profileID: currentProfileID
+        )
+    }
+
+    private func persistQueuedIndividualNotifications() {
+        let key = Self.notificationQueueStorageKey(profileID: notificationQueueProfileID)
+        guard !queuedIndividualNotifications.isEmpty else {
+            notificationQueueDefaults.removeObject(forKey: key)
+            return
+        }
+        do {
+            notificationQueueDefaults.set(try JSONEncoder().encode(queuedIndividualNotifications), forKey: key)
+        } catch {
+            AppLogger.notifications.error("Notification queue persistence failed: \(error.localizedDescription)")
+        }
+    }
+
+    private static func loadQueuedIndividualNotifications(
+        defaults: UserDefaults,
+        profileID: UUID
+    ) -> [QueuedIndividualNotification] {
+        let key = notificationQueueStorageKey(profileID: profileID)
+        guard let data = defaults.data(forKey: key) else { return [] }
+        return (try? JSONDecoder().decode([QueuedIndividualNotification].self, from: data)) ?? []
+    }
+
+    private static func notificationQueueStorageKey(profileID: UUID) -> String {
+        LocalProfileStore.defaultsKey(individualNotificationQueueKey, profileID: profileID)
+    }
+
     private static func limitedAlertText(_ value: String, limit: Int) -> String {
         value.count <= limit ? value : "\(value.prefix(limit - 3))..."
     }
