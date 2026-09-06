@@ -90,6 +90,27 @@ struct PaidBackendSettingsView: View {
                     }
                     .disabled(plusStore.isPurchasing || plusStore.currentProductID == product.id)
                 }
+                // Under UI tests `loadProductsIfNeeded()` bails before touching
+                // StoreKit, so `products` stays empty forever — rendering this
+                // fallback there would add rows that shift every element below
+                // it mid-test.
+                if plusStore.products.isEmpty, !PlusStore.isUITesting {
+                    if plusStore.isLoadingProducts {
+                        HStack {
+                            ProgressView()
+                            Text(i18n.t("paidLoadingPurchases"))
+                                .foregroundColor(theme.colors.textMuted)
+                        }
+                    } else {
+                        Text(i18n.t("paidPurchasesUnavailable"))
+                            .font(.caption)
+                            .foregroundColor(theme.colors.textMuted)
+                        Button(i18n.t("paidReloadPurchases")) {
+                            Task { await plusStore.reloadProducts() }
+                        }
+                        .accessibilityIdentifier("settings.reloadPurchases")
+                    }
+                }
                 Button(i18n.t("paidRestorePurchases")) { Task { await plusStore.restorePurchases() } }
 
                 if plusStore.pushDeliveryState == .selectionRequired {

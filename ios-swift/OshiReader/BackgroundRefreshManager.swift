@@ -64,8 +64,11 @@ final class BackgroundRefreshManager {
         request.earliestBeginDate = Date(timeIntervalSinceNow: Self.minimumInterval)
         do {
             // Submitting the same refresh identifier replaces its pending
-            // request. Do not cancel first: if submission fails, the existing
-            // request must remain queued so background refresh can recover.
+            // request; do not cancel first, so a failed submission leaves the
+            // existing request queued and background refresh can still recover.
+            // Submission must also complete before returning: handle(_:) queues
+            // the next opportunity before its current background task can expire
+            // or complete and the process becomes eligible for suspension.
             try BGTaskScheduler.shared.submit(request)
             AppLogger.network.notice("Background refresh request submitted")
         } catch {
