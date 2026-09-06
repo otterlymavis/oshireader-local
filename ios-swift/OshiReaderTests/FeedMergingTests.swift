@@ -991,6 +991,13 @@ final class FeedMergingTests: XCTestCase {
             Set((4...27).map { "oshireader-new-term-burst-news:burst-\($0)" })
         )
         XCTAssertEqual(Set(individual.map(\.content.threadIdentifier)), Set(individual.map(\.identifier)))
+        // Slot 0 is reserved for the immediately-delivered summary, so every
+        // individual banner is time-triggered and none exceeds the 3 min spread.
+        let individualIntervals = individual.compactMap {
+            ($0.trigger as? UNTimeIntervalNotificationTrigger)?.timeInterval
+        }
+        XCTAssertEqual(individualIntervals.count, individual.count, "every individual banner is time-triggered when an overflow summary takes slot 0")
+        XCTAssertTrue(individualIntervals.allSatisfy { $0 > 0 && $0 <= 180 }, "intervals within the spread, got \(individualIntervals.sorted())")
     }
 
     @MainActor

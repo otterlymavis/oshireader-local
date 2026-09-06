@@ -379,7 +379,7 @@ struct FeedView: View {
             }
         }
         .modifier(ForegroundAutoRefresh(
-            lastRefreshStartedAt: $lastRefreshStartedAt,
+            lastRefreshStartedAt: lastRefreshStartedAt,
             isRefreshing: refreshCoordinator.isRefreshing,
             performRefresh: { await refreshFeed() }
         ))

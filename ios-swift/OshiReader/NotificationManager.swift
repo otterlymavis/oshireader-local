@@ -414,16 +414,36 @@ final class NotificationManager: ObservableObject {
         // top. Submit oldest-to-newest so the visible stack matches the feed's
         // newest-first order; ties stay deterministic via the shared comparator.
         let deliveryItems = Array(individualItems.sorted(by: feedItemSortPrecedes).reversed())
+        // Slot 0 is reserved for the per-keyword overflow summary when there is
+        // one, so the summary (oldest items) delivers first and sits below every
+        // individual banner in Notification Center.
+        let firstIndividualSlot = overflowItems.isEmpty ? 0 : 1
+        let lastSlot = deliveryItems.count - 1 + firstIndividualSlot
         // Trickle the batch out so banners feel like a live feed instead of one
         // dump. Nominal gap is individualDeliverySpacing; for a large batch it
         // shrinks so the whole run still fits inside maxIndividualDeliverySpread
         // rather than piling the tail onto the ceiling.
-        let deliverySpacing: TimeInterval = deliveryItems.count > 1
+        let deliverySpacing: TimeInterval = lastSlot > 0
             ? min(Self.individualDeliverySpacing,
-                  Self.maxIndividualDeliverySpread / TimeInterval(deliveryItems.count - 1))
+                  Self.maxIndividualDeliverySpread / TimeInterval(lastSlot))
             : Self.individualDeliverySpacing
+
+        // Identifiers added so far this call. Time-triggered banners stay
+        // *pending* (not delivered) for minutes, so if a concurrent clear /
+        // cancellation bumps the generation mid-loop, retract the whole batch —
+        // not just the in-flight request — or stale banners fire later.
+        var scheduledIdentifiers: [String] = []
+        func retractScheduledBatch() {
+            guard !scheduledIdentifiers.isEmpty else { return }
+            center.removePendingNotificationRequests(withIdentifiers: scheduledIdentifiers)
+            center.removeDeliveredNotifications(withIdentifiers: scheduledIdentifiers)
+        }
+
         for (deliveryIndex, item) in deliveryItems.enumerated() {
-            guard !Task.isCancelled, generation == localNotificationGeneration else { return }
+            guard !Task.isCancelled, generation == localNotificationGeneration else {
+                retractScheduledBatch()
+                return
+            }
             guard let term = notifiedTermsByKeyword[item.watch_term_keyword] else { continue }
             let notificationIdentifier = Self.notificationIdentifier(forTermID: term.id, itemID: item.id)
             let content = UNMutableNotificationContent()
@@ -453,9 +473,8 @@ final class NotificationManager: ObservableObject {
 
             // deliveryItems is oldest-first, so the offset grows toward the
             // newest item — the stack still ends up newest-on-top, just spread
-            // out. The first (oldest) banner keeps a nil trigger for immediate
-            // delivery.
-            let offset = Double(deliveryIndex) * deliverySpacing
+            // out. The earliest slot keeps a nil trigger for immediate delivery.
+            let offset = Double(deliveryIndex + firstIndividualSlot) * deliverySpacing
             let trigger: UNNotificationTrigger? = offset > 0
                 ? UNTimeIntervalNotificationTrigger(timeInterval: offset, repeats: false)
                 : nil
@@ -466,12 +485,15 @@ final class NotificationManager: ObservableObject {
                 trigger: trigger
             )
             do {
-                guard !Task.isCancelled, generation == localNotificationGeneration else { return }
+                guard !Task.isCancelled, generation == localNotificationGeneration else {
+                    retractScheduledBatch()
+                    return
+                }
                 center.removePendingNotificationRequests(withIdentifiers: [request.identifier])
                 try await center.add(request)
+                scheduledIdentifiers.append(request.identifier)
                 guard !Task.isCancelled, generation == localNotificationGeneration else {
-                    center.removePendingNotificationRequests(withIdentifiers: [request.identifier])
-                    center.removeDeliveredNotifications(withIdentifiers: [request.identifier])
+                    retractScheduledBatch()
                     return
                 }
             } catch {
@@ -482,7 +504,10 @@ final class NotificationManager: ObservableObject {
         guard !overflowItems.isEmpty else { return }
         let overflowByKeyword = Dictionary(grouping: overflowItems, by: \.watch_term_keyword)
         for keyword in overflowByKeyword.keys.sorted() {
-            guard !Task.isCancelled, generation == localNotificationGeneration else { return }
+            guard !Task.isCancelled, generation == localNotificationGeneration else {
+                retractScheduledBatch()
+                return
+            }
             guard let term = notifiedTermsByKeyword[keyword],
                   let overflow = overflowByKeyword[keyword], !overflow.isEmpty else { continue }
             let newest = overflow.sorted(by: feedItemSortPrecedes).first
@@ -499,9 +524,13 @@ final class NotificationManager: ObservableObject {
             }
             let request = UNNotificationRequest(identifier: identifier, content: content, trigger: nil)
             do {
-                guard !Task.isCancelled, generation == localNotificationGeneration else { return }
+                guard !Task.isCancelled, generation == localNotificationGeneration else {
+                    retractScheduledBatch()
+                    return
+                }
                 center.removePendingNotificationRequests(withIdentifiers: [identifier])
                 try await center.add(request)
+                scheduledIdentifiers.append(identifier)
             } catch {
                 AppLogger.notifications.error("Notification summary scheduling failed for \(keyword): \(error.localizedDescription)")
             }
@@ -554,8 +583,12 @@ final class NotificationManager: ObservableObject {
     /// Gap between successive individual "new item" banners from one refresh, so
     /// a batch trickles in rather than arriving in a single burst.
     private static let individualDeliverySpacing: TimeInterval = 30
-    /// Ceiling on how far out the last banner in a batch is scheduled.
-    private static let maxIndividualDeliverySpread: TimeInterval = 10 * 60
+    /// Ceiling on how far out the last banner in a batch is scheduled. Kept
+    /// under the shortest auto-refresh interval (5 min) so one batch finishes
+    /// delivering before the next refresh schedules another — otherwise up to
+    /// `maxIndividualNotificationsPerRefresh` pending requests per overlapping
+    /// batch could approach iOS's ~64-pending ceiling.
+    private static let maxIndividualDeliverySpread: TimeInterval = 3 * 60
     private static func limitedAlertText(_ value: String, limit: Int) -> String {
         value.count <= limit ? value : "\(value.prefix(limit - 3))..."
     }
