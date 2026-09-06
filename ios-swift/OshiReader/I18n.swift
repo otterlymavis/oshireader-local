@@ -845,6 +845,30 @@ class I18nManager: ObservableObject {
             "zh-TW": "受 iOS 限制",
             "zh-CN": "受 iOS 限制"
         ],
+        "autoRefreshInterval": [
+            "en": "Auto-Refresh",
+            "ja": "自動更新",
+            "zh-TW": "自動重新整理",
+            "zh-CN": "自动刷新"
+        ],
+        "autoRefreshOff": [
+            "en": "Off",
+            "ja": "オフ",
+            "zh-TW": "關閉",
+            "zh-CN": "关闭"
+        ],
+        "autoRefreshMinutesFmt": [
+            "en": "Every %d min",
+            "ja": "%d分ごと",
+            "zh-TW": "每 %d 分鐘",
+            "zh-CN": "每 %d 分钟"
+        ],
+        "autoRefreshFooter": [
+            "en": "Refreshes the feed on this interval while the app is open. iOS controls refreshes while the app is closed.",
+            "ja": "アプリを開いている間、この間隔でフィードを更新します。アプリを閉じている間の更新はiOSが制御します。",
+            "zh-TW": "在 App 開啟期間，會依此間隔重新整理動態。App 關閉時的更新由 iOS 控制。",
+            "zh-CN": "在 App 打开期间，会按此间隔刷新动态。App 关闭时的更新由 iOS 控制。"
+        ],
         "notificationSetupHint": [
             "en": "Allow notifications to receive alerts for new matches.",
             "ja": "新しい一致の通知を受け取るには、通知を許可してください。",

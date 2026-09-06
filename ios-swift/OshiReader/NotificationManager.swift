@@ -413,8 +413,16 @@ final class NotificationManager: ObservableObject {
         // Notification Center shows the most recently delivered request at the
         // top. Submit oldest-to-newest so the visible stack matches the feed's
         // newest-first order; ties stay deterministic via the shared comparator.
-        let deliveryItems = individualItems.sorted(by: feedItemSortPrecedes).reversed()
-        for item in deliveryItems {
+        let deliveryItems = Array(individualItems.sorted(by: feedItemSortPrecedes).reversed())
+        // Trickle the batch out so banners feel like a live feed instead of one
+        // dump. Nominal gap is individualDeliverySpacing; for a large batch it
+        // shrinks so the whole run still fits inside maxIndividualDeliverySpread
+        // rather than piling the tail onto the ceiling.
+        let deliverySpacing: TimeInterval = deliveryItems.count > 1
+            ? min(Self.individualDeliverySpacing,
+                  Self.maxIndividualDeliverySpread / TimeInterval(deliveryItems.count - 1))
+            : Self.individualDeliverySpacing
+        for (deliveryIndex, item) in deliveryItems.enumerated() {
             guard !Task.isCancelled, generation == localNotificationGeneration else { return }
             guard let term = notifiedTermsByKeyword[item.watch_term_keyword] else { continue }
             let notificationIdentifier = Self.notificationIdentifier(forTermID: term.id, itemID: item.id)
@@ -443,10 +451,19 @@ final class NotificationManager: ObservableObject {
             content.threadIdentifier = notificationIdentifier
             content.targetContentIdentifier = item.id
 
+            // deliveryItems is oldest-first, so the offset grows toward the
+            // newest item — the stack still ends up newest-on-top, just spread
+            // out. The first (oldest) banner keeps a nil trigger for immediate
+            // delivery.
+            let offset = Double(deliveryIndex) * deliverySpacing
+            let trigger: UNNotificationTrigger? = offset > 0
+                ? UNTimeIntervalNotificationTrigger(timeInterval: offset, repeats: false)
+                : nil
+
             let request = UNNotificationRequest(
                 identifier: notificationIdentifier,
                 content: content,
-                trigger: nil
+                trigger: trigger
             )
             do {
                 guard !Task.isCancelled, generation == localNotificationGeneration else { return }
@@ -534,6 +551,11 @@ final class NotificationManager: ObservableObject {
     /// this the older remainder folds into one per-keyword summary, so a large
     /// first-time burst can't push past iOS's ~64-pending ceiling.
     private static let maxIndividualNotificationsPerRefresh = 24
+    /// Gap between successive individual "new item" banners from one refresh, so
+    /// a batch trickles in rather than arriving in a single burst.
+    private static let individualDeliverySpacing: TimeInterval = 30
+    /// Ceiling on how far out the last banner in a batch is scheduled.
+    private static let maxIndividualDeliverySpread: TimeInterval = 10 * 60
     private static func limitedAlertText(_ value: String, limit: Int) -> String {
         value.count <= limit ? value : "\(value.prefix(limit - 3))..."
     }

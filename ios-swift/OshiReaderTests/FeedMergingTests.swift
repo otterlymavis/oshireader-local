@@ -942,7 +942,13 @@ final class FeedMergingTests: XCTestCase {
         )
         XCTAssertEqual(Set(center.requests.map(\.content.subtitle)), Set((1...4).map { "Burst item \($0)" }))
         XCTAssertEqual(Set(center.requests.map(\.content.threadIdentifier)), Set(center.requests.map(\.identifier)))
-        XCTAssertTrue(center.requests.allSatisfy { $0.trigger == nil })
+        // The batch trickles out: the first (oldest) banner fires immediately,
+        // each subsequent one offset by a fixed 30s spacing.
+        XCTAssertNil(center.requests.first?.trigger)
+        let intervals = center.requests.dropFirst().map {
+            ($0.trigger as? UNTimeIntervalNotificationTrigger)?.timeInterval
+        }
+        XCTAssertEqual(intervals, [30, 60, 90])
     }
 
     @MainActor

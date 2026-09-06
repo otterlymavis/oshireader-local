@@ -52,6 +52,7 @@ struct NotificationSettingsView: View {
     @Environment(\.scenePhase) private var scenePhase
 
     @State private var quietHoursSettings = QuietHoursSettings.current()
+    @State private var autoRefreshMinutes = AutoRefreshSettings.current().intervalMinutes
     @State private var currentBackgroundRefreshStatus = UIApplication.shared.backgroundRefreshStatus
 
     var body: some View {
@@ -103,6 +104,27 @@ struct NotificationSettingsView: View {
             }
 
             Section {
+                Picker(selection: Binding(
+                    get: { autoRefreshMinutes },
+                    set: {
+                        autoRefreshMinutes = $0
+                        AutoRefreshSettings(intervalMinutes: $0).save()
+                    }
+                )) {
+                    ForEach(AutoRefreshSettings.allowedIntervalMinutes, id: \.self) { minutes in
+                        Text(autoRefreshOptionLabel(minutes)).tag(minutes)
+                    }
+                } label: {
+                    Label(i18n.t("autoRefreshInterval"), systemImage: "clock.arrow.circlepath")
+                }
+                .accessibilityIdentifier("settings.autoRefreshPicker")
+
+                Text(i18n.t("autoRefreshFooter"))
+                    .font(.caption)
+                    .foregroundColor(theme.colors.textMuted)
+            }
+
+            Section {
                 Toggle(i18n.t("quietHoursToggle"), isOn: Binding(
                     get: { quietHoursSettings.enabled },
                     set: { quietHoursSettings.enabled = $0; quietHoursSettings.save() }
@@ -137,6 +159,7 @@ struct NotificationSettingsView: View {
         .onAppear {
             currentBackgroundRefreshStatus = UIApplication.shared.backgroundRefreshStatus
             quietHoursSettings = QuietHoursSettings.current()
+            autoRefreshMinutes = AutoRefreshSettings.current().intervalMinutes
             Task { await notifications.refreshAuthorizationStatus() }
         }
         .onChange(of: scenePhase) { _, newPhase in
@@ -180,6 +203,12 @@ struct NotificationSettingsView: View {
         currentBackgroundRefreshStatus == .available
             ? theme.colors.primary
             : theme.colors.textMuted
+    }
+
+    private func autoRefreshOptionLabel(_ minutes: Int) -> String {
+        minutes == AutoRefreshSettings.off
+            ? i18n.t("autoRefreshOff")
+            : i18n.tFormat("autoRefreshMinutesFmt", minutes)
     }
 
     private static func date(fromMinuteOfDay minutes: Int) -> Date {

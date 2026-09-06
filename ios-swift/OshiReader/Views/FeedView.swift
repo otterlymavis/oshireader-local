@@ -142,6 +142,10 @@ struct FeedView: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var selectedItem: FeedItem? = nil
 
+    /// Start of the most recent (auto or manual) refresh this session — the
+    /// anchor `ForegroundAutoRefresh` measures the user's interval from.
+    @State private var lastRefreshStartedAt: Date? = nil
+
     init() {
         let db = LocalDB.shared
         let initialFilteredItems = Self.makeFilteredItems(
@@ -374,6 +378,11 @@ struct FeedView: View {
                 }
             }
         }
+        .modifier(ForegroundAutoRefresh(
+            lastRefreshStartedAt: $lastRefreshStartedAt,
+            isRefreshing: refreshCoordinator.isRefreshing,
+            performRefresh: { await refreshFeed() }
+        ))
     }
 
     private var feedContentStack: some View {
@@ -663,6 +672,10 @@ struct FeedView: View {
     
     private func refreshFeed() async {
         guard !refreshCoordinator.isRefreshing else { return }
+        // Any refresh (manual pull, first-launch, or auto) resets the
+        // auto-refresh interval so a pull-to-refresh doesn't get followed by an
+        // auto one a moment later.
+        lastRefreshStartedAt = Date()
 
         // Skip live network during UI tests (fixtures are seeded in LocalDB).
         if ProcessInfo.processInfo.arguments.contains("--uitesting") {
