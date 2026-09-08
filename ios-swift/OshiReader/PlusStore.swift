@@ -15,6 +15,14 @@ struct PaidEntitlementRequestGate {
     }
 }
 
+struct ProductLoadRetryPolicy {
+    static let maximumAttempts = 3
+
+    static func shouldRetry(afterAttempt attempt: Int) -> Bool {
+        attempt < maximumAttempts
+    }
+}
+
 @MainActor
 final class PaidAPNSLifecycleCoordinator {
     private let hasCachedRegistration: () -> Bool
@@ -161,16 +169,64 @@ final class PlusStore: ObservableObject {
         }
     }
 
+    private var loadProductsTask: Task<Void, Never>?
+
+    /// A screen's `.task` is cancelled by SwiftUI when it disappears, but the
+    /// load itself is owned by this singleton and keeps running. Coalesce
+    /// concurrent callers onto that one in-flight `Task` — otherwise a screen
+    /// that reappears while the retry loop is still sleeping would see
+    /// `isLoadingProducts == true`, no-op, and never learn the outcome once
+    /// the original (now-orphaned) attempt finishes.
     func loadProductsIfNeeded() async {
         // UI tests render the paid section (to assert it exists) but must not
         // hit real StoreKit — a failed lookup sets `errorMessage`, which adds a
         // row and shifts every element below it mid-test.
         guard !Self.isUITesting else { return }
-        guard products.isEmpty, !isLoadingProducts, !Self.productIDs.isEmpty else { return }
+        if let loadProductsTask {
+            await loadProductsTask.value
+            return
+        }
+        guard products.isEmpty, !Self.productIDs.isEmpty else { return }
+        let task = Task { @MainActor in
+            await self.performProductLoad()
+            // Clear ownership before the task completes and wakes its waiters.
+            // Otherwise a reload can erase the newly loaded catalog, observe
+            // this already-finished task, and return without starting another.
+            self.loadProductsTask = nil
+        }
+        loadProductsTask = task
+        await task.value
+    }
+
+    private func performProductLoad() async {
         isLoadingProducts = true
         defer { isLoadingProducts = false }
-        do { products = try await Product.products(for: Self.productIDs).sorted { $0.price < $1.price } }
-        catch { errorMessage = error.localizedDescription }
+        errorMessage = nil
+
+        for attempt in 1...ProductLoadRetryPolicy.maximumAttempts {
+            do {
+                let loadedProducts = try await Product.products(for: Self.productIDs)
+                    .sorted { $0.price < $1.price }
+                guard loadedProducts.isEmpty else {
+                    products = loadedProducts
+                    return
+                }
+            } catch {
+                if !ProductLoadRetryPolicy.shouldRetry(afterAttempt: attempt) {
+                    errorMessage = error.localizedDescription
+                    return
+                }
+            }
+
+            guard ProductLoadRetryPolicy.shouldRetry(afterAttempt: attempt) else { return }
+            try? await Task.sleep(nanoseconds: 700_000_000)
+        }
+    }
+
+    func reloadProducts() async {
+        products = []
+        errorMessage = nil
+        await loadProductsIfNeeded()
     }
 
     func purchase(_ product: Product) async {

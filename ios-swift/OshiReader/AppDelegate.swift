@@ -13,6 +13,9 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         NotificationManager.shared.registerNotificationCategories()
         application.setMinimumBackgroundFetchInterval(BackgroundRefreshManager.minimumInterval)
         BackgroundRefreshManager.shared.register()
+        // Queue an initial opportunity immediately. The scene-background hook
+        // submits again at the lifecycle boundary where iOS can run the work.
+        BackgroundRefreshManager.shared.schedule()
         // Eagerly instantiate so its Combine subscription to LocalDB's
         // dataRevision starts this launch — otherwise a session that never
         // opens Settings (the only other place this singleton is touched)
@@ -47,6 +50,13 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     }
 
     func applicationDidBecomeActive(_ application: UIApplication) {
+        // Pending requests disappear from the system queue as they deliver.
+        // Re-check capacity whenever the app becomes active so persisted
+        // overflow cannot remain stranded after those slots have opened.
+        Task {
+            await NotificationManager.shared.refreshAuthorizationStatus()
+            await NotificationManager.shared.drainQueuedIndividualNotifications()
+        }
         if PlusStore.shouldSyncBackend {
             if PlusStore.shared.hasActiveEntitlement {
                 NotificationManager.shared.registerForRemoteNotificationsForDeviceAuthentication()
@@ -58,10 +68,10 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         }
     }
 
-    func applicationDidEnterBackground(_ application: UIApplication) {
-        LocalDB.shared.flushPendingWrites()
-        BackgroundRefreshManager.shared.schedule()
-    }
+    // Backgrounding work (flush pending writes, queue the next refresh) is
+    // driven from `OshiReaderApp`'s `scenePhase` observer — the single path,
+    // since scene-based SwiftUI apps do not reliably deliver
+    // `applicationDidEnterBackground` here.
 
     func application(
         _ application: UIApplication,
@@ -113,6 +123,12 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
         completionHandler([.banner, .list, .sound, .badge])
+        // While the app stays in the foreground, each delivered notification
+        // frees a pending slot without another lifecycle transition. Replenish
+        // the system queue as those slots open.
+        Task { @MainActor in
+            await NotificationManager.shared.drainQueuedIndividualNotifications()
+        }
     }
 
     nonisolated func userNotificationCenter(
@@ -130,7 +146,10 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
             default:
                 break
             }
+            // Tell the system the interaction is handled before queue draining,
+            // which may suspend while preparing notification attachments.
             completionHandler()
+            await NotificationManager.shared.drainQueuedIndividualNotifications()
         }
     }
 }

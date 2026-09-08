@@ -302,6 +302,7 @@ final class OshiReaderUITests: XCTestCase {
 
         XCTAssertTrue(waitForElement(identifier: "settings.notificationStatus", timeout: 2, swipes: 4).exists)
         XCTAssertTrue(waitForElement(identifier: "settings.localAlertBackgroundStatus", timeout: 2, swipes: 1).exists)
+        XCTAssertTrue(waitForElement(identifier: "settings.autoRefreshPicker", timeout: 2, swipes: 4).exists)
     }
 
     func testPaidPushControlsFollowCatalogConfiguration() throws {

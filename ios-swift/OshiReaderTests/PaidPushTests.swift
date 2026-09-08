@@ -74,6 +74,12 @@ final class PaidPushTests: XCTestCase {
         XCTAssertFalse(PlusStore.isOneWatchWordPlan(productID: "unconfigured.product"))
     }
 
+    func testProductLoadingRetriesAreBounded() {
+        XCTAssertTrue(ProductLoadRetryPolicy.shouldRetry(afterAttempt: 1))
+        XCTAssertTrue(ProductLoadRetryPolicy.shouldRetry(afterAttempt: 2))
+        XCTAssertFalse(ProductLoadRetryPolicy.shouldRetry(afterAttempt: 3))
+    }
+
     @MainActor
     func testNewestEntitlementRequestGenerationRemainsAuthoritative() {
         var gate = PaidEntitlementRequestGate()
@@ -780,28 +786,49 @@ final class PaidPushTests: XCTestCase {
 
     @MainActor
     func testSuccessfulEmptyHostedRefreshDoesNotReportDiagnostic() async {
+        let profileID = LocalProfileStore.shared.activeProfileID
+        let cursorKey = PaidBackendFeedCoordinator.refreshCursorKey(profileID: profileID, platform: nil)
+        let previousCursor = UserDefaults.standard.object(forKey: cursorKey)
+        UserDefaults.standard.removeObject(forKey: cursorKey)
+        defer {
+            if let previousCursor {
+                UserDefaults.standard.set(previousCursor, forKey: cursorKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: cursorKey)
+            }
+        }
         var diagnosticReports = 0
+        var feedFetches = 0
         let coordinator = PaidBackendFeedCoordinator(
             paidBackendConfigured: { true },
             activeEntitlement: { true },
-            activeProfileID: { LocalProfileStore.shared.activeProfileID },
+            activeProfileID: { profileID },
             localTerm: { _ in nil },
             fetchHostedTerms: { [] },
             muteHostedItem: { _, _, _ in },
             refreshEntitlement: {},
             reportHostedFailure: { _, _ in diagnosticReports += 1 },
-            synchronizeHostedTerms: { [] }
+            synchronizeHostedTerms: { [] },
+            fetchHostedFeed: { _, _, _, _, _, _ in
+                feedFetches += 1
+                return []
+            }
         )
 
         let result = await coordinator.refresh(
             .foreground,
             sourceRevision: LocalDB.shared.dataRevision,
-            profileID: LocalProfileStore.shared.activeProfileID
+            profileID: profileID
         )
 
         XCTAssertTrue(result.succeeded)
         XCTAssertEqual(result.addedCount, 0)
         XCTAssertEqual(diagnosticReports, 0)
+        XCTAssertEqual(feedFetches, 0)
+        XCTAssertNil(
+            UserDefaults.standard.object(forKey: cursorKey),
+            "no hosted fetch must not consume the profile's initial baseline"
+        )
     }
 
     @MainActor
@@ -960,6 +987,7 @@ extension PaidPushTests {
         db.feedItems = []
         var windows: [Int] = []
         var cursors: [String?] = []
+        var notificationPolicies: [Bool] = []
         let published = ISO8601DateFormatter().string(from: Date().addingTimeInterval(-120 * 86400))
         let coordinator = PaidBackendFeedCoordinator(
             paidBackendConfigured: { true }, activeEntitlement: { true },
@@ -972,6 +1000,14 @@ extension PaidPushTests {
                 return [FeedItem(id: "news:backfill", platform: "news", url: "https://example.com/backfill",
                     title: "Backfill Oshi", content_text: nil, author: nil, thumbnail_url: nil, media_type: "article",
                     published_at: published, watch_term_keyword: "Backfill Oshi", fetched_at: until)]
+            },
+            mergeHostedItems: { items, sourceRevision, shouldNotify in
+                notificationPolicies.append(shouldNotify)
+                return db.mergeItems(
+                    newItems: items,
+                    sourceRevision: sourceRevision,
+                    notificationHandler: shouldNotify ? nil : { _, _ in }
+                )
             }
         )
         let first = await coordinator.refresh(.foreground, sourceRevision: db.dataRevision, profileID: profileID)
@@ -983,5 +1019,6 @@ extension PaidPushTests {
         XCTAssertEqual(windows, [180, 180])
         XCTAssertNil(cursors[0])
         XCTAssertNotNil(cursors[1])
+        XCTAssertEqual(notificationPolicies, [false, true])
     }
 }

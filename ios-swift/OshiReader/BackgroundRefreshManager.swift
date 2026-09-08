@@ -64,8 +64,11 @@ final class BackgroundRefreshManager {
         request.earliestBeginDate = Date(timeIntervalSinceNow: Self.minimumInterval)
         do {
             // Submitting the same refresh identifier replaces its pending
-            // request. Do not cancel first: if submission fails, the existing
-            // request must remain queued so background refresh can recover.
+            // request; do not cancel first, so a failed submission leaves the
+            // existing request queued and background refresh can still recover.
+            // Submission must also complete before returning: handle(_:) queues
+            // the next opportunity before its current background task can expire
+            // or complete and the process becomes eligible for suspension.
             try BGTaskScheduler.shared.submit(request)
             AppLogger.network.notice("Background refresh request submitted")
         } catch {
@@ -87,7 +90,12 @@ final class BackgroundRefreshManager {
         let waiter = BackgroundRefreshWaiter()
         let worker = Task { @MainActor in
             let result = await LocalRefreshCoordinator.shared.refreshIfIdle(.background)
-                ?? LocalRefreshResult(completion: .cancelled, addedCount: 0, sourceStatuses: [], customRefreshCompleted: false)
+                // Another refresh can start after the `isRefreshing` check but
+                // before this task reaches `refreshIfIdle`. That work already
+                // covers the wake, so preserve the same successful `.noData`
+                // result as the fast path above instead of reporting a false
+                // background failure to iOS.
+                ?? LocalRefreshResult(completion: .completed, addedCount: 0, sourceStatuses: [], customRefreshCompleted: true)
             await waiter.finish(result)
         }
         let timeout = Task {
@@ -98,9 +106,23 @@ final class BackgroundRefreshManager {
                 // The refresh completed before the deadline.
             }
         }
-        let result = await waiter.wait()
+        let result = await withTaskCancellationHandler {
+            await waiter.wait()
+        } onCancel: {
+            // BGTask expiration cancels the task running `refreshNow`. Wake the
+            // waiter immediately so the caller can report failure before iOS
+            // suspends or terminates the process.
+            Task {
+                await waiter.finish(LocalRefreshResult(
+                    completion: .expired,
+                    addedCount: 0,
+                    sourceStatuses: [],
+                    customRefreshCompleted: false
+                ))
+            }
+        }
         timeout.cancel()
-        if result.completion == .expired {
+        if Task.isCancelled || result.completion == .expired {
             LocalRefreshCoordinator.shared.cancel()
             worker.cancel()
             return .failed
@@ -119,10 +141,14 @@ final class BackgroundRefreshManager {
         // Queue the next opportunity before starting network work. If iOS
         // expires or terminates this run, a future refresh remains pending.
         schedule()
-        task.expirationHandler = { [weak self] in
+        let operation = Task { @MainActor in
+            await refreshNow()
+        }
+        task.expirationHandler = { [weak self, operation] in
+            operation.cancel()
             Task { @MainActor in self?.cancelActiveRefresh() }
         }
-        let outcome = await refreshNow()
+        let outcome = await operation.value
         task.setTaskCompleted(success: outcome != .failed)
     }
 }
