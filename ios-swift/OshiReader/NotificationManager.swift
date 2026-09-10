@@ -66,6 +66,7 @@ final class NotificationManager: ObservableObject {
     private var notificationQueueProfileID: UUID
     private var queuedIndividualNotifications: [QueuedIndividualNotification]
     private var isDrainingIndividualNotifications = false
+    private var lastIndividualDeliveryDate: Date?
     private var individualNotificationDrainWaiters: [CheckedContinuation<Void, Never>] = []
 
     init(
@@ -331,6 +332,7 @@ final class NotificationManager: ObservableObject {
         localNotificationGeneration &+= 1
         loadNotificationQueueForCurrentProfileIfNeeded()
         queuedIndividualNotifications.removeAll()
+        lastIndividualDeliveryDate = nil
         persistQueuedIndividualNotifications()
         QuietHoursDigestState.clear(defaults: notificationQueueDefaults)
         center.removeAllPendingNotificationRequests()
@@ -479,7 +481,11 @@ final class NotificationManager: ObservableObject {
 
     private static let alertSubtitleLimit = 50
     private static let alertBodyLimit = 100
-    private static let individualDeliverySpacing: TimeInterval = 5
+    /// The first few ready items in a drain fire with no artificial delay so
+    /// alerts track real time; every item after that is spaced this far apart
+    /// so a large burst still arrives gradually instead of all at once.
+    private static let individualDeliverySpacing: TimeInterval = 4
+    private static let immediateDeliveryBurst = 3
     private static let individualNotificationQueueKey = "individual_notification_queue"
     private static let individualNotificationIdentifierPrefix = "oshireader-new-term-"
     private static let scheduledDeliveryAtUserInfoKey = "oshireader_local_scheduled_delivery_at"
@@ -537,7 +543,33 @@ final class NotificationManager: ObservableObject {
             // ignore their moving `nextTriggerDate()` during the one-time migration.
             return request.trigger == nil ? now : nil
         }.max()
-        var deliveryCursor = latestRecordedDelivery ?? now.addingTimeInterval(-Self.individualDeliverySpacing)
+        // A delivered request disappears from `pending`. Keep its scheduled
+        // time across drains so a second refresh cannot immediately alert again.
+        // Future requests may have been cancelled (for example, unfollowing
+        // a term). Only the current pending queue can reserve future slots.
+        let recentDelivery = lastIndividualDeliveryDate.map { min($0, now) }
+        var deliveryCursor = [latestRecordedDelivery, recentDelivery]
+            .compactMap { $0 }.max() ?? now.addingTimeInterval(-Self.individualDeliverySpacing)
+
+        // How many of this drain's alerts may skip the inter-item spacing and
+        // fire right away. Requests still scheduled ahead of `now` (a backlog
+        // that is mid-delivery) and a very recent immediate send both draw the
+        // allowance down, so two refreshes seconds apart can't each release a
+        // fresh burst; it refills after roughly `burst * spacing` of quiet.
+        var immediateBudget = Self.immediateDeliveryBurst
+        immediateBudget -= managedPending.filter { request in
+            guard let timestamp = request.content.userInfo[Self.scheduledDeliveryAtUserInfoKey] as? TimeInterval
+            else { return false }
+            return Date(timeIntervalSince1970: timestamp) > now
+        }.count
+        if let recentDelivery {
+            let elapsed = now.timeIntervalSince(recentDelivery)
+            let cooldown = Double(Self.immediateDeliveryBurst) * Self.individualDeliverySpacing
+            if elapsed >= 0, elapsed < cooldown {
+                immediateBudget -= Self.immediateDeliveryBurst - Int(elapsed / Self.individualDeliverySpacing)
+            }
+        }
+        immediateBudget = max(0, immediateBudget)
 
         while availableSlots > 0, let queued = queuedIndividualNotifications.first {
             guard !Task.isCancelled, generation == localNotificationGeneration else { return }
@@ -548,10 +580,10 @@ final class NotificationManager: ObservableObject {
             // trigger on the actual submission time so a slow first attachment
             // cannot turn the rest of the batch into immediate notifications.
             let schedulingNow = nowProvider()
-            let earliestDelivery = max(
-                queued.notBefore,
-                max(deliveryCursor.addingTimeInterval(Self.individualDeliverySpacing), schedulingNow)
-            )
+            let spacingFloor = immediateBudget > 0
+                ? schedulingNow
+                : deliveryCursor.addingTimeInterval(Self.individualDeliverySpacing)
+            let earliestDelivery = max(queued.notBefore, max(spacingFloor, schedulingNow))
             let requestedDelay = earliestDelivery.timeIntervalSince(schedulingNow)
             let deliveryDate: Date
             let trigger: UNNotificationTrigger?
@@ -584,6 +616,8 @@ final class NotificationManager: ObservableObject {
                 pending.append(request)
                 availableSlots -= 1
                 deliveryCursor = deliveryDate
+                lastIndividualDeliveryDate = deliveryDate
+                if immediateBudget > 0 { immediateBudget -= 1 }
             } catch {
                 AppLogger.notifications.error("Notification scheduling failed for \(queued.item.watch_term_keyword): \(error.localizedDescription)")
                 return

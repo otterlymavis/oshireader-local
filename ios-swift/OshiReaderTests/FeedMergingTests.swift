@@ -942,14 +942,13 @@ final class FeedMergingTests: XCTestCase {
         )
         XCTAssertEqual(Set(center.requests.map(\.content.subtitle)), Set((1...4).map { "Burst item \($0)" }))
         XCTAssertEqual(Set(center.requests.map(\.content.threadIdentifier)), Set(center.requests.map(\.identifier)))
-        XCTAssertNil(center.requests.first?.trigger)
-        let delayedIntervals = center.requests.dropFirst().compactMap {
+        // The first three fire right away; only the remainder is staggered.
+        XCTAssertEqual(center.requests.prefix(3).filter { $0.trigger == nil }.count, 3)
+        let delayedIntervals = center.requests.dropFirst(3).compactMap {
             ($0.trigger as? UNTimeIntervalNotificationTrigger)?.timeInterval
         }
-        XCTAssertEqual(delayedIntervals.count, 3)
-        for (actual, expected) in zip(delayedIntervals, [5.0, 10.0, 15.0]) {
-            XCTAssertEqual(actual, expected, accuracy: 0.05)
-        }
+        XCTAssertEqual(delayedIntervals.count, 1)
+        XCTAssertEqual(try XCTUnwrap(delayedIntervals.first), 4, accuracy: 0.05)
     }
 
     @MainActor
@@ -982,10 +981,11 @@ final class FeedMergingTests: XCTestCase {
             Set((1...27).map { "oshireader-new-term-burst-news:burst-\($0)" })
         )
         XCTAssertEqual(Set(center.requests.map(\.content.threadIdentifier)), Set(center.requests.map(\.identifier)))
-        XCTAssertNil(center.requests.first?.trigger)
+        XCTAssertEqual(center.requests.prefix(3).filter { $0.trigger == nil }.count, 3)
+        // First 3 immediate, the other 24 spaced 4s apart -> last at t+96.
         XCTAssertEqual(
             try XCTUnwrap(center.requests.last?.trigger as? UNTimeIntervalNotificationTrigger).timeInterval,
-            130,
+            96,
             accuracy: 0.1
         )
     }
@@ -1049,10 +1049,11 @@ final class FeedMergingTests: XCTestCase {
         QuietHoursSettings(enabled: false, startMinuteOfDay: 22 * 60, endMinuteOfDay: 8 * 60).save()
         defer { previousQuietHours.save() }
 
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
         let center = MockNotificationCenter(status: .authorized)
-        let manager = NotificationManager(center: center)
+        let manager = NotificationManager(center: center, nowProvider: { now })
         let term = WatchTerm(id: "serial", keyword: "Serial Oshi", notify_on_new: true)
-        let nowString = ISO8601DateFormatter().string(from: Date())
+        let nowString = ISO8601DateFormatter().string(from: now)
         func item(_ index: Int) -> FeedItem {
             FeedItem(
                 id: "news:serial-\(index)", platform: "news", url: "https://example.com/serial-\(index)",
@@ -1062,17 +1063,53 @@ final class FeedMergingTests: XCTestCase {
             )
         }
 
+        // First refresh spends the whole immediate burst on items 1 and 2.
         await manager.notifyForNewItems([item(1), item(2)], terms: [term], includeAttachments: false)
+        // A second refresh moments later has no burst budget left, so items 3
+        // and 4 continue the 4s stagger instead of firing right away.
         await manager.notifyForNewItems([item(3), item(4)], terms: [term], includeAttachments: false)
 
         XCTAssertEqual(center.requests.count, 4)
+        XCTAssertEqual(center.requests.prefix(2).filter { $0.trigger == nil }.count, 2)
         let intervals = center.requests.compactMap {
             ($0.trigger as? UNTimeIntervalNotificationTrigger)?.timeInterval
         }
-        XCTAssertEqual(intervals.count, 3)
-        XCTAssertEqual(intervals[0], 5, accuracy: 0.5)
-        XCTAssertGreaterThanOrEqual(intervals[1], 9)
-        XCTAssertEqual(intervals[2] - intervals[1], 5, accuracy: 0.5)
+        XCTAssertEqual(intervals.count, 2)
+        XCTAssertEqual(intervals[0], 4, accuracy: 0.1)
+        XCTAssertEqual(intervals[1] - intervals[0], 4, accuracy: 0.1)
+    }
+
+    @MainActor
+    func testNotificationSpacingSurvivesDeliveredRequestLeavingPendingQueue() async throws {
+        let previousQuietHours = QuietHoursSettings.current()
+        QuietHoursSettings(enabled: false, startMinuteOfDay: 1320, endMinuteOfDay: 480).save()
+        defer { previousQuietHours.save() }
+        var now = Date(timeIntervalSince1970: 1_800_000_000)
+        let center = MockNotificationCenter(status: .authorized)
+        let manager = NotificationManager(center: center, nowProvider: { now })
+        let term = WatchTerm(id: "delivered-spacing", keyword: "Spacing", notify_on_new: true)
+        func item(_ id: String) -> FeedItem {
+            FeedItem(
+                id: id, platform: "news", url: "https://example.com/\(id)", title: id,
+                content_text: nil, author: nil, thumbnail_url: nil, media_type: "article",
+                published_at: ISO8601DateFormatter().string(from: now),
+                watch_term_keyword: term.keyword, fetched_at: ISO8601DateFormatter().string(from: now)
+            )
+        }
+        await manager.notifyForNewItems([item("first")], terms: [term], includeAttachments: false)
+        XCTAssertNil(try XCTUnwrap(center.requests.first).trigger)
+        // Model Notification Center delivering the first request, which removes
+        // it from pending requests before another refresh discovers an item.
+        center.removeAllPendingNotificationRequests()
+        now = now.addingTimeInterval(2)
+        await manager.notifyForNewItems([item("second")], terms: [term], includeAttachments: false)
+        // The just-delivered send drew down the burst budget, so the second
+        // item is still spaced a full 4s after the first (2s of which has
+        // already elapsed) rather than firing immediately.
+        XCTAssertEqual(
+            try XCTUnwrap(center.requests.last?.trigger as? UNTimeIntervalNotificationTrigger).timeInterval,
+            2, accuracy: 0.01
+        )
     }
 
     @MainActor
@@ -1096,21 +1133,25 @@ final class FeedMergingTests: XCTestCase {
             )
         }
 
-        await manager.notifyForNewItems([item(1), item(2)], terms: [term], includeAttachments: false)
-        let immediateIdentifier = try XCTUnwrap(center.requests.first { $0.trigger == nil }?.identifier)
-        center.removePendingNotificationRequests(withIdentifiers: [immediateIdentifier])
+        // Items 1-3 spend the immediate burst; item 4 is staggered to t+4.
+        await manager.notifyForNewItems(
+            [item(1), item(2), item(3), item(4)], terms: [term], includeAttachments: false
+        )
+        let immediateIdentifiers = center.requests.filter { $0.trigger == nil }.map(\.identifier)
+        XCTAssertEqual(immediateIdentifiers.count, 3)
+        center.removePendingNotificationRequests(withIdentifiers: immediateIdentifiers)
         currentNow = baseNow.addingTimeInterval(3)
 
-        await manager.notifyForNewItems([item(3)], terms: [term], includeAttachments: false)
+        await manager.notifyForNewItems([item(5)], terms: [term], includeAttachments: false)
 
-        let third = try XCTUnwrap(center.requests.first {
-            $0.identifier == "oshireader-new-term-absolute-news:absolute-3"
+        let fifth = try XCTUnwrap(center.requests.first {
+            $0.identifier == "oshireader-new-term-absolute-news:absolute-5"
         })
         XCTAssertEqual(
-            try XCTUnwrap(third.trigger as? UNTimeIntervalNotificationTrigger).timeInterval,
-            7,
+            try XCTUnwrap(fifth.trigger as? UNTimeIntervalNotificationTrigger).timeInterval,
+            5,
             accuracy: 0.01,
-            "the new request should follow the existing request's absolute t+5 delivery at t+10"
+            "the new request should follow the existing request's absolute t+4 delivery at t+8"
         )
     }
 
@@ -1197,7 +1238,9 @@ final class FeedMergingTests: XCTestCase {
         }
         XCTAssertEqual(intervals.count, 2)
         XCTAssertGreaterThan(intervals[0], 0)
-        XCTAssertEqual(intervals[1] - intervals[0], 5, accuracy: 0.5)
+        // Both items are within the immediate burst, so they are released
+        // together the moment the quiet-hours window ends.
+        XCTAssertEqual(intervals[1] - intervals[0], 0, accuracy: 0.01)
     }
 
     @MainActor
