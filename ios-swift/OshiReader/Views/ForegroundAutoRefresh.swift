@@ -1,8 +1,8 @@
 import SwiftUI
 import Combine
 
-/// Refreshes on launch and return from the background. The optional interval
-/// controls additional refreshes while the app stays open.
+/// Refreshes on launch and on returning from the background. The optional
+/// interval controls additional refreshes while the app stays open.
 ///
 /// It is deliberately foreground-only. iOS suspends the timer and the whole
 /// process shortly after the app leaves the screen, so this never fires in the
@@ -16,8 +16,18 @@ struct ForegroundAutoRefresh: ViewModifier {
     let isRefreshing: Bool
     let performRefresh: () async -> Void
 
+    /// A return from the background refreshes only if this much time has passed
+    /// since the last refresh, so flicking between apps (or a Home-bar peek)
+    /// doesn't run a full ingestion pass every time — the throttle the
+    /// user-configurable interval can't provide when it's set to off.
+    private let backgroundReturnMinimumGap: TimeInterval = 60
+
     @Environment(\.scenePhase) private var scenePhase
     @State private var needsOpeningRefresh = true
+    /// Set while the app is actually backgrounded (not merely `.inactive` for
+    /// Control Center / a permission alert), so only a real background→active
+    /// round trip counts as a return from the background.
+    @State private var didEnterBackground = false
     /// `@State` so the publisher survives `FeedView.body` rebuilding this
     /// modifier — SwiftUI keeps the first value and discards later initializers,
     /// so the 60s countdown is anchored once instead of restarting on every
@@ -36,10 +46,16 @@ struct ForegroundAutoRefresh: ViewModifier {
             // capture them once at first appearance.
             .onReceive(ticker) { _ in evaluate() }
             .onChange(of: scenePhase) { _, phase in
-                // Temporary inactivity (Control Center, permission prompts)
-                // must not count as another app opening.
-                if phase == .background { needsOpeningRefresh = true }
-                if phase == .active { evaluate() }
+                switch phase {
+                case .background:
+                    didEnterBackground = true
+                case .active:
+                    let returnedFromBackground = didEnterBackground
+                    didEnterBackground = false
+                    evaluate(returnedFromBackground: returnedFromBackground)
+                default:
+                    break
+                }
             }
             .onChange(of: isRefreshing) { _, refreshing in
                 // An in-flight background pass must not swallow the opening
@@ -48,14 +64,10 @@ struct ForegroundAutoRefresh: ViewModifier {
             }
     }
 
-    private func evaluate() {
+    private func evaluate(returnedFromBackground: Bool = false) {
         guard scenePhase == .active, !isRefreshing else { return }
         guard !ProcessInfo.processInfo.arguments.contains("--uitesting") else { return }
-        guard needsOpeningRefresh || AutoRefreshSettings.isRefreshDue(
-            intervalMinutes: AutoRefreshSettings.current().intervalMinutes,
-            lastRefreshAt: lastRefreshStartedAt,
-            now: Date()
-        ) else { return }
+        guard shouldRefresh(returnedFromBackground: returnedFromBackground) else { return }
         let wasOpeningRefresh = needsOpeningRefresh
         let stampBeforeRefresh = lastRefreshStartedAt
         needsOpeningRefresh = false
@@ -73,5 +85,21 @@ struct ForegroundAutoRefresh: ViewModifier {
                 evaluate()
             }
         }
+    }
+
+    private func shouldRefresh(returnedFromBackground: Bool) -> Bool {
+        if needsOpeningRefresh { return true }
+        let now = Date()
+        if returnedFromBackground {
+            guard let lastRefreshStartedAt else { return true }
+            if now.timeIntervalSince(lastRefreshStartedAt) >= backgroundReturnMinimumGap {
+                return true
+            }
+        }
+        return AutoRefreshSettings.isRefreshDue(
+            intervalMinutes: AutoRefreshSettings.current().intervalMinutes,
+            lastRefreshAt: lastRefreshStartedAt,
+            now: now
+        )
     }
 }

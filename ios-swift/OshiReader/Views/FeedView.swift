@@ -682,6 +682,12 @@ struct FeedView: View {
             return
         }
 
+        // Nothing to fetch — no watch terms and no custom URLs. Skip the pass
+        // (and its spinner) instead of entering the coordinator for a no-op.
+        // Now that `ForegroundAutoRefresh` drives every launch/foreground
+        // refresh, this replaces the old `onAppear` `!db.terms.isEmpty` guard.
+        guard !db.terms.isEmpty || !db.customUrls.isEmpty else { return }
+
         _ = await refreshCoordinator.refresh(.foreground)
     }
 
