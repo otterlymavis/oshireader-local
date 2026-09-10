@@ -11,7 +11,11 @@ import Combine
 struct ForegroundAutoRefresh: ViewModifier {
     /// Owned by the host view so a manual pull-to-refresh resets the interval
     /// too — not just the auto path. `ForegroundAutoRefresh` only reads it;
-    /// `performRefresh` is the sole writer.
+    /// `performRefresh` is the sole writer. `nil` means no foreground refresh
+    /// has run this session yet, which is also how the opening refresh is
+    /// recognised — keeping that signal in the host's state (not this
+    /// modifier's `@State`) means tearing the modifier down and rebuilding it
+    /// doesn't re-arm an unthrottled refresh.
     let lastRefreshStartedAt: Date?
     let isRefreshing: Bool
     let performRefresh: () async -> Void
@@ -23,7 +27,6 @@ struct ForegroundAutoRefresh: ViewModifier {
     private let backgroundReturnMinimumGap: TimeInterval = 60
 
     @Environment(\.scenePhase) private var scenePhase
-    @State private var needsOpeningRefresh = true
     /// Set while the app is actually backgrounded (not merely `.inactive` for
     /// Control Center / a permission alert), so only a real background→active
     /// round trip counts as a return from the background.
@@ -33,6 +36,8 @@ struct ForegroundAutoRefresh: ViewModifier {
     /// so the 60s countdown is anchored once instead of restarting on every
     /// re-evaluation.
     @State private var ticker = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
+
+    private var needsOpeningRefresh: Bool { lastRefreshStartedAt == nil }
 
     func body(content: Content) -> some View {
         content
@@ -69,8 +74,6 @@ struct ForegroundAutoRefresh: ViewModifier {
         guard !ProcessInfo.processInfo.arguments.contains("--uitesting") else { return }
         guard shouldRefresh(returnedFromBackground: returnedFromBackground) else { return }
         let wasOpeningRefresh = needsOpeningRefresh
-        let stampBeforeRefresh = lastRefreshStartedAt
-        needsOpeningRefresh = false
         // Don't stamp the interval anchor here — `performRefresh` (refreshFeed)
         // re-checks `isRefreshing` and may no-op. Letting it be the only writer
         // means a skipped run doesn't burn the whole interval.
@@ -78,10 +81,9 @@ struct ForegroundAutoRefresh: ViewModifier {
             await performRefresh()
             // `refreshFeed` advances `lastRefreshStartedAt` as its first step
             // unless a background pass held the coordinator and it bailed. If
-            // the opening refresh never actually started, re-arm so the
-            // `isRefreshing` retry (or the next tick) runs it once free.
-            if wasOpeningRefresh, lastRefreshStartedAt == stampBeforeRefresh {
-                needsOpeningRefresh = true
+            // the opening refresh never actually started, retry so the
+            // `isRefreshing` change (or the next tick) runs it once free.
+            if wasOpeningRefresh, needsOpeningRefresh {
                 evaluate()
             }
         }

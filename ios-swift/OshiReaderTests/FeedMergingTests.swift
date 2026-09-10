@@ -1182,6 +1182,59 @@ final class FeedMergingTests: XCTestCase {
     }
 
     @MainActor
+    func testDrainIgnoresAnotherProfilesPendingNotifications() async throws {
+        let previousQuietHours = QuietHoursSettings.current()
+        QuietHoursSettings(enabled: false, startMinuteOfDay: 1320, endMinuteOfDay: 480).save()
+        defer { previousQuietHours.save() }
+
+        let suiteName = "FeedMergingTests.notification-profiles.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let profileA = UUID()
+        let profileB = UUID()
+        var activeProfile = profileA
+        var now = Date(timeIntervalSince1970: 1_800_000_000)
+        let center = MockNotificationCenter(status: .authorized)
+        let manager = NotificationManager(
+            center: center,
+            notificationQueueDefaults: defaults,
+            notificationQueueProfileIDProvider: { activeProfile },
+            nowProvider: { now }
+        )
+        let term = WatchTerm(id: "shared-term", keyword: "Shared", notify_on_new: true)
+        func item(_ id: String) -> FeedItem {
+            FeedItem(
+                id: id, platform: "news", url: "https://example.com/\(id)", title: id,
+                content_text: nil, author: nil, thumbnail_url: nil, media_type: "article",
+                published_at: ISO8601DateFormatter().string(from: now),
+                watch_term_keyword: term.keyword, fetched_at: ISO8601DateFormatter().string(from: now)
+            )
+        }
+
+        // Profile A schedules a burst plus a staggered tail.
+        await manager.notifyForNewItems(
+            (1...6).map { item("a\($0)") }, terms: [term], includeAttachments: false
+        )
+        XCTAssertEqual(center.requests.filter { $0.trigger != nil }.count, 3)
+
+        // The active profile changes without clearing A's pending requests
+        // (e.g. deleting the active profile).
+        activeProfile = profileB
+        now = now.addingTimeInterval(1)
+
+        await manager.notifyForNewItems([item("b1")], terms: [term], includeAttachments: false)
+        let b1 = try XCTUnwrap(center.requests.first {
+            $0.identifier == "oshireader-new-term-shared-term-b1"
+        })
+        XCTAssertNil(
+            b1.trigger,
+            "profile B's first item should fire immediately despite profile A's still-pending tail"
+        )
+    }
+
+    @MainActor
     func testNotificationQueueUsesRecordedAbsoluteDeliveryAcrossLaterDrains() async throws {
         let previousQuietHours = QuietHoursSettings.current()
         QuietHoursSettings(enabled: false, startMinuteOfDay: 22 * 60, endMinuteOfDay: 8 * 60).save()

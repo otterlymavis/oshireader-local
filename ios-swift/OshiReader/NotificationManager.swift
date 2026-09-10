@@ -494,6 +494,7 @@ final class NotificationManager: ObservableObject {
     private static let individualNotificationQueueKey = "individual_notification_queue"
     private static let individualNotificationIdentifierPrefix = "oshireader-new-term-"
     private static let scheduledDeliveryAtUserInfoKey = "oshireader_local_scheduled_delivery_at"
+    private static let profileIDUserInfoKey = "oshireader_local_profile_id"
 
     var queuedIndividualNotificationCount: Int {
         loadNotificationQueueForCurrentProfileIfNeeded()
@@ -532,8 +533,17 @@ final class NotificationManager: ObservableObject {
         guard availableSlots > 0 else { return }
 
         let now = nowProvider()
-        let managedPending = pending.filter {
-            $0.identifier.hasPrefix(Self.individualNotificationIdentifierPrefix)
+        let managedPending = pending.filter { request in
+            guard request.identifier.hasPrefix(Self.individualNotificationIdentifierPrefix) else { return false }
+            // A request tagged for another profile — possible after deleting the
+            // active profile, which swaps the active id without a full switch —
+            // must not seed this profile's spacing cursor or draw down its burst
+            // budget. Untagged requests predate the tag and belong to whatever
+            // profile was active when they were scheduled, i.e. this one.
+            if let taggedProfile = request.content.userInfo[Self.profileIDUserInfoKey] as? String {
+                return taggedProfile == notificationQueueProfileID.uuidString
+            }
+            return true
         }
         // `UNTimeIntervalNotificationTrigger.nextTriggerDate()` is relative to
         // the time it is queried, not the time the request was originally
@@ -557,24 +567,30 @@ final class NotificationManager: ObservableObject {
             .compactMap { $0 }.max() ?? now.addingTimeInterval(-Self.individualDeliverySpacing)
 
         // How many of this drain's alerts may skip the inter-item spacing and
-        // fire right away. Requests still scheduled ahead of `now` (a backlog
-        // that is mid-delivery) and a very recent immediate send both draw the
-        // allowance down, so two refreshes seconds apart can't each release a
-        // fresh burst; it refills after roughly `burst * spacing` of quiet.
-        var immediateBudget = Self.immediateDeliveryBurst
-        immediateBudget -= managedPending.filter { request in
+        // fire right away.
+        var immediateBudget: Int
+        let staggeredTailPending = managedPending.contains { request in
             guard let timestamp = request.content.userInfo[Self.scheduledDeliveryAtUserInfoKey] as? TimeInterval
             else { return false }
             return Date(timeIntervalSince1970: timestamp) > now
-        }.count
-        if let recentDelivery {
-            let elapsed = now.timeIntervalSince(recentDelivery)
-            let cooldown = Double(Self.immediateDeliveryBurst) * Self.individualDeliverySpacing
-            if elapsed >= 0, elapsed < cooldown {
-                immediateBudget -= Self.immediateDeliveryBurst - Int(elapsed / Self.individualDeliverySpacing)
-            }
         }
-        immediateBudget = max(0, immediateBudget)
+        if staggeredTailPending {
+            // A staggered batch is still being delivered — new items join its
+            // tail instead of jumping the line with an instant banner.
+            immediateBudget = 0
+        } else if let lastIndividualDeliveryDate, lastIndividualDeliveryDate <= now,
+                  now.timeIntervalSince(lastIndividualDeliveryDate)
+                    < Double(Self.immediateDeliveryBurst) * Self.individualDeliverySpacing {
+            // The previous burst has fully landed, but only just. Taper the
+            // allowance back one slot per `individualDeliverySpacing`, so two
+            // refreshes moments apart can't each fire a fresh burst while one
+            // well afterwards still gets all three.
+            immediateBudget = Int(
+                now.timeIntervalSince(lastIndividualDeliveryDate) / Self.individualDeliverySpacing
+            )
+        } else {
+            immediateBudget = Self.immediateDeliveryBurst
+        }
 
         while availableSlots > 0, let queued = queuedIndividualNotifications.first {
             guard !Task.isCancelled, generation == localNotificationGeneration else { return }
@@ -658,6 +674,9 @@ final class NotificationManager: ObservableObject {
             content.attachments = [attachment]
         }
         content.userInfo = notificationUserInfo(for: item)
+        // Tag the owning profile so a later drain on a different profile (after
+        // deleting the active one) doesn't count this request as its own.
+        content.userInfo[Self.profileIDUserInfoKey] = notificationQueueProfileID.uuidString
         content.threadIdentifier = queued.identifier
         content.targetContentIdentifier = item.id
         return content
