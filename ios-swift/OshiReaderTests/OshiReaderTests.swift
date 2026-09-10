@@ -2584,7 +2584,8 @@ final class OshiReaderTests: XCTestCase {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [MockURLProtocol.self]
         let session = URLSession(configuration: configuration)
-        let client = BackendClient(session: session)
+        let clock = TestMonotonicClock(100)
+        let client = BackendClient(session: session, monotonicNow: { clock.now() })
         var requestCount = 0
         MockURLProtocol.handler = { request in
             requestCount += 1

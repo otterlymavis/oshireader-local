@@ -123,7 +123,6 @@ struct FeedView: View {
     @State private var mediaFilter: String = "all" // "all" | "media_only"
     @State private var daysFilter: Int = 30
     
-    @State private var hasLoadedOnce = false
     @State private var displayedCount: Int = 20
     @State private var cachedFilteredItems: [FeedItem]
     @State private var cachedVisibleItems: [FeedItem]
@@ -369,14 +368,6 @@ struct FeedView: View {
         .onChange(of: db.savedPages) { _, newValue in savedItemIds = Set(newValue.map(\.id)) }
         .onAppear {
             rebuildFeedCache()
-            guard !hasLoadedOnce else { return }
-            hasLoadedOnce = true
-            Task {
-                // First launch with terms but no cached items → pull an initial feed.
-                if db.feedItems.isEmpty, !db.terms.isEmpty {
-                    await refreshFeed()
-                }
-            }
         }
         .modifier(ForegroundAutoRefresh(
             lastRefreshStartedAt: lastRefreshStartedAt,
