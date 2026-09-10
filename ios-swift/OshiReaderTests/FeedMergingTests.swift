@@ -19,6 +19,15 @@ final class FeedMergingTests: XCTestCase {
         db.hiddenItems.removeAll()
         db.compositions.removeAll()
         db.setSubscribedPlatforms(platforms: ["news", "tver", "youtube", "yahoonews", "custom"])
+
+        // NotificationManager persists its individual-notification queue and the
+        // last-delivery spacing anchor into `.standard`. Clear both so a test
+        // that builds a manager on the default store can't inherit another
+        // test's staggered-delivery state.
+        let profileID = LocalProfileStore.shared.currentProfileIDThreadSafe
+        for key in ["individual_notification_queue", "individual_notification_last_delivery"] {
+            UserDefaults.standard.removeObject(forKey: LocalProfileStore.defaultsKey(key, profileID: profileID))
+        }
     }
 
     override func tearDownWithError() throws {
@@ -1113,6 +1122,66 @@ final class FeedMergingTests: XCTestCase {
     }
 
     @MainActor
+    func testImmediateBurstCooldownSurvivesRelaunch() async throws {
+        let previousQuietHours = QuietHoursSettings.current()
+        QuietHoursSettings(enabled: false, startMinuteOfDay: 1320, endMinuteOfDay: 480).save()
+        defer { previousQuietHours.save() }
+
+        let suiteName = "FeedMergingTests.notification-cooldown.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let profileID = UUID()
+
+        var now = Date(timeIntervalSince1970: 1_800_000_000)
+        let center = MockNotificationCenter(status: .authorized)
+        func makeManager() -> NotificationManager {
+            NotificationManager(
+                center: center,
+                notificationQueueDefaults: defaults,
+                notificationQueueProfileIDProvider: { profileID },
+                nowProvider: { now }
+            )
+        }
+        let term = WatchTerm(id: "cooldown", keyword: "Cooldown", notify_on_new: true)
+        func item(_ id: String) -> FeedItem {
+            FeedItem(
+                id: id, platform: "news", url: "https://example.com/\(id)", title: id,
+                content_text: nil, author: nil, thumbnail_url: nil, media_type: "article",
+                published_at: ISO8601DateFormatter().string(from: now),
+                watch_term_keyword: term.keyword, fetched_at: ISO8601DateFormatter().string(from: now)
+            )
+        }
+
+        // First refresh spends the whole immediate burst with no staggered tail.
+        await makeManager().notifyForNewItems(
+            [item("a"), item("b"), item("c")], terms: [term], includeAttachments: false
+        )
+        XCTAssertEqual(center.requests.filter { $0.trigger == nil }.count, 3)
+
+        // Model iOS delivering all three (they leave the pending queue) and
+        // terminating the app moments later.
+        center.removeAllPendingNotificationRequests()
+        now = now.addingTimeInterval(2)
+
+        // A fresh manager (relaunch) reloads the persisted delivery anchor, so
+        // the next refresh inside the cooldown still staggers instead of
+        // releasing a second immediate burst.
+        await makeManager().notifyForNewItems([item("d")], terms: [term], includeAttachments: false)
+        let scheduled = try XCTUnwrap(center.requests.first {
+            $0.identifier == "oshireader-new-term-cooldown-d"
+        })
+        XCTAssertNotNil(
+            scheduled.trigger,
+            "a relaunch within the cooldown window must not release a fresh instant burst"
+        )
+        XCTAssertEqual(
+            try XCTUnwrap(scheduled.trigger as? UNTimeIntervalNotificationTrigger).timeInterval,
+            2, accuracy: 0.01
+        )
+    }
+
+    @MainActor
     func testNotificationQueueUsesRecordedAbsoluteDeliveryAcrossLaterDrains() async throws {
         let previousQuietHours = QuietHoursSettings.current()
         QuietHoursSettings(enabled: false, startMinuteOfDay: 22 * 60, endMinuteOfDay: 8 * 60).save()
@@ -1238,9 +1307,9 @@ final class FeedMergingTests: XCTestCase {
         }
         XCTAssertEqual(intervals.count, 2)
         XCTAssertGreaterThan(intervals[0], 0)
-        // Both items are within the immediate burst, so they are released
-        // together the moment the quiet-hours window ends.
-        XCTAssertEqual(intervals[1] - intervals[0], 0, accuracy: 0.01)
+        // Items held for the quiet-hours window don't spend the immediate
+        // burst — they still trickle out one spacing apart after it ends.
+        XCTAssertEqual(intervals[1] - intervals[0], 4, accuracy: 0.01)
     }
 
     @MainActor

@@ -56,10 +56,22 @@ struct ForegroundAutoRefresh: ViewModifier {
             lastRefreshAt: lastRefreshStartedAt,
             now: Date()
         ) else { return }
+        let wasOpeningRefresh = needsOpeningRefresh
+        let stampBeforeRefresh = lastRefreshStartedAt
         needsOpeningRefresh = false
         // Don't stamp the interval anchor here — `performRefresh` (refreshFeed)
         // re-checks `isRefreshing` and may no-op. Letting it be the only writer
         // means a skipped run doesn't burn the whole interval.
-        Task { await performRefresh() }
+        Task { @MainActor in
+            await performRefresh()
+            // `refreshFeed` advances `lastRefreshStartedAt` as its first step
+            // unless a background pass held the coordinator and it bailed. If
+            // the opening refresh never actually started, re-arm so the
+            // `isRefreshing` retry (or the next tick) runs it once free.
+            if wasOpeningRefresh, lastRefreshStartedAt == stampBeforeRefresh {
+                needsOpeningRefresh = true
+                evaluate()
+            }
+        }
     }
 }

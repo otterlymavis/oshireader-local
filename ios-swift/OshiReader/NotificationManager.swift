@@ -110,6 +110,10 @@ final class NotificationManager: ObservableObject {
             defaults: notificationQueueDefaults,
             profileID: initialQueueProfileID
         )
+        self.lastIndividualDeliveryDate = Self.loadLastIndividualDeliveryDate(
+            defaults: notificationQueueDefaults,
+            profileID: initialQueueProfileID
+        )
         self.lastRegisteredDeviceToken = initialRegisteredDeviceToken ?? registeredTokenProvider()
 
         // Migration cleanup does not require notification authorization. Run it
@@ -334,6 +338,7 @@ final class NotificationManager: ObservableObject {
         queuedIndividualNotifications.removeAll()
         lastIndividualDeliveryDate = nil
         persistQueuedIndividualNotifications()
+        persistLastIndividualDeliveryDate()
         QuietHoursDigestState.clear(defaults: notificationQueueDefaults)
         center.removeAllPendingNotificationRequests()
         center.removeAllDeliveredNotifications()
@@ -580,7 +585,12 @@ final class NotificationManager: ObservableObject {
             // trigger on the actual submission time so a slow first attachment
             // cannot turn the rest of the batch into immediate notifications.
             let schedulingNow = nowProvider()
-            let spacingFloor = immediateBudget > 0
+            // The burst shortcut only applies to items ready to fire now.
+            // Anything held for a future `notBefore` (quiet hours) still
+            // staggers off `deliveryCursor` so a held-back batch is released
+            // gradually, not as one clump when the window opens.
+            let usesImmediateBurst = immediateBudget > 0 && queued.notBefore <= schedulingNow
+            let spacingFloor = usesImmediateBurst
                 ? schedulingNow
                 : deliveryCursor.addingTimeInterval(Self.individualDeliverySpacing)
             let earliestDelivery = max(queued.notBefore, max(spacingFloor, schedulingNow))
@@ -617,7 +627,8 @@ final class NotificationManager: ObservableObject {
                 availableSlots -= 1
                 deliveryCursor = deliveryDate
                 lastIndividualDeliveryDate = deliveryDate
-                if immediateBudget > 0 { immediateBudget -= 1 }
+                persistLastIndividualDeliveryDate()
+                if usesImmediateBurst { immediateBudget -= 1 }
             } catch {
                 AppLogger.notifications.error("Notification scheduling failed for \(queued.item.watch_term_keyword): \(error.localizedDescription)")
                 return
@@ -660,6 +671,10 @@ final class NotificationManager: ObservableObject {
             defaults: notificationQueueDefaults,
             profileID: currentProfileID
         )
+        lastIndividualDeliveryDate = Self.loadLastIndividualDeliveryDate(
+            defaults: notificationQueueDefaults,
+            profileID: currentProfileID
+        )
     }
 
     private func persistQueuedIndividualNotifications() {
@@ -684,8 +699,33 @@ final class NotificationManager: ObservableObject {
         return (try? JSONDecoder().decode([QueuedIndividualNotification].self, from: data)) ?? []
     }
 
+    /// The spacing anchor is kept next to the queue so an app relaunch (or a
+    /// background wake) inside the cooldown window can't hand out a second
+    /// fresh immediate burst on top of one it already delivered.
+    private func persistLastIndividualDeliveryDate() {
+        let key = Self.lastIndividualDeliveryStorageKey(profileID: notificationQueueProfileID)
+        if let lastIndividualDeliveryDate {
+            notificationQueueDefaults.set(lastIndividualDeliveryDate.timeIntervalSince1970, forKey: key)
+        } else {
+            notificationQueueDefaults.removeObject(forKey: key)
+        }
+    }
+
+    private static func loadLastIndividualDeliveryDate(
+        defaults: UserDefaults,
+        profileID: UUID
+    ) -> Date? {
+        let key = lastIndividualDeliveryStorageKey(profileID: profileID)
+        guard defaults.object(forKey: key) != nil else { return nil }
+        return Date(timeIntervalSince1970: defaults.double(forKey: key))
+    }
+
     private static func notificationQueueStorageKey(profileID: UUID) -> String {
         LocalProfileStore.defaultsKey(individualNotificationQueueKey, profileID: profileID)
+    }
+
+    private static func lastIndividualDeliveryStorageKey(profileID: UUID) -> String {
+        LocalProfileStore.defaultsKey("individual_notification_last_delivery", profileID: profileID)
     }
 
     private static func limitedAlertText(_ value: String, limit: Int) -> String {
