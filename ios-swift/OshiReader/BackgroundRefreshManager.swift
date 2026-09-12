@@ -42,9 +42,19 @@ final class BackgroundRefreshManager {
 
     private init() {}
 
+    private static let lastCompletedAtDefaultsKey = LocalProfileStore.defaultsKey("background_refresh.last_completed_at")
+
     static var lastCompletedAt: Date? {
-        let timestamp = UserDefaults.standard.double(forKey: LocalProfileStore.defaultsKey("background_refresh.last_completed_at"))
+        let timestamp = UserDefaults.standard.double(forKey: lastCompletedAtDefaultsKey)
         return timestamp > 0 ? Date(timeIntervalSince1970: timestamp) : nil
+    }
+
+    /// Stamps "the background task actually ran" independently of whether it
+    /// found anything to do — a foreground refresh covering the wake (below)
+    /// still means iOS invoked the task, so it must count too, not just the
+    /// path that reaches `LocalRefreshCoordinator.refreshIfIdle`.
+    private static func recordCompletion() {
+        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: lastCompletedAtDefaultsKey)
     }
 
     func register() {
@@ -84,6 +94,7 @@ final class BackgroundRefreshManager {
         // nil map to `.failed` — repeated spurious `.failed` results make iOS
         // throttle silent-push delivery and background execution.
         if LocalRefreshCoordinator.shared.isRefreshing {
+            Self.recordCompletion()
             return .noData
         }
 
@@ -128,7 +139,7 @@ final class BackgroundRefreshManager {
             return .failed
         }
         guard result.completion == .completed else { return .failed }
-        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: LocalProfileStore.defaultsKey("background_refresh.last_completed_at"))
+        Self.recordCompletion()
         guard result.succeeded else { return .failed }
         return result.addedCount > 0 ? .newData : .noData
     }
