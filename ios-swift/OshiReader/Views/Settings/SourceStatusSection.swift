@@ -24,6 +24,24 @@ struct SourceStatusSummarySection: View {
             .foregroundColor(theme.colors.textMuted)
             .accessibilityIdentifier("settings.refreshStatus")
 
+            // Separate from the line above: that one reflects *any* refresh
+            // (foreground included), so it can look current even if the OS
+            // never actually woke the app in the background. This reads only
+            // `BackgroundRefreshManager`'s own completion stamp, so it's the
+            // one place to confirm whether `BGAppRefreshTask` itself ran —
+            // iOS decides the timing, not the app, and it can take hours.
+            HStack(spacing: 6) {
+                Image(systemName: "clock.arrow.circlepath")
+                    .font(.caption2)
+                    .accessibilityHidden(true)
+                Text(backgroundRefreshStatusText)
+                    .font(.caption)
+                    .lineLimit(1)
+                Spacer()
+            }
+            .foregroundColor(theme.colors.textMuted)
+            .accessibilityIdentifier("settings.backgroundRefreshStatus")
+
             if !refreshDiagnostics.visibleSourceHealthSummaries.isEmpty || !refreshDiagnostics.sourceStatuses.isEmpty {
                 Button {
                     showingDetail = true
@@ -54,6 +72,26 @@ struct SourceStatusSummarySection: View {
                     )
                 }
             }
+        }
+    }
+
+    private var backgroundRefreshStatusText: String {
+        guard let completedAt = BackgroundRefreshManager.lastCompletedAt else {
+            return i18n.t("backgroundRefreshNeverRun")
+        }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.locale = Locale(identifier: localeIdentifier)
+        formatter.unitsStyle = .short
+        let relative = formatter.localizedString(for: completedAt, relativeTo: Date())
+        return i18n.t("backgroundRefreshLastRun").replacingOccurrences(of: "{time}", with: relative)
+    }
+
+    private var localeIdentifier: String {
+        switch i18n.lang {
+        case "zh-TW": return "zh_Hant_TW"
+        case "zh-CN": return "zh_Hans_CN"
+        case "ja": return "ja_JP"
+        default: return "en_US"
         }
     }
 }

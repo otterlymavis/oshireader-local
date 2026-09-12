@@ -486,11 +486,13 @@ final class NotificationManager: ObservableObject {
 
     private static let alertSubtitleLimit = 50
     private static let alertBodyLimit = 100
-    /// The first few ready items in a drain fire with no artificial delay so
-    /// alerts track real time; every item after that is spaced this far apart
-    /// so a large burst still arrives gradually instead of all at once.
-    private static let individualDeliverySpacing: TimeInterval = 4
-    private static let immediateDeliveryBurst = 3
+    /// The very first ready item in a drain fires with no artificial delay so
+    /// an alert tracks real time; every item after that is spaced this far
+    /// apart so a pile of new items visibly trickles in instead of landing as
+    /// one clump. A single instant item plus a wide gap reads as staggered;
+    /// three quick ones 4s apart did not.
+    private static let individualDeliverySpacing: TimeInterval = 15
+    private static let immediateDeliveryBurst = 1
     private static let individualNotificationQueueKey = "individual_notification_queue"
     private static let individualNotificationIdentifierPrefix = "oshireader-new-term-"
     private static let scheduledDeliveryAtUserInfoKey = "oshireader_local_scheduled_delivery_at"
@@ -581,10 +583,10 @@ final class NotificationManager: ObservableObject {
         } else if let lastIndividualDeliveryDate, lastIndividualDeliveryDate <= now,
                   now.timeIntervalSince(lastIndividualDeliveryDate)
                     < Double(Self.immediateDeliveryBurst) * Self.individualDeliverySpacing {
-            // The previous burst has fully landed, but only just. Taper the
-            // allowance back one slot per `individualDeliverySpacing`, so two
-            // refreshes moments apart can't each fire a fresh burst while one
-            // well afterwards still gets all three.
+            // The previous instant delivery has fully landed, but only just.
+            // Taper the allowance back in per `individualDeliverySpacing`, so
+            // two refreshes moments apart can't each fire a fresh instant
+            // item while one well afterwards still gets it.
             immediateBudget = Int(
                 now.timeIntervalSince(lastIndividualDeliveryDate) / Self.individualDeliverySpacing
             )

@@ -177,6 +177,18 @@ class I18nManager: ObservableObject {
             "zh-TW": "來源狀態",
             "zh-CN": "来源状态"
         ],
+        "backgroundRefreshNeverRun": [
+            "en": "Background refresh: hasn't run yet — iOS schedules it, timing varies",
+            "ja": "バックグラウンド更新：まだ実行されていません（タイミングはiOSが決定します）",
+            "zh-TW": "背景重新整理：尚未執行過（時機由 iOS 決定）",
+            "zh-CN": "后台刷新：尚未运行过（时机由 iOS 决定）"
+        ],
+        "backgroundRefreshLastRun": [
+            "en": "Background refresh: last ran {time}",
+            "ja": "バックグラウンド更新：前回の実行 {time}",
+            "zh-TW": "背景重新整理：上次執行 {time}",
+            "zh-CN": "后台刷新：上次运行 {time}"
+        ],
         "hostedSourceStatus": [
             "en": "Hosted Source Status",
             "ja": "ホスト型ソースの状態",
