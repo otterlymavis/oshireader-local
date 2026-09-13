@@ -1118,6 +1118,45 @@ final class FeedMergingTests: XCTestCase {
     }
 
     @MainActor
+    func testGroupedNotificationMergesOverlappingCallInsteadOfDuplicating() async throws {
+        let previousQuietHours = QuietHoursSettings.current()
+        QuietHoursSettings(enabled: false, startMinuteOfDay: 22 * 60, endMinuteOfDay: 8 * 60).save()
+        defer { previousQuietHours.save() }
+        let previousDelivery = NotificationDeliverySettings.current()
+        NotificationDeliverySettings(groupedByKeyword: true).save()
+        defer { previousDelivery.save() }
+
+        let center = MockNotificationCenter(status: .authorized)
+        // Zero pending capacity leaves the first call's grouped entry queued
+        // but never actually handed to `center.add`, simulating a second,
+        // overlapping call (e.g. two un-awaited merge notifications from the
+        // same refresh) landing while the first is still in flight.
+        let manager = NotificationManager(center: center, maximumPendingNotificationRequests: 0)
+        let term = WatchTerm(id: "grouped-overlap", keyword: "Grouped Overlap Oshi", notify_on_new: true)
+        func item(_ index: Int) -> FeedItem {
+            FeedItem(
+                id: "news:grouped-overlap-\(index)", platform: "news", url: "https://example.com/grouped-overlap-\(index)",
+                title: "Grouped overlap item \(index)", content_text: nil, author: nil, thumbnail_url: nil,
+                media_type: "article",
+                published_at: ISO8601DateFormatter().string(from: Date().addingTimeInterval(TimeInterval(index))),
+                watch_term_keyword: term.keyword,
+                fetched_at: ISO8601DateFormatter().string(from: Date())
+            )
+        }
+
+        await manager.notifyForNewItems([item(1), item(2)], terms: [term], includeAttachments: false)
+        XCTAssertEqual(manager.queuedIndividualNotificationCount, 1)
+
+        // A genuinely new item 3 arrives for the same keyword before the
+        // first grouped entry drains. It must extend that entry rather than
+        // enqueue a second, overlapping one anchored on item 3 alone — the
+        // pre-fix behavior, since the queued identifier shifts with the
+        // anchor and no longer matches the still-queued entry.
+        await manager.notifyForNewItems([item(3)], terms: [term], includeAttachments: false)
+        XCTAssertEqual(manager.queuedIndividualNotificationCount, 1)
+    }
+
+    @MainActor
     func testNotificationQueuePreservesOverflowUntilPendingCapacityIsAvailable() async throws {
         let previousQuietHours = QuietHoursSettings.current()
         QuietHoursSettings(enabled: false, startMinuteOfDay: 22 * 60, endMinuteOfDay: 8 * 60).save()

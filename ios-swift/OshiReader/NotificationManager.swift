@@ -529,14 +529,30 @@ final class NotificationManager: ObservableObject {
             }
             for keyword in keywordOrder {
                 guard let term = notifiedTermsByKeyword[keyword],
-                      let oldestFirst = itemsByKeyword[keyword], !oldestFirst.isEmpty else { continue }
-                let newestFirst = Array(oldestFirst.reversed())
-                let anchor = newestFirst[0]
+                      let newItems = itemsByKeyword[keyword], !newItems.isEmpty else { continue }
+                // The queued/scheduled identifier is anchored on the newest
+                // item, so it can shift between calls (a newer item arrives
+                // and becomes the anchor). Merge into any not-yet-drained
+                // queued entry for this term by term id rather than by
+                // identifier — otherwise an overlapping call (e.g. two merge
+                // batches from the same refresh, both firing their own
+                // un-awaited `notifyForNewItems`) would fail to match the
+                // older entry's identifier and enqueue a second, overlapping
+                // banner instead of extending the first.
+                let existingIndex = queuedIndividualNotifications.firstIndex(where: { $0.termID == term.id })
+                let existingItems = existingIndex.map { queuedIndividualNotifications[$0].items } ?? []
+                var combinedByID: [String: FeedItem] = [:]
+                for item in existingItems + newItems { combinedByID[item.id] = item }
+                let combined = combinedByID.values.sorted(by: feedItemSortPrecedes)
+                guard let anchor = combined.first else { continue }
                 let notificationIdentifier = Self.notificationIdentifier(forTermID: term.id, itemID: anchor.id)
+                if let existingIndex, queuedIndividualNotifications[existingIndex].identifier != notificationIdentifier {
+                    queuedIndividualNotifications.remove(at: existingIndex)
+                }
                 enqueue(QueuedIndividualNotification(
                     identifier: notificationIdentifier,
                     termID: term.id,
-                    items: newestFirst,
+                    items: combined,
                     includeAttachments: includeAttachments,
                     notBefore: notBefore
                 ))
