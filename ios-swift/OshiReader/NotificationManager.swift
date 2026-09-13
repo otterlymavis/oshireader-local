@@ -28,7 +28,11 @@ extension UNUserNotificationCenter: NotificationCenterClient {
 private struct QueuedIndividualNotification: Codable, Equatable {
     let identifier: String
     let termID: String
-    let item: FeedItem
+    // Always at least one item, sorted newest-first. Individual delivery
+    // (`NotificationDeliverySettings.groupedByKeyword == false`) always queues
+    // exactly one; grouped delivery bundles every new match for the keyword
+    // into a single queued entry so it delivers as one banner.
+    let items: [FeedItem]
     let includeAttachments: Bool
     let notBefore: Date
 }
@@ -68,6 +72,15 @@ final class NotificationManager: ObservableObject {
     private var isDrainingIndividualNotifications = false
     private var lastIndividualDeliveryDate: Date?
     private var individualNotificationDrainWaiters: [CheckedContinuation<Void, Never>] = []
+    // Records every item id actually handed to `center.add(_:)`, keyed by its
+    // per-term notification identifier, so a later refresh can tell "already
+    // notified" apart from "new" independent of the OS's own pending/delivered
+    // state. That OS state alone isn't enough once grouping is on: a grouped
+    // banner only registers ONE identifier (the anchor item's) with Notification
+    // Center, so the other bundled items would look unseen again if they ever
+    // resurface (e.g. evicted by the feed cap, then re-ingested). Pruned to the
+    // same window LocalDB stops treating a resurfaced item as notifiable at all.
+    private var notifiedItemLedger: [String: Date] = [:]
 
     init(
         center: NotificationCenterClient = UNUserNotificationCenter.current(),
@@ -113,6 +126,11 @@ final class NotificationManager: ObservableObject {
         self.lastIndividualDeliveryDate = Self.loadLastIndividualDeliveryDate(
             defaults: notificationQueueDefaults,
             profileID: initialQueueProfileID
+        )
+        self.notifiedItemLedger = Self.loadNotifiedItemLedger(
+            defaults: notificationQueueDefaults,
+            profileID: initialQueueProfileID,
+            now: nowProvider()
         )
         self.lastRegisteredDeviceToken = initialRegisteredDeviceToken ?? registeredTokenProvider()
 
@@ -337,8 +355,10 @@ final class NotificationManager: ObservableObject {
         loadNotificationQueueForCurrentProfileIfNeeded()
         queuedIndividualNotifications.removeAll()
         lastIndividualDeliveryDate = nil
+        notifiedItemLedger.removeAll()
         persistQueuedIndividualNotifications()
         persistLastIndividualDeliveryDate()
+        persistNotifiedItemLedger()
         QuietHoursDigestState.clear(defaults: notificationQueueDefaults)
         center.removeAllPendingNotificationRequests()
         center.removeAllDeliveredNotifications()
@@ -350,6 +370,8 @@ final class NotificationManager: ObservableObject {
         queuedIndividualNotifications.removeAll { $0.termID == termID }
         persistQueuedIndividualNotifications()
         let prefix = Self.notificationIdentifierPrefix(forTermID: termID)
+        notifiedItemLedger = notifiedItemLedger.filter { !$0.key.hasPrefix(prefix) }
+        persistNotifiedItemLedger()
         let pendingIDs = await center.pendingNotificationRequests()
             .map(\.identifier)
             .filter { $0.hasPrefix(prefix) }
@@ -453,29 +475,100 @@ final class NotificationManager: ObservableObject {
 
         loadNotificationQueueForCurrentProfileIfNeeded()
         let pendingIDs = Set(await center.pendingNotificationRequests().map(\.identifier))
+        // An item that fell out of the feed cap (or reappears after a watch
+        // term/platform is re-added) looks brand new to the merge even though
+        // its deterministic term+item identifier already fired once. Pending
+        // requests alone don't catch that — once delivered, a request leaves
+        // `pendingNotificationRequests()` — so also skip anything still sitting
+        // in Notification Center as delivered. 5ch activity updates are the one
+        // case that legitimately reuses an already-delivered identifier (a
+        // fresh reply bump on the same thread), so they're exempt below.
+        let deliveredIDs = Set(await center.deliveredNotificationIdentifiers())
         guard !Task.isCancelled, generation == localNotificationGeneration else { return }
 
-        // Keep every match as an individual queued alert. Existing queued entries
-        // are replaced in place so a newer activity update keeps its position.
-        // A request already owned by Notification Center is left alone: removing
-        // and re-enqueuing it would move a duplicate behind genuinely new items
-        // and could consume the only newly available pending-request slot.
+        // A request already owned by Notification Center is left alone here:
+        // removing and re-enqueuing it would move a duplicate behind genuinely
+        // new items and could consume the only newly available pending-request
+        // slot. 5ch activity updates are the one case that legitimately reuses
+        // an already-fired identifier (a fresh reply bump on the same thread),
+        // so they're exempt from every dedup check below.
+        func alreadyNotified(_ item: FeedItem, identifier: String) -> Bool {
+            guard item.source != IngestionService.fiveChVerifiedActivitySource else { return false }
+            return pendingIDs.contains(identifier)
+                || deliveredIDs.contains(identifier)
+                || notifiedItemLedger[identifier] != nil
+        }
+
         let deliveryItems = matchingItems.sorted(by: feedItemSortPrecedes).reversed()
-        for item in deliveryItems {
-            guard let term = notifiedTermsByKeyword[item.watch_term_keyword] else { continue }
-            let notificationIdentifier = Self.notificationIdentifier(forTermID: term.id, itemID: item.id)
-            guard !pendingIDs.contains(notificationIdentifier) else { continue }
-            let queued = QueuedIndividualNotification(
-                identifier: notificationIdentifier,
-                termID: term.id,
-                item: item,
-                includeAttachments: includeAttachments,
-                notBefore: notBefore
-            )
-            if let existingIndex = queuedIndividualNotifications.firstIndex(where: { $0.identifier == notificationIdentifier }) {
+        let groupingEnabled = NotificationDeliverySettings.current(defaults: notificationQueueDefaults).groupedByKeyword
+
+        func enqueue(_ queued: QueuedIndividualNotification) {
+            if let existingIndex = queuedIndividualNotifications.firstIndex(where: { $0.identifier == queued.identifier }) {
                 queuedIndividualNotifications[existingIndex] = queued
             } else {
                 queuedIndividualNotifications.append(queued)
+            }
+        }
+
+        if groupingEnabled {
+            // One queued entry per keyword, bundling every fresh match from this
+            // call into a single banner. `deliveryItems` is oldest-first;
+            // reversing each keyword's slice puts the most recent item first so
+            // it anchors the identifier, subtitle, and attachment.
+            var itemsByKeyword: [String: [FeedItem]] = [:]
+            var keywordOrder: [String] = []
+            for item in deliveryItems {
+                guard notifiedTermsByKeyword[item.watch_term_keyword] != nil else { continue }
+                let term = notifiedTermsByKeyword[item.watch_term_keyword]!
+                let notificationIdentifier = Self.notificationIdentifier(forTermID: term.id, itemID: item.id)
+                guard !alreadyNotified(item, identifier: notificationIdentifier) else { continue }
+                if itemsByKeyword[item.watch_term_keyword] == nil {
+                    keywordOrder.append(item.watch_term_keyword)
+                }
+                itemsByKeyword[item.watch_term_keyword, default: []].append(item)
+            }
+            for keyword in keywordOrder {
+                guard let term = notifiedTermsByKeyword[keyword],
+                      let newItems = itemsByKeyword[keyword], !newItems.isEmpty else { continue }
+                // The queued/scheduled identifier is anchored on the newest
+                // item, so it can shift between calls (a newer item arrives
+                // and becomes the anchor). Merge into any not-yet-drained
+                // queued entry for this term by term id rather than by
+                // identifier — otherwise an overlapping call (e.g. two merge
+                // batches from the same refresh, both firing their own
+                // un-awaited `notifyForNewItems`) would fail to match the
+                // older entry's identifier and enqueue a second, overlapping
+                // banner instead of extending the first.
+                let existingIndex = queuedIndividualNotifications.firstIndex(where: { $0.termID == term.id })
+                let existingItems = existingIndex.map { queuedIndividualNotifications[$0].items } ?? []
+                var combinedByID: [String: FeedItem] = [:]
+                for item in existingItems + newItems { combinedByID[item.id] = item }
+                let combined = combinedByID.values.sorted(by: feedItemSortPrecedes)
+                guard let anchor = combined.first else { continue }
+                let notificationIdentifier = Self.notificationIdentifier(forTermID: term.id, itemID: anchor.id)
+                if let existingIndex, queuedIndividualNotifications[existingIndex].identifier != notificationIdentifier {
+                    queuedIndividualNotifications.remove(at: existingIndex)
+                }
+                enqueue(QueuedIndividualNotification(
+                    identifier: notificationIdentifier,
+                    termID: term.id,
+                    items: combined,
+                    includeAttachments: includeAttachments,
+                    notBefore: notBefore
+                ))
+            }
+        } else {
+            for item in deliveryItems {
+                guard let term = notifiedTermsByKeyword[item.watch_term_keyword] else { continue }
+                let notificationIdentifier = Self.notificationIdentifier(forTermID: term.id, itemID: item.id)
+                guard !alreadyNotified(item, identifier: notificationIdentifier) else { continue }
+                enqueue(QueuedIndividualNotification(
+                    identifier: notificationIdentifier,
+                    termID: term.id,
+                    items: [item],
+                    includeAttachments: includeAttachments,
+                    notBefore: notBefore
+                ))
             }
         }
         persistQueuedIndividualNotifications()
@@ -647,15 +740,27 @@ final class NotificationManager: ObservableObject {
                 lastIndividualDeliveryDate = deliveryDate
                 persistLastIndividualDeliveryDate()
                 if usesImmediateBurst { immediateBudget -= 1 }
+                // A grouped request only registers ITS OWN identifier (the
+                // newest item's) with Notification Center. Ledger every bundled
+                // item so the others don't look unseen again if they resurface.
+                for item in queued.items {
+                    notifiedItemLedger[Self.notificationIdentifier(forTermID: queued.termID, itemID: item.id)] = schedulingNow
+                }
+                persistNotifiedItemLedger()
             } catch {
-                AppLogger.notifications.error("Notification scheduling failed for \(queued.item.watch_term_keyword): \(error.localizedDescription)")
+                let keyword = queued.items.first?.watch_term_keyword ?? queued.termID
+                AppLogger.notifications.error("Notification scheduling failed for \(keyword): \(error.localizedDescription)")
                 return
             }
         }
     }
 
     private func notificationContent(for queued: QueuedIndividualNotification) async -> UNMutableNotificationContent {
-        let item = queued.item
+        // The anchor — always the newest item (`queued.items` is newest-first,
+        // enforced where each `QueuedIndividualNotification` is built). A
+        // grouped entry (`items.count > 1`) still names and links through this
+        // one item; the body just adds the count instead of repeating its text.
+        let item = queued.items[0]
         let content = UNMutableNotificationContent()
         content.title = item.watch_term_keyword
         let itemTitle = cleanDisplayText(item.title)
@@ -663,7 +768,9 @@ final class NotificationManager: ObservableObject {
         if let itemTitle, !itemTitle.isEmpty {
             content.subtitle = Self.limitedAlertText(itemTitle, limit: Self.alertSubtitleLimit)
         }
-        if let itemBody, !itemBody.isEmpty, itemBody != itemTitle {
+        if queued.items.count > 1 {
+            content.body = I18nManager.shared.tFormat("notificationGroupedCountFmt", queued.items.count)
+        } else if let itemBody, !itemBody.isEmpty, itemBody != itemTitle {
             content.body = Self.limitedAlertText(itemBody, limit: Self.alertBodyLimit)
         } else if content.subtitle.isEmpty {
             let fallback = item.url.isEmpty ? "1 new item found." : item.url
@@ -671,11 +778,12 @@ final class NotificationManager: ObservableObject {
         }
         content.sound = .default
         content.categoryIdentifier = Self.categoryIdentifier
-        if queued.includeAttachments,
+        if queued.items.count == 1, queued.includeAttachments,
            let attachment = await notificationAttachment(for: item) {
             content.attachments = [attachment]
         }
         content.userInfo = notificationUserInfo(for: item)
+        content.userInfo["new_count"] = queued.items.count
         // Tag the owning profile so a later drain on a different profile (after
         // deleting the active one) doesn't count this request as its own.
         content.userInfo[Self.profileIDUserInfoKey] = notificationQueueProfileID.uuidString
@@ -695,6 +803,11 @@ final class NotificationManager: ObservableObject {
         lastIndividualDeliveryDate = Self.loadLastIndividualDeliveryDate(
             defaults: notificationQueueDefaults,
             profileID: currentProfileID
+        )
+        notifiedItemLedger = Self.loadNotifiedItemLedger(
+            defaults: notificationQueueDefaults,
+            profileID: currentProfileID,
+            now: nowProvider()
         )
     }
 
@@ -747,6 +860,38 @@ final class NotificationManager: ObservableObject {
 
     private static func lastIndividualDeliveryStorageKey(profileID: UUID) -> String {
         LocalProfileStore.defaultsKey("individual_notification_last_delivery", profileID: profileID)
+    }
+
+    // Mirrors `LocalDB.maxNotifiableItemAge`: past this age a resurfaced item
+    // is never notifiable again anyway (the merge's own age guard drops it),
+    // so the ledger doesn't need to remember it for longer than that.
+    private static let notifiedItemLedgerRetention: TimeInterval = 3 * 24 * 60 * 60
+
+    private func persistNotifiedItemLedger() {
+        let key = Self.notifiedItemLedgerStorageKey(profileID: notificationQueueProfileID)
+        guard !notifiedItemLedger.isEmpty else {
+            notificationQueueDefaults.removeObject(forKey: key)
+            return
+        }
+        let raw = notifiedItemLedger.mapValues { $0.timeIntervalSince1970 }
+        notificationQueueDefaults.set(raw, forKey: key)
+    }
+
+    private static func loadNotifiedItemLedger(
+        defaults: UserDefaults,
+        profileID: UUID,
+        now: Date
+    ) -> [String: Date] {
+        let key = notifiedItemLedgerStorageKey(profileID: profileID)
+        guard let raw = defaults.dictionary(forKey: key) as? [String: TimeInterval] else { return [:] }
+        return raw.compactMapValues { timestamp -> Date? in
+            let notifiedAt = Date(timeIntervalSince1970: timestamp)
+            return now.timeIntervalSince(notifiedAt) <= notifiedItemLedgerRetention ? notifiedAt : nil
+        }
+    }
+
+    private static func notifiedItemLedgerStorageKey(profileID: UUID) -> String {
+        LocalProfileStore.defaultsKey("notified_item_ledger", profileID: profileID)
     }
 
     private static func limitedAlertText(_ value: String, limit: Int) -> String {

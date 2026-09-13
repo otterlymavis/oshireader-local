@@ -1007,6 +1007,24 @@ class I18nManager: ObservableObject {
             "zh-TW": "已啟用 %d 個追蹤關鍵字，更新可能需要更長時間。升級至 OshiReader+ 以加快更新速度。",
             "zh-CN": "已启用 %d 个追踪关键字,更新可能需要更长时间。升级至 OshiReader+ 以加快更新速度。"
         ],
+        "groupNotificationsToggle": [
+            "en": "Group Notifications",
+            "ja": "通知をまとめる",
+            "zh-TW": "合併通知",
+            "zh-CN": "合并通知"
+        ],
+        "groupNotificationsFooter": [
+            "en": "When on, all new items for a keyword since your last check arrive as one banner instead of one per item.",
+            "ja": "オンにすると、前回確認してからのキーワードごとの新着はまとめて1件の通知として届きます。",
+            "zh-TW": "開啟後，同一關鍵字自上次查看以來的所有新項目會合併為一則通知，而非逐一發送。",
+            "zh-CN": "开启后，同一关键字自上次查看以来的所有新项目会合并为一条通知，而非逐一发送。"
+        ],
+        "notificationGroupedCountFmt": [
+            "en": "%d new items",
+            "ja": "新着%d件",
+            "zh-TW": "%d 則新項目",
+            "zh-CN": "%d 条新项目"
+        ],
         "quietHoursToggle": [
             "en": "Quiet Hours",
             "ja": "サイレント時間",

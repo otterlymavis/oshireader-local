@@ -53,6 +53,7 @@ struct NotificationSettingsView: View {
 
     @State private var quietHoursSettings = QuietHoursSettings.current()
     @State private var autoRefreshMinutes = AutoRefreshSettings.current().intervalMinutes
+    @State private var deliverySettings = NotificationDeliverySettings.current()
     @State private var currentBackgroundRefreshStatus = UIApplication.shared.backgroundRefreshStatus
 
     var body: some View {
@@ -125,6 +126,19 @@ struct NotificationSettingsView: View {
             }
 
             Section {
+                Toggle(i18n.t("groupNotificationsToggle"), isOn: Binding(
+                    get: { deliverySettings.groupedByKeyword },
+                    set: { deliverySettings.groupedByKeyword = $0; deliverySettings.save() }
+                ))
+                .tint(theme.colors.primary)
+                .accessibilityIdentifier("settings.groupNotificationsToggle")
+
+                Text(i18n.t("groupNotificationsFooter"))
+                    .font(.caption)
+                    .foregroundColor(theme.colors.textMuted)
+            }
+
+            Section {
                 Toggle(i18n.t("quietHoursToggle"), isOn: Binding(
                     get: { quietHoursSettings.enabled },
                     set: { quietHoursSettings.enabled = $0; quietHoursSettings.save() }
@@ -160,6 +174,7 @@ struct NotificationSettingsView: View {
             currentBackgroundRefreshStatus = UIApplication.shared.backgroundRefreshStatus
             quietHoursSettings = QuietHoursSettings.current()
             autoRefreshMinutes = AutoRefreshSettings.current().intervalMinutes
+            deliverySettings = NotificationDeliverySettings.current()
             Task { await notifications.refreshAuthorizationStatus() }
         }
         .onChange(of: scenePhase) { _, newPhase in
