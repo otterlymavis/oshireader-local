@@ -195,8 +195,21 @@ final class LocalRefreshCoordinator: ObservableObject {
     private var activeTask: Task<LocalRefreshResult, Never>?
     private var activeRequest: LocalRefreshRequest?
     private var generation = 0
-    private static let backgroundWorkBudget: TimeInterval = 8
+    // A background wake is rare and the OS only grants ~30s total; leave
+    // headroom under `BackgroundRefreshManager.operationDeadline` (25s) for
+    // `maintainFiveChIndex` (bounded by the same `backgroundUnitDeadline`)
+    // plus this loop. The loop's own continuation check below only starts a
+    // chunk when the remaining budget can fit one more `backgroundUnitDeadline`,
+    // so its wall time is bounded by `backgroundWorkBudget` itself, not
+    // `backgroundWorkBudget + backgroundUnitDeadline`.
+    private static let backgroundWorkBudget: TimeInterval = 16
     private static let backgroundUnitDeadline: TimeInterval = 7
+    // Units are independent network fetches (one term+platform, or one custom
+    // URL) — running a couple concurrently covers more of the rotation per
+    // wake instead of the previous strictly-serial one-at-a-time pass, without
+    // changing the per-unit timeout or the checkpointing granularity by more
+    // than a chunk.
+    private static let backgroundConcurrentUnits = 2
 
     private init() {}
 
@@ -423,83 +436,87 @@ final class LocalRefreshCoordinator: ObservableObject {
         let cooldown = RefreshDiagnostics.shared.sourcesInCooldown()
         var notificationBatch = BackgroundRefreshNotificationBatch(feedWasEmptyAtStart: db.feedItems.isEmpty)
 
-        backgroundLoop: for unit in plan.units {
+        var unitIndex = 0
+        backgroundLoop: while unitIndex < plan.units.count {
             guard !Task.isCancelled,
                   isCurrent(generation: generation, profileID: profileID),
-                  Date().timeIntervalSince(startedAt) < Self.backgroundWorkBudget else { break }
+                  Date().timeIntervalSince(startedAt) + Self.backgroundUnitDeadline <= Self.backgroundWorkBudget
+            else { break }
 
-            let unitResult: (items: [FeedItem], statuses: [SourceRefreshStatus], customCompleted: Bool)
+            let chunkEnd = min(unitIndex + Self.backgroundConcurrentUnits, plan.units.count)
+            let chunk = Array(plan.units[unitIndex..<chunkEnd])
+            // Shared across the chunk: every member starts at the same instant,
+            // so they share one fetch deadline rather than each getting its own
+            // clock re-based on however long its predecessor took.
             let unitDeadline = Date(timeIntervalSinceNow: Self.backgroundUnitDeadline)
-            switch unit {
-            case .source(let term, let platform):
-                if cooldown.contains(platform) {
-                    unitResult = ([], [SourceRefreshStatus(id: platform, outcome: .cooldown, itemCount: 0, queryCount: 0)], true)
-                } else {
-                    let report = await IngestionService.shared.ingestReport(
-                        term: term,
-                        platforms: [platform],
-                        maximumAliases: LocalRefreshRequest.background.maximumAliases,
-                        fetchScope: .background,
-                        transportAttemptLimit: 1,
-                        requestTimeoutCap: Self.backgroundUnitDeadline,
-                        requestDeadline: unitDeadline
-                    )
-                    guard !Task.isCancelled, isCurrent(generation: generation, profileID: profileID) else {
-                        break backgroundLoop
-                    }
-                    unitResult = (report.items, report.sourceStatuses, true)
-                }
-            case .custom(let customURL):
-                let custom = await fetchCustomURLs(
-                    db: db,
-                    customURLs: [customURL],
-                    requestTimeout: max(0.1, unitDeadline.timeIntervalSinceNow)
-                )
-                guard !Task.isCancelled, isCurrent(generation: generation, profileID: profileID) else {
-                    break backgroundLoop
-                }
-                unitResult = (custom.items, custom.statuses, custom.completed)
-            }
 
-            guard BackgroundRefreshCheckpoint.isValid(
-                sourceRevision: sourceRevision,
-                currentRevision: db.dataRevision,
-                completedAt: Date(),
-                deadline: unitDeadline
-            ) else { break backgroundLoop }
-            let mergeResult = unitResult.items.isEmpty
-                ? LocalDB.FeedMergeResult(addedCount: 0, didMutate: false)
-                : db.mergeItemsResult(
-                    newItems: unitResult.items,
-                    sourceRevision: sourceRevision,
-                    notificationHandler: { items, _ in
-                        notificationBatch.capture(items)
+            let fetchResults: [Int: (items: [FeedItem], statuses: [SourceRefreshStatus], customCompleted: Bool)] =
+                await withTaskGroup(
+                    of: (offset: Int, items: [FeedItem], statuses: [SourceRefreshStatus], customCompleted: Bool).self
+                ) { group in
+                    for (offset, unit) in chunk.enumerated() {
+                        group.addTask {
+                            let result = await self.fetchBackgroundUnit(unit, db: db, cooldown: cooldown, unitDeadline: unitDeadline)
+                            return (offset, result.items, result.statuses, result.customCompleted)
+                        }
                     }
-                )
-            if mergeResult.didMutate {
-                db.flushPendingFeedItemsSave()
+                    var collected: [Int: (items: [FeedItem], statuses: [SourceRefreshStatus], customCompleted: Bool)] = [:]
+                    for await outcome in group {
+                        collected[outcome.offset] = (outcome.items, outcome.statuses, outcome.customCompleted)
+                    }
+                    return collected
+                }
+
+            // One combined check for the whole chunk in place of the former
+            // per-unit checks — if it fails, nothing in this chunk merges and
+            // the checkpoint doesn't advance past the last fully-committed chunk.
+            guard !Task.isCancelled,
+                  isCurrent(generation: generation, profileID: profileID),
+                  BackgroundRefreshCheckpoint.isValid(
+                      sourceRevision: sourceRevision,
+                      currentRevision: db.dataRevision,
+                      completedAt: Date(),
+                      deadline: unitDeadline
+                  )
+            else { break backgroundLoop }
+
+            for (offset, unit) in chunk.enumerated() {
+                guard let unitResult = fetchResults[offset] else { continue }
+                let mergeResult = unitResult.items.isEmpty
+                    ? LocalDB.FeedMergeResult(addedCount: 0, didMutate: false)
+                    : db.mergeItemsResult(
+                        newItems: unitResult.items,
+                        sourceRevision: sourceRevision,
+                        notificationHandler: { items, _ in
+                            notificationBatch.capture(items)
+                        }
+                    )
+                if mergeResult.didMutate {
+                    db.flushPendingFeedItemsSave()
+                }
+                addedCount += mergeResult.addedCount
+                customCompleted = customCompleted && unitResult.customCompleted
+                if !unitResult.statuses.isEmpty {
+                    RefreshDiagnostics.shared.recordSourceStatuses(unitResult.statuses)
+                    // `persist: false` — the health history is re-encoded and
+                    // written to UserDefaults once after the loop
+                    // (`flushPendingHealthRecords`) rather than on every unit (O6).
+                    // `replacingRecordsSince: startedAt` makes each call rewrite
+                    // this refresh's records for the seen sources, so the final
+                    // in-memory state equals what a single end-of-loop call
+                    // produces.
+                    RefreshDiagnostics.shared.recordCompletedSourceStatuses(
+                        RefreshDiagnostics.shared.sourceStatuses,
+                        replacingRecordsSince: startedAt,
+                        persist: false
+                    )
+                    didRecordSourceStatuses = true
+                }
+                completedCount += 1
+                UserDefaults.standard.set(unit.stableID, forKey: completedUnitKey)
+                UserDefaults.standard.removeObject(forKey: legacyCursorKey)
             }
-            addedCount += mergeResult.addedCount
-            customCompleted = customCompleted && unitResult.customCompleted
-            if !unitResult.statuses.isEmpty {
-                RefreshDiagnostics.shared.recordSourceStatuses(unitResult.statuses)
-                // `persist: false` — the health history is re-encoded and
-                // written to UserDefaults once after the loop
-                // (`flushPendingHealthRecords`) rather than on every unit (O6).
-                // `replacingRecordsSince: startedAt` makes each call rewrite
-                // this refresh's records for the seen sources, so the final
-                // in-memory state equals what a single end-of-loop call
-                // produces.
-                RefreshDiagnostics.shared.recordCompletedSourceStatuses(
-                    RefreshDiagnostics.shared.sourceStatuses,
-                    replacingRecordsSince: startedAt,
-                    persist: false
-                )
-                didRecordSourceStatuses = true
-            }
-            completedCount += 1
-            UserDefaults.standard.set(unit.stableID, forKey: completedUnitKey)
-            UserDefaults.standard.removeObject(forKey: legacyCursorKey)
+            unitIndex = chunkEnd
         }
 
         // O6: single end-of-refresh write of the health history, covering both
@@ -614,6 +631,45 @@ final class LocalRefreshCoordinator: ObservableObject {
         guard !Task.isCancelled, isCurrent(generation: generation, profileID: profileID) else { return (false, 0, [], 0) }
         let addedCount = fetched.items.isEmpty ? 0 : db.mergeItems(newItems: fetched.items, sourceRevision: sourceRevision)
         return (fetched.completed, addedCount, fetched.statuses, fetched.cappedWorkCount)
+    }
+
+    /// Fetches one background rotation unit. Called concurrently (one child
+    /// task per chunk member) from `performBackground`'s task group — the
+    /// `.source` branch calls `IngestionService.shared` directly with no
+    /// actor-isolated state, and `.custom` awaits `self.fetchCustomURLs`,
+    /// which briefly hops back onto the main actor around its own network
+    /// await; either way the actual network wait happens off the main actor,
+    /// so running several of these concurrently overlaps their real latency
+    /// instead of serializing it.
+    private func fetchBackgroundUnit(
+        _ unit: BackgroundRefreshUnit,
+        db: LocalDB,
+        cooldown: Set<String>,
+        unitDeadline: Date
+    ) async -> (items: [FeedItem], statuses: [SourceRefreshStatus], customCompleted: Bool) {
+        switch unit {
+        case .source(let term, let platform):
+            if cooldown.contains(platform) {
+                return ([], [SourceRefreshStatus(id: platform, outcome: .cooldown, itemCount: 0, queryCount: 0)], true)
+            }
+            let report = await IngestionService.shared.ingestReport(
+                term: term,
+                platforms: [platform],
+                maximumAliases: LocalRefreshRequest.background.maximumAliases,
+                fetchScope: .background,
+                transportAttemptLimit: 1,
+                requestTimeoutCap: Self.backgroundUnitDeadline,
+                requestDeadline: unitDeadline
+            )
+            return (report.items, report.sourceStatuses, true)
+        case .custom(let customURL):
+            let custom = await fetchCustomURLs(
+                db: db,
+                customURLs: [customURL],
+                requestTimeout: max(0.1, unitDeadline.timeIntervalSinceNow)
+            )
+            return (custom.items, custom.statuses, custom.completed)
+        }
     }
 
     private func fetchCustomURLs(

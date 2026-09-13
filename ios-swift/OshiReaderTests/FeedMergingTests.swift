@@ -20,12 +20,19 @@ final class FeedMergingTests: XCTestCase {
         db.compositions.removeAll()
         db.setSubscribedPlatforms(platforms: ["news", "tver", "youtube", "yahoonews", "custom"])
 
-        // NotificationManager persists its individual-notification queue and the
-        // last-delivery spacing anchor into `.standard`. Clear both so a test
+        // NotificationManager persists its individual-notification queue, the
+        // last-delivery spacing anchor, and the notified-item ledger into
+        // `.standard`. Clear all three (plus the grouping toggle) so a test
         // that builds a manager on the default store can't inherit another
-        // test's staggered-delivery state.
+        // test's staggered-delivery state or have its items look "already
+        // notified" because an earlier test reused the same term/item ids.
         let profileID = LocalProfileStore.shared.currentProfileIDThreadSafe
-        for key in ["individual_notification_queue", "individual_notification_last_delivery"] {
+        for key in [
+            "individual_notification_queue",
+            "individual_notification_last_delivery",
+            "notified_item_ledger",
+            "notification_delivery_grouped_by_keyword",
+        ] {
             UserDefaults.standard.removeObject(forKey: LocalProfileStore.defaultsKey(key, profileID: profileID))
         }
     }
@@ -999,6 +1006,115 @@ final class FeedMergingTests: XCTestCase {
             390,
             accuracy: 0.1
         )
+    }
+
+    @MainActor
+    func testNotificationSkipsItemAlreadyDeliveredEvenAfterItLeavesPending() async throws {
+        let previousQuietHours = QuietHoursSettings.current()
+        QuietHoursSettings(enabled: false, startMinuteOfDay: 22 * 60, endMinuteOfDay: 8 * 60).save()
+        defer { previousQuietHours.save() }
+
+        let center = MockNotificationCenter(status: .authorized)
+        let manager = NotificationManager(center: center)
+        let term = WatchTerm(id: "resurface", keyword: "Resurface Oshi", notify_on_new: true)
+        let nowString = ISO8601DateFormatter().string(from: Date())
+        let item = FeedItem(
+            id: "news:resurface-1", platform: "news", url: "https://example.com/resurface-1",
+            title: "Resurfaced item", content_text: nil, author: nil, thumbnail_url: nil,
+            media_type: "article", published_at: nowString, watch_term_keyword: term.keyword,
+            fetched_at: nowString
+        )
+
+        // Delivered once already, then dropped from `pending` (as a real
+        // UNUserNotificationCenter would once it fires) while still sitting in
+        // Notification Center as delivered.
+        let identifier = "oshireader-new-term-resurface-news:resurface-1"
+        center.deliveredIdentifiers = [identifier]
+
+        // The item falls out of the feed cap and reappears in a later ingest,
+        // looking "new" to the merge again.
+        await manager.notifyForNewItems([item], terms: [term], includeAttachments: false)
+
+        XCTAssertTrue(center.requests.isEmpty)
+        XCTAssertEqual(manager.queuedIndividualNotificationCount, 0)
+    }
+
+    @MainActor
+    func testGroupedNotificationsBundleAllMatchesIntoOneBanner() async throws {
+        let previousQuietHours = QuietHoursSettings.current()
+        QuietHoursSettings(enabled: false, startMinuteOfDay: 22 * 60, endMinuteOfDay: 8 * 60).save()
+        defer { previousQuietHours.save() }
+        let previousDelivery = NotificationDeliverySettings.current()
+        NotificationDeliverySettings(groupedByKeyword: true).save()
+        defer { previousDelivery.save() }
+        let previousLang = I18nManager.shared.lang
+        I18nManager.shared.setLanguage("en")
+        defer { I18nManager.shared.setLanguage(previousLang) }
+
+        let center = MockNotificationCenter(status: .authorized)
+        let manager = NotificationManager(center: center)
+        let term = WatchTerm(id: "grouped", keyword: "Grouped Oshi", notify_on_new: true)
+        let items = (1...3).map { index in
+            FeedItem(
+                id: "news:grouped-\(index)", platform: "news", url: "https://example.com/grouped-\(index)",
+                title: "Grouped item \(index)", content_text: nil, author: nil, thumbnail_url: nil,
+                media_type: "article",
+                published_at: ISO8601DateFormatter().string(from: Date().addingTimeInterval(TimeInterval(index))),
+                watch_term_keyword: term.keyword,
+                fetched_at: ISO8601DateFormatter().string(from: Date())
+            )
+        }
+
+        await manager.notifyForNewItems(items, terms: [term], includeAttachments: false)
+
+        // One banner for all three, anchored on the newest item (index 3).
+        XCTAssertEqual(center.requests.count, 1)
+        let request = try XCTUnwrap(center.requests.first)
+        XCTAssertEqual(request.identifier, "oshireader-new-term-grouped-news:grouped-3")
+        XCTAssertEqual(request.content.subtitle, "Grouped item 3")
+        XCTAssertEqual(request.content.body, "3 new items")
+        XCTAssertEqual(request.content.userInfo["new_count"] as? Int, 3)
+    }
+
+    @MainActor
+    func testGroupedNotificationLedgerKeepsResurfacedBundledItemFromRenotifying() async throws {
+        let previousQuietHours = QuietHoursSettings.current()
+        QuietHoursSettings(enabled: false, startMinuteOfDay: 22 * 60, endMinuteOfDay: 8 * 60).save()
+        defer { previousQuietHours.save() }
+        let previousDelivery = NotificationDeliverySettings.current()
+        NotificationDeliverySettings(groupedByKeyword: true).save()
+        defer { previousDelivery.save() }
+
+        let center = MockNotificationCenter(status: .authorized)
+        let manager = NotificationManager(center: center)
+        let term = WatchTerm(id: "grouped-ledger", keyword: "Grouped Ledger Oshi", notify_on_new: true)
+        func item(_ index: Int) -> FeedItem {
+            FeedItem(
+                id: "news:grouped-ledger-\(index)", platform: "news", url: "https://example.com/grouped-ledger-\(index)",
+                title: "Grouped ledger item \(index)", content_text: nil, author: nil, thumbnail_url: nil,
+                media_type: "article",
+                published_at: ISO8601DateFormatter().string(from: Date().addingTimeInterval(TimeInterval(index))),
+                watch_term_keyword: term.keyword,
+                fetched_at: ISO8601DateFormatter().string(from: Date())
+            )
+        }
+
+        // First refresh bundles items 1 and 2 into one grouped banner.
+        await manager.notifyForNewItems([item(1), item(2)], terms: [term], includeAttachments: false)
+        XCTAssertEqual(center.requests.count, 1)
+
+        // Item 1 falls out of the feed cap and resurfaces alongside a genuinely
+        // new item 3. Only item 3 should produce (or extend) a new banner —
+        // item 1 was already delivered as part of the first group, even though
+        // it never got its own individual request/identifier in Notification
+        // Center to be caught by the pending/delivered check alone.
+        center.removePendingNotificationRequests(withIdentifiers: center.requests.map(\.identifier))
+        await manager.notifyForNewItems([item(1), item(3)], terms: [term], includeAttachments: false)
+
+        XCTAssertEqual(center.requests.count, 1)
+        let request = try XCTUnwrap(center.requests.first)
+        XCTAssertEqual(request.identifier, "oshireader-new-term-grouped-ledger-news:grouped-ledger-3")
+        XCTAssertEqual(request.content.userInfo["new_count"] as? Int, 1)
     }
 
     @MainActor
