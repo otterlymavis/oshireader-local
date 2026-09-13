@@ -44,6 +44,12 @@ struct ReaderView: View {
     @State private var showSignInBanner = false
     @State private var isSigningIntoX = false
     @State private var showOpenInBrowserBanner = false
+    /// Whether the web view has navigated away from the article it opened
+    /// (the user tapped a link inside the page) and so has somewhere to go
+    /// back to. Distinct from `previousSiblingItem` — that switches between
+    /// feed items; this steps back within one article's own page history.
+    @State private var canGoBackInPage = false
+    @State private var goBackCounter = 0
 
     init(feedItem: FeedItem, siblingItems: [FeedItem] = [], onNavigate: ((FeedItem) -> Void)? = nil) {
         self.feedItem = feedItem
@@ -117,15 +123,22 @@ struct ReaderView: View {
         isSigningIntoX = false
         showSignInBanner = false
         showOpenInBrowserBanner = false
+        canGoBackInPage = false
         RecentTermUsageStore.shared.markUsed(keyword: item.watch_term_keyword, terms: db.terms)
         onNavigate?(item)
     }
 
     var body: some View {
+        // Read once — usesSystemSafari (and the originalPageUrl it, the toolbar
+        // ShareLink, and the load overlay all separately re-derive) is cheap on
+        // its own, but body evaluates it several times per render; same
+        // reasoning as the single sibling read in the toolbar below.
+        let usesSafari = Self.usesSystemSafari(for: currentItem)
+        let originalURL = originalPageUrl
         VStack(spacing: 0) {
             if let url = targetUrl {
                 ZStack {
-                    if Self.usesSystemSafari(for: currentItem) {
+                    if usesSafari {
                         SafariReaderView(url: url)
                             .id(url)
                             .background(bgColor)
@@ -146,6 +159,8 @@ struct ReaderView: View {
                             imageSelectionActionCounter: imageSelectionActionCounter,
                             imageSelectionAction: imageSelectionAction,
                             saveAllImagesCounter: saveAllImagesCounter,
+                            goBackCounter: goBackCounter,
+                            onNavigationHistoryChange: { canGoBack in canGoBackInPage = canGoBack },
                             onLoadStateChange: { state in
                                 webLoadState = state
                                 if state == .loading {
@@ -154,6 +169,7 @@ struct ReaderView: View {
                                     selectedImageCount = 0
                                     showSignInBanner = false
                                     showOpenInBrowserBanner = false
+                                    canGoBackInPage = false
                                 }
                             },
                             onImageSelectionState: { selectedImageCount = $0 },
@@ -188,7 +204,7 @@ struct ReaderView: View {
                         .background(bgColor)
                     }
 
-                    if !Self.usesSystemSafari(for: currentItem), webLoadState != .loaded {
+                    if !usesSafari, webLoadState != .loaded {
                         readerLoadStateOverlay
                             .allowsHitTesting(webLoadState == .failed)
                     }
@@ -209,7 +225,7 @@ struct ReaderView: View {
                     .foregroundColor(theme.colors.textMuted)
             }
 
-            if !Self.usesSystemSafari(for: currentItem) {
+            if !usesSafari {
                 readerControlBar
             }
         }
@@ -217,6 +233,18 @@ struct ReaderView: View {
         .navigationTitle(currentItem.title ?? i18n.t("readerTitle"))
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            ToolbarItem(placement: .navigationBarLeading) {
+                if !usesSafari, canGoBackInPage {
+                    Button {
+                        goBackCounter += 1
+                    } label: {
+                        Image(systemName: "chevron.backward")
+                    }
+                    .accessibilityLabel(i18n.t("readerGoBack"))
+                    .accessibilityIdentifier("reader.goBackButton")
+                }
+            }
+
             ToolbarItemGroup(placement: .navigationBarLeading) {
                 if !siblingItems.isEmpty {
                     // Read each sibling once — both properties independently
@@ -247,7 +275,7 @@ struct ReaderView: View {
             }
 
             ToolbarItem(placement: .navigationBarTrailing) {
-                if !Self.usesSystemSafari(for: currentItem) {
+                if !usesSafari {
                     Button {
                         isTranslated.toggle()
                     } label: {
@@ -275,7 +303,7 @@ struct ReaderView: View {
             }
 
             ToolbarItemGroup(placement: .navigationBarTrailing) {
-                if !Self.usesSystemSafari(for: currentItem) {
+                if !usesSafari {
                     if isSavingSelectedImages {
                         ProgressView().tint(theme.colors.primary)
                     } else if isSelectingImages {
@@ -326,7 +354,7 @@ struct ReaderView: View {
             }
 
             ToolbarItem(placement: .navigationBarTrailing) {
-                if let url = originalPageUrl {
+                if let url = originalURL {
                     ShareLink(item: url) {
                         Image(systemName: "square.and.arrow.up")
                             .foregroundColor(theme.colors.primary)
@@ -744,6 +772,8 @@ struct WebViewHelper: UIViewRepresentable, Equatable {
     let imageSelectionActionCounter: Int
     let imageSelectionAction: String
     let saveAllImagesCounter: Int
+    let goBackCounter: Int
+    let onNavigationHistoryChange: (Bool) -> Void
     let onLoadStateChange: (ReaderWebLoadState) -> Void
     let onImageSelectionState: (Int) -> Void
     let onImageSelectionUnavailable: () -> Void
@@ -769,7 +799,8 @@ struct WebViewHelper: UIViewRepresentable, Equatable {
             lhs.selectImagesCounter == rhs.selectImagesCounter &&
             lhs.imageSelectionActionCounter == rhs.imageSelectionActionCounter &&
             lhs.imageSelectionAction == rhs.imageSelectionAction &&
-            lhs.saveAllImagesCounter == rhs.saveAllImagesCounter
+            lhs.saveAllImagesCounter == rhs.saveAllImagesCounter &&
+            lhs.goBackCounter == rhs.goBackCounter
     }
 
     static func customUserAgent(for platform: String) -> String? {
@@ -821,6 +852,7 @@ struct WebViewHelper: UIViewRepresentable, Equatable {
         webView.backgroundColor = .clear
         webView.scrollView.backgroundColor = .clear
         webView.customUserAgent = Self.customUserAgent(for: platform)
+        context.coordinator.observeNavigationHistory(webView)
         return webView
     }
 
@@ -898,6 +930,12 @@ struct WebViewHelper: UIViewRepresentable, Equatable {
                     DispatchQueue.main.async { onSaveAllImagesUnavailable() }
                     return
                 }
+            }
+        }
+        if goBackCounter != context.coordinator.lastGoBackCounter {
+            context.coordinator.lastGoBackCounter = goBackCounter
+            if uiView.canGoBack {
+                uiView.goBack()
             }
         }
     }
@@ -1085,7 +1123,17 @@ struct WebViewHelper: UIViewRepresentable, Equatable {
         var lastSelectImagesCounter = 0
         var lastImageSelectionActionCounter = 0
         var lastSaveAllImagesCounter = 0
+        var lastGoBackCounter = 0
         var currentRequestURL: String?
+        /// The web view's `backForwardList.backList.count` at the point this
+        /// article's own navigation started. `canGoBack` on the shared WKWebView
+        /// stays true across article switches (sibling navigation reuses the
+        /// same web view and just keeps appending to its history), so the
+        /// "go back" button needs its own baseline: only offer to go back
+        /// while the list is deeper than where *this* article began, i.e. the
+        /// user actually followed a link inside the page.
+        var baselineBackListCount = 0
+        var pendingBaselineCapture = false
         /// Tracks which style-affecting values are already reflected in the
         /// page so `updateUIView` can tell a font-size-only change (cheap,
         /// CSS-variable update) apart from a theme/reader-mode change (needs
@@ -1101,15 +1149,42 @@ struct WebViewHelper: UIViewRepresentable, Equatable {
         /// (either the fast-paint-on-open path or the offline fallback) —
         /// its `didFinish` shouldn't re-snapshot content that's already on disk.
         private var isShowingCachePlaceholder = false
+        /// KVO on `canGoBack` rather than only `didCommit`/`didFinish`: a
+        /// same-document (pushState/History API) navigation — how girlschannel's
+        /// own in-page links behave — never fires the navigation delegate at
+        /// all, but it does update `backForwardList`, and `canGoBack` is a
+        /// KVO-observable `@objc dynamic` property that reflects that change
+        /// regardless of which kind of navigation caused it.
+        private var canGoBackObservation: NSKeyValueObservation?
 
         init(_ parent: WebViewHelper) {
             self.parent = parent
+        }
+
+        func observeNavigationHistory(_ webView: WKWebView) {
+            canGoBackObservation = webView.observe(\.canGoBack, options: [.initial]) { [weak self, weak webView] _, _ in
+                guard let self, let webView else { return }
+                self.reportNavigationHistory(webView)
+            }
         }
 
         func beginNewRequest() {
             hasCommittedPage = false
             isShowingCachePlaceholder = false
             pendingFailure?.cancel()
+            pendingBaselineCapture = true
+        }
+
+        /// Recomputes whether the "go back" button should be offered and
+        /// reports it, capturing this article's baseline history depth on
+        /// its first call after `beginNewRequest()`.
+        private func reportNavigationHistory(_ webView: WKWebView) {
+            if pendingBaselineCapture {
+                baselineBackListCount = webView.backForwardList.backList.count
+                pendingBaselineCapture = false
+            }
+            let canGoBack = webView.backForwardList.backList.count > baselineBackListCount
+            DispatchQueue.main.async { self.parent.onNavigationHistoryChange(canGoBack) }
         }
 
         func markShowingCachePlaceholder() {
@@ -1128,6 +1203,7 @@ struct WebViewHelper: UIViewRepresentable, Equatable {
             hasCommittedPage = true
             pendingFailure?.cancel()
             DispatchQueue.main.async { self.parent.onLoadStateChange(.loaded) }
+            reportNavigationHistory(webView)
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -1154,6 +1230,7 @@ struct WebViewHelper: UIViewRepresentable, Equatable {
                 }
             }
             checkForBlockedContent(in: webView)
+            reportNavigationHistory(webView)
         }
 
         private func checkForBlockedContent(in webView: WKWebView) {
@@ -1446,27 +1523,72 @@ private func shouldBlockReaderRequest(_ rawUrl: String) -> Bool {
 private let viewportFixJS = """
 (function () {
   var desiredContent = 'width=device-width, initial-scale=1';
-  function applyViewport() {
-    // Only normalize a viewport the page already declares (strips
-    // user-scalable=no / maximum-scale so pinch-zoom works). Pages with
-    // no viewport meta are legacy fixed-width desktop layouts
-    // (e.g. girlschannel.net) — WebKit shrinks those to fit, and forcing
-    // width=device-width would blow them up to 1:1 and look zoomed in.
+
+  function ensureMeta() {
     var meta = document.querySelector('meta[name="viewport"]');
+    if (meta) return meta;
+    if (!document.head) return null;
+    meta = document.createElement('meta');
+    meta.setAttribute('name', 'viewport');
+    document.head.appendChild(meta);
+    return meta;
+  }
+
+  // Legacy fixed-width layouts — old BBS/thread tables, avatar columns,
+  // desktop-only sites like girlschannel.net — often still declare
+  // width=device-width (or nothing at all) while their actual content is
+  // hard-coded wider than the screen. A page that *declares* a viewport
+  // tells WebKit to trust it, so unlike Mobile Safari's fallback for
+  // truly viewport-less pages, WebKit won't auto-shrink the overflow to
+  // fit; the result renders "zoomed in", showing only a slice of a
+  // too-wide layout. Measure the page's real rendered width against what's
+  // actually available and dial initial-scale down to fit whenever it
+  // overflows — this also covers pages with no viewport meta at all, since
+  // `ensureMeta()` gives every page one to adjust. Recomputed on every
+  // settle so it also catches content that widens after first layout
+  // (e.g. late-loading images), and left as `desiredContent` — no forced
+  // scale — for the common case of a page that genuinely fits, so pinch
+  // zoom still starts from a normal 1:1 view there.
+  function settle() {
+    var meta = ensureMeta();
     if (!meta) return;
-    if (meta.getAttribute('content') !== desiredContent) {
-      meta.setAttribute('content', desiredContent);
+    var doc = document.documentElement;
+    var body = document.body;
+    var availableWidth = (doc && doc.clientWidth) || window.innerWidth || 0;
+    var contentWidth = Math.max((doc && doc.scrollWidth) || 0, (body && body.scrollWidth) || 0);
+    // 5% slack so ordinary rounding/scrollbar noise doesn't trigger a scale.
+    var overflowing = availableWidth > 0 && contentWidth > availableWidth * 1.05;
+    var content = overflowing
+      ? 'width=device-width, initial-scale=' + Math.max(0.25, Math.min(1, availableWidth / contentWidth)).toFixed(4)
+      : desiredContent;
+    if (meta.getAttribute('content') !== content) {
+      meta.setAttribute('content', content);
     }
   }
-  applyViewport();
-  document.addEventListener('DOMContentLoaded', applyViewport);
+
+  settle();
+  document.addEventListener('DOMContentLoaded', settle);
+  window.addEventListener('load', settle);
   var target = document.documentElement || document;
-  new MutationObserver(applyViewport).observe(target, {
+  var observer = new MutationObserver(settle);
+  observer.observe(target, {
     childList: true,
     subtree: true,
     attributes: true,
     attributeFilter: ['name', 'content']
   });
+  // Once the page has settled there's nothing further worth watching for —
+  // a full-tree observer left running for the article's whole lifetime
+  // would otherwise keep paying for every DOM mutation the page makes
+  // afterwards (auto-refreshing threads, infinite scroll, live embeds) for
+  // no further benefit.
+  function stopObserving() { observer.disconnect(); }
+  if (document.readyState === 'complete') {
+    stopObserving();
+  } else {
+    window.addEventListener('load', stopObserving, { once: true });
+    setTimeout(stopObserving, 8000);
+  }
 })();
 """
 
