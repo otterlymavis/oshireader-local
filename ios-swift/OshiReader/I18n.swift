@@ -675,6 +675,12 @@ class I18nManager: ObservableObject {
             "zh-TW": "原始網頁模式",
             "zh-CN": "原始网页模式"
         ],
+        "readerGoBack": [
+            "en": "Back",
+            "ja": "戻る",
+            "zh-TW": "返回",
+            "zh-CN": "返回"
+        ],
         "readerPreviousArticle": [
             "en": "Previous Article",
             "ja": "前の記事",
