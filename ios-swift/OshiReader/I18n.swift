@@ -1255,6 +1255,12 @@ class I18nManager: ObservableObject {
             "zh-TW": "字體大小",
             "zh-CN": "字体大小"
         ],
+        "webZoom": [
+            "en": "Zoom",
+            "ja": "ズーム",
+            "zh-TW": "縮放",
+            "zh-CN": "缩放"
+        ],
         "fontSizeNormal": [
             "en": "Normal",
             "ja": "標準",

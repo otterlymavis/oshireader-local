@@ -30,6 +30,10 @@ struct ReaderView: View {
     @State private var readerMode: Bool
     @State private var readerTheme: AppThemeMode = .light
     @State private var fontSize: CGFloat = 16.0
+    /// Page zoom for Original Web Mode. Reader Mode has its own text-size
+    /// control (`fontSize`) instead — resizing actual reading text serves
+    /// that mode better than scaling a fixed layout would.
+    @State private var webZoomScale: CGFloat = 1.0
     @State private var isTranslated = false
     @State private var saveImageStatus = ""
     @State private var showingSaveImageStatus = false
@@ -124,6 +128,7 @@ struct ReaderView: View {
         showSignInBanner = false
         showOpenInBrowserBanner = false
         canGoBackInPage = false
+        webZoomScale = 1.0
         RecentTermUsageStore.shared.markUsed(keyword: item.watch_term_keyword, terms: db.terms)
         onNavigate?(item)
     }
@@ -155,6 +160,7 @@ struct ReaderView: View {
                             fontSize: fontSize,
                             fontFamilyCSS: appearance.readerFontFamilyCSS,
                             readerMode: readerMode,
+                            zoomScale: webZoomScale,
                             selectImagesCounter: selectImagesCounter,
                             imageSelectionActionCounter: imageSelectionActionCounter,
                             imageSelectionAction: imageSelectionAction,
@@ -170,6 +176,7 @@ struct ReaderView: View {
                                     showSignInBanner = false
                                     showOpenInBrowserBanner = false
                                     canGoBackInPage = false
+                                    webZoomScale = 1.0
                                 }
                             },
                             onImageSelectionState: { selectedImageCount = $0 },
@@ -405,7 +412,7 @@ struct ReaderView: View {
         HStack(spacing: 12) {
             readerModeButton(showTitle: true)
             Spacer()
-            fontSizeControls
+            centerReaderControls
             Spacer()
             themePicker(width: 112)
         }
@@ -417,13 +424,25 @@ struct ReaderView: View {
         HStack(spacing: 8) {
             readerModeButton(showTitle: false)
             Spacer(minLength: 4)
-            fontSizeControls
+            centerReaderControls
                 .layoutPriority(1)
             Spacer(minLength: 4)
             themePicker(width: 104)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
+    }
+
+    /// Reader Mode gets the text-size control; Original Web Mode gets page
+    /// zoom instead — the same slot in the control bar, whichever is
+    /// relevant to what's currently on screen.
+    @ViewBuilder
+    private var centerReaderControls: some View {
+        if readerMode {
+            fontSizeControls
+        } else {
+            webZoomControls
+        }
     }
 
     private func readerModeButton(showTitle: Bool) -> some View {
@@ -474,16 +493,57 @@ struct ReaderView: View {
         .padding(.vertical, 5)
         .background(theme.colors.divider)
         .cornerRadius(8)
-        .opacity(readerMode ? 1 : 0.45)
-        .disabled(!readerMode)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(i18n.t("fontSize"))
         .accessibilityValue("\(Int(fontSize))")
         .accessibilityAdjustableAction { direction in
-            guard readerMode else { return }
             switch direction {
             case .increment: fontSize = min(28.0, fontSize + 2.0)
             case .decrement: fontSize = max(12.0, fontSize - 2.0)
+            @unknown default: break
+            }
+        }
+    }
+
+    private static let minWebZoomScale: CGFloat = 0.5
+    private static let maxWebZoomScale: CGFloat = 3.0
+    private static let webZoomStep: CGFloat = 0.25
+
+    private var webZoomControls: some View {
+        HStack(spacing: 10) {
+            Button(action: { webZoomScale = max(Self.minWebZoomScale, webZoomScale - Self.webZoomStep) }) {
+                Image(systemName: "minus.magnifyingglass")
+                    .font(.subheadline)
+                    .foregroundColor(theme.colors.textSub)
+            }
+            .accessibilityHidden(true)
+            .accessibilityIdentifier("reader.zoomOutButton")
+
+            Text("\(Int(webZoomScale * 100))%")
+                .font(.caption)
+                .foregroundColor(theme.colors.textMuted)
+                .frame(minWidth: 36)
+                .accessibilityHidden(true)
+
+            Button(action: { webZoomScale = min(Self.maxWebZoomScale, webZoomScale + Self.webZoomStep) }) {
+                Image(systemName: "plus.magnifyingglass")
+                    .font(.subheadline)
+                    .foregroundColor(theme.colors.textSub)
+            }
+            .accessibilityHidden(true)
+            .accessibilityIdentifier("reader.zoomInButton")
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(theme.colors.divider)
+        .cornerRadius(8)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(i18n.t("webZoom"))
+        .accessibilityValue("\(Int(webZoomScale * 100))%")
+        .accessibilityAdjustableAction { direction in
+            switch direction {
+            case .increment: webZoomScale = min(Self.maxWebZoomScale, webZoomScale + Self.webZoomStep)
+            case .decrement: webZoomScale = max(Self.minWebZoomScale, webZoomScale - Self.webZoomStep)
             @unknown default: break
             }
         }
@@ -768,6 +828,7 @@ struct WebViewHelper: UIViewRepresentable, Equatable {
     let fontSize: CGFloat
     let fontFamilyCSS: String
     let readerMode: Bool
+    let zoomScale: CGFloat
     let selectImagesCounter: Int
     let imageSelectionActionCounter: Int
     let imageSelectionAction: String
@@ -796,6 +857,7 @@ struct WebViewHelper: UIViewRepresentable, Equatable {
             lhs.fontSize == rhs.fontSize &&
             lhs.fontFamilyCSS == rhs.fontFamilyCSS &&
             lhs.readerMode == rhs.readerMode &&
+            lhs.zoomScale == rhs.zoomScale &&
             lhs.selectImagesCounter == rhs.selectImagesCounter &&
             lhs.imageSelectionActionCounter == rhs.imageSelectionActionCounter &&
             lhs.imageSelectionAction == rhs.imageSelectionAction &&
@@ -868,6 +930,10 @@ struct WebViewHelper: UIViewRepresentable, Equatable {
             context.coordinator.lastAppliedReaderMode = readerMode
             context.coordinator.lastAppliedFontFamilyCSS = fontFamilyCSS
             context.coordinator.lastAppliedPlatform = platform
+            // A fresh navigation already starts at the page's natural
+            // (unzoomed) scale — match that baseline rather than carrying
+            // over whatever zoom level the previous article was left at.
+            context.coordinator.lastAppliedZoomScale = 1.0
             onLoadStateChange(.loading)
             if ProcessInfo.processInfo.arguments.contains("--uitesting-reader-images") {
                 uiView.loadHTMLString(Self.uiTestImageFixtureHTML, baseURL: url)
@@ -901,6 +967,10 @@ struct WebViewHelper: UIViewRepresentable, Equatable {
                 context.coordinator.lastAppliedFontSize = fontSize
                 uiView.evaluateJavaScript("if (window.__oshiSetFontSize) { window.__oshiSetFontSize(\(fontSize)); }", completionHandler: nil)
             }
+        }
+        if context.coordinator.lastAppliedZoomScale != zoomScale {
+            context.coordinator.lastAppliedZoomScale = zoomScale
+            uiView.evaluateJavaScript("if (window.__oshiSetPageZoom) { window.__oshiSetPageZoom(\(zoomScale)); }", completionHandler: nil)
         }
         if selectImagesCounter != context.coordinator.lastSelectImagesCounter {
             context.coordinator.lastSelectImagesCounter = selectImagesCounter
@@ -1143,6 +1213,7 @@ struct WebViewHelper: UIViewRepresentable, Equatable {
         var lastAppliedReaderMode: Bool?
         var lastAppliedFontFamilyCSS: String?
         var lastAppliedPlatform: String?
+        var lastAppliedZoomScale: CGFloat = 1.0
         private var hasCommittedPage = false
         private var pendingFailure: DispatchWorkItem?
         /// True while the web view is showing an on-disk cache placeholder
@@ -1679,6 +1750,16 @@ private let readerInjectedJS = """
 
   window.__oshiSetFontSize = function(px) {
     document.documentElement.style.setProperty('--oshi-reader-font-size', px + 'px');
+  };
+
+  // Original Web Mode's page zoom. Setting UIScrollView.zoomScale directly
+  // from the native side doesn't stick on WKWebView — WebKit's own
+  // viewport-scale handling reasserts the page's declared initial-scale
+  // and fights it. WebKit's (non-standard, Safari-only, but exactly what
+  // we're running) `zoom` CSS property reflows the page at the given
+  // factor instead, which doesn't fight that mechanism.
+  window.__oshiSetPageZoom = function(scale) {
+    document.documentElement.style.zoom = scale;
   };
 
   window.__oshiBeginImageSelection = function() {
