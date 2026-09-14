@@ -205,11 +205,16 @@ final class LocalRefreshCoordinator: ObservableObject {
     private static let backgroundWorkBudget: TimeInterval = 16
     private static let backgroundUnitDeadline: TimeInterval = 7
     // Units are independent network fetches (one term+platform, or one custom
-    // URL) — running a couple concurrently covers more of the rotation per
-    // wake instead of the previous strictly-serial one-at-a-time pass, without
-    // changing the per-unit timeout or the checkpointing granularity by more
-    // than a chunk.
-    private static let backgroundConcurrentUnits = 2
+    // URL) — running several concurrently covers more of the rotation per
+    // wake instead of serializing it, without changing the per-unit timeout
+    // or the checkpointing granularity by more than a chunk. 4 matches
+    // `IngestionService.sourceRequestLimiter`'s global cap on concurrent
+    // source requests, so this doesn't add real network concurrency beyond
+    // what the app already allows elsewhere — it just stops a background
+    // wake from leaving half of those slots idle. At ~2 chunks per wake
+    // (`backgroundWorkBudget` / `backgroundUnitDeadline`), that's up to 8
+    // rotation units checked per wake instead of 4.
+    private static let backgroundConcurrentUnits = 4
 
     private init() {}
 
