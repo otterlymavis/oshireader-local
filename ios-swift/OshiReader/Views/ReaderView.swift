@@ -1612,28 +1612,40 @@ private let viewportFixJS = """
   // tells WebKit to trust it, so unlike Mobile Safari's fallback for
   // truly viewport-less pages, WebKit won't auto-shrink the overflow to
   // fit; the result renders "zoomed in", showing only a slice of a
-  // too-wide layout. Measure the page's real rendered width against what's
-  // actually available and dial initial-scale down to fit whenever it
-  // overflows — this also covers pages with no viewport meta at all, since
-  // `ensureMeta()` gives every page one to adjust. Recomputed on every
-  // settle so it also catches content that widens after first layout
-  // (e.g. late-loading images), and left as `desiredContent` — no forced
-  // scale — for the common case of a page that genuinely fits, so pinch
-  // zoom still starts from a normal 1:1 view there.
+  // too-wide layout.
+  //
+  // The correction does NOT go through the meta tag's initial-scale —
+  // WebKit only consults initial-scale to pick the page's *first* paint
+  // scale. Overflow can only be measured after layout has already
+  // happened, so by the time this runs, an initial-scale edit is too late
+  // to visibly rescale anything (this was tried and silently did nothing).
+  // Instead this reflows the page directly via WebKit's `zoom` CSS
+  // property — the same mechanism the reader's manual zoom buttons use
+  // (see __oshiSetPageZoom in readerInjectedJS) — which takes effect
+  // immediately and can be re-applied as content changes.
+  var autoZoomActive = true; // false once the observer below stops, so this
+                              // hands off to the user's own zoom buttons
+                              // instead of fighting a choice they've made.
   function settle() {
     var meta = ensureMeta();
-    if (!meta) return;
+    if (meta && meta.getAttribute('content') !== desiredContent) {
+      meta.setAttribute('content', desiredContent);
+    }
+    if (!autoZoomActive) return;
     var doc = document.documentElement;
+    if (!doc) return;
     var body = document.body;
-    var availableWidth = (doc && doc.clientWidth) || window.innerWidth || 0;
-    var contentWidth = Math.max((doc && doc.scrollWidth) || 0, (body && body.scrollWidth) || 0);
+    var availableWidth = doc.clientWidth || window.innerWidth || 0;
+    var contentWidth = Math.max(doc.scrollWidth || 0, (body && body.scrollWidth) || 0);
     // 5% slack so ordinary rounding/scrollbar noise doesn't trigger a scale.
     var overflowing = availableWidth > 0 && contentWidth > availableWidth * 1.05;
-    var content = overflowing
-      ? 'width=device-width, initial-scale=' + Math.max(0.25, Math.min(1, availableWidth / contentWidth)).toFixed(4)
-      : desiredContent;
-    if (meta.getAttribute('content') !== content) {
-      meta.setAttribute('content', content);
+    if (overflowing) {
+      var scaleStr = String(Math.max(0.25, Math.min(1, availableWidth / contentWidth)));
+      if (doc.style.zoom !== scaleStr) {
+        doc.style.zoom = scaleStr;
+      }
+    } else if (doc.style.zoom) {
+      doc.style.zoom = '';
     }
   }
 
@@ -1648,12 +1660,16 @@ private let viewportFixJS = """
     attributes: true,
     attributeFilter: ['name', 'content']
   });
-  // Once the page has settled there's nothing further worth watching for —
-  // a full-tree observer left running for the article's whole lifetime
-  // would otherwise keep paying for every DOM mutation the page makes
-  // afterwards (auto-refreshing threads, infinite scroll, live embeds) for
-  // no further benefit.
-  function stopObserving() { observer.disconnect(); }
+  // Once the page has settled there's nothing further worth auto-correcting
+  // — a full-tree observer (and further automatic zoom writes) left running
+  // for the article's whole lifetime would otherwise keep paying for every
+  // DOM mutation the page makes afterwards (auto-refreshing threads,
+  // infinite scroll, live embeds) for no further benefit, and could fight
+  // the user's own zoom buttons once they've had a chance to use them.
+  function stopObserving() {
+    observer.disconnect();
+    autoZoomActive = false;
+  }
   if (document.readyState === 'complete') {
     stopObserving();
   } else {
