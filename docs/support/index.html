@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OshiReader Support</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    margin: 0;
+    padding: 32px 20px 64px;
+    background: #fafafa;
+    color: #1a1a1a;
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    body { background: #121212; color: #eaeaea; }
+    a { color: #7fb2ff; }
+  }
+  main { max-width: 640px; margin: 0 auto; }
+  h1 { font-size: 1.6rem; margin-bottom: 0.25em; }
+  .updated { color: #767676; font-size: 0.85rem; margin-bottom: 2em; }
+  h2 { font-size: 1.1rem; margin-top: 2em; }
+  p, li { margin: 0.5em 0; }
+  a { color: #0a66cc; }
+</style>
+</head>
+<body>
+<main>
+  <h1>OshiReader Support</h1>
+  <p class="updated">Last updated: 2026-09-23</p>
+
+  <h2>Feed not updating</h2>
+  <p>Pull down on the Feed screen to force a manual refresh. Background
+  refresh runs on a schedule set by iOS and may be delayed if the app hasn't
+  been opened recently, Low Power Mode is on, or Background App Refresh is
+  disabled for OshiReader in iOS Settings &gt; General &gt; Background App
+  Refresh.</p>
+
+  <h2>Not getting notifications</h2>
+  <p>Check that notifications are enabled for OshiReader in iOS Settings &gt;
+  Notifications, and that the watch term has alerts turned on inside the app
+  (term settings &gt; Notify on New). New items older than a few days are not
+  notified on to avoid a backlog burst.</p>
+
+  <h2>Paid hosted push tier</h2>
+  <p>The optional paid tier adds near-real-time push for a limited number of
+  watch terms. If push stops arriving, open Settings &gt; Paid Backend and
+  check the status label and term count; use Restore Purchases if a prior
+  purchase isn't recognized after reinstalling.</p>
+
+  <h2>Backup and restore</h2>
+  <p>Settings &gt; Backup lets you export an encrypted backup file and
+  restore it later, including on a new device. Keep the backup password
+  somewhere safe &mdash; it cannot be recovered.</p>
+
+  <h2>Something else</h2>
+  <p>See the <a href="../privacy/">Privacy Policy</a> for what data the app
+  stores and sends. For anything not covered here, please use the app's
+  App Store listing to reach the developer.</p>
+</main>
+</body>
+</html>

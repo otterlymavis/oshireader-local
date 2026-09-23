@@ -1,6 +1,24 @@
-OshiReader is a local-only feed reader for Japanese media topics. It does not require any account, sign-in, or backend server.
+OshiReader is a feed reader for Japanese media topics. The free tier works
+entirely on-device with no account or sign-in: it polls public RSS/JSON feeds
+and light HTML scrapes directly from the phone on a schedule you control
+(foreground pull-to-refresh plus periodic background refresh).
 
-To test the app:
+To test the free tier:
 1. Tap '+' to add a watch topic (for example: "乃木坂46" or "Anime").
 2. Pull down on the Feed screen to refresh and fetch matching items.
 3. Tap on any item to open the in-app reader.
+
+Optional paid tier (in-app purchase):
+Settings > Paid Backend offers an optional hosted push subscription
+(auto-renewing monthly/yearly, or a non-consumable one-time plan) that adds
+near-real-time push notifications for a small number of watch terms via our
+backend. It is entirely additive — the free on-device feed keeps working
+whether or not this is purchased, and no account/sign-in is required for it
+either (entitlement is tied to the App Store purchase via StoreKit).
+To test: open Settings > Paid Backend, and use a Sandbox Apple ID to purchase
+one of the listed products; the "Real-time push terms" counter and status
+label update once the purchase completes. "Restore Purchases" is available on
+the same screen.
+
+Privacy Policy is available in-app under Settings > Privacy Policy, and is
+also hosted at https://otterlymavis.github.io/oshireader-local/privacy/.
