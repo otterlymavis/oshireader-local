@@ -3336,6 +3336,58 @@ final class OshiReaderTests: XCTestCase {
         )
     }
 
+    func testBackgroundRefreshKeywordWeightCountsAliasesButNotCustomUnits() {
+        let plain = WatchTerm(keyword: "Plain")
+        let aliased = WatchTerm(keyword: "Aliased", aliases: ["Alias 1"])
+        let custom = CustomUrl(id: "custom", url: "https://example.com", title: nil, added_at: "2026-08-01T00:00:00Z")
+
+        XCTAssertEqual(LocalRefreshCoordinator.keywordWeight(for: .source(term: plain, platform: "news")), 1)
+        XCTAssertEqual(LocalRefreshCoordinator.keywordWeight(for: .source(term: aliased, platform: "news")), 2)
+        XCTAssertEqual(LocalRefreshCoordinator.keywordWeight(for: .custom(custom)), 0)
+    }
+
+    func testBackgroundRefreshChunkEndStaysWithinSharedLimiterCapacityDespiteAliases() {
+        // 4 units that would each want 2 sourceRequestLimiter slots (primary +
+        // 1 alias, `LocalRefreshRequest.background.maximumAliases`) must not
+        // all land in one chunk: `IngestionService.sourceRequestLimiter`'s
+        // capacity is 4, so 4 units × 2 keywords = 8 would oversubscribe it.
+        let aliasedUnits = (0..<4).map { index in
+            BackgroundRefreshUnit.source(
+                term: WatchTerm(keyword: "Term \(index)", aliases: ["Alias"]),
+                platform: "news"
+            )
+        }
+        let limiterCapacity = IngestionService.sourceRequestLimiter.capacity
+
+        let firstChunkEnd = LocalRefreshCoordinator.chunkEnd(startingAt: 0, in: aliasedUnits)
+        let totalWeight = aliasedUnits[0..<firstChunkEnd].reduce(0) { $0 + LocalRefreshCoordinator.keywordWeight(for: $1) }
+        XCTAssertLessThanOrEqual(totalWeight, limiterCapacity)
+        XCTAssertLessThan(firstChunkEnd, aliasedUnits.count, "aliased units alone shouldn't all fit in one chunk")
+
+        // Units with no aliases (weight 1 each) should still fill a chunk up
+        // to the unit-count cap, since 4 of them fit within the limiter's
+        // capacity of 4.
+        let plainUnits = (0..<4).map { index in
+            BackgroundRefreshUnit.source(term: WatchTerm(keyword: "Plain \(index)"), platform: "news")
+        }
+        XCTAssertEqual(LocalRefreshCoordinator.chunkEnd(startingAt: 0, in: plainUnits), plainUnits.count)
+
+        // A single unit heavier than the limiter's capacity must still be
+        // admitted on its own rather than producing an empty chunk.
+        let heavyUnit = BackgroundRefreshUnit.source(
+            term: WatchTerm(keyword: "Heavy", aliases: Array(repeating: "Alias", count: limiterCapacity + 5)),
+            platform: "news"
+        )
+        XCTAssertEqual(LocalRefreshCoordinator.chunkEnd(startingAt: 0, in: [heavyUnit]), 1)
+
+        // Custom-URL units carry zero weight, so a run of them fills the
+        // chunk up to the raw unit-count cap regardless of the limiter.
+        let customUnits = (0..<6).map { index in
+            BackgroundRefreshUnit.custom(CustomUrl(id: "custom\(index)", url: "https://example.com/\(index)", title: nil, added_at: "2026-08-01T00:00:00Z"))
+        }
+        XCTAssertEqual(LocalRefreshCoordinator.chunkEnd(startingAt: 0, in: customUnits), 4)
+    }
+
     func testBackgroundRefreshPlanRotatesTermsAndSourcesWithoutStarvation() {
         let first = WatchTerm(id: "first", keyword: "First")
         let second = WatchTerm(id: "second", keyword: "Second")

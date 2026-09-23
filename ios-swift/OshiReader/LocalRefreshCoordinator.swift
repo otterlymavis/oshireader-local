@@ -207,14 +207,60 @@ final class LocalRefreshCoordinator: ObservableObject {
     // Units are independent network fetches (one term+platform, or one custom
     // URL) — running several concurrently covers more of the rotation per
     // wake instead of serializing it, without changing the per-unit timeout
-    // or the checkpointing granularity by more than a chunk. 4 matches
-    // `IngestionService.sourceRequestLimiter`'s global cap on concurrent
-    // source requests, so this doesn't add real network concurrency beyond
-    // what the app already allows elsewhere — it just stops a background
-    // wake from leaving half of those slots idle. At ~2 chunks per wake
-    // (`backgroundWorkBudget` / `backgroundUnitDeadline`), that's up to 8
-    // rotation units checked per wake instead of 4.
+    // or the checkpointing granularity by more than a chunk. 4 is an upper
+    // bound on units per chunk (so a run of zero-weight custom-URL units,
+    // see `keywordWeight`, can't grow a chunk unbounded); the actual chunk
+    // width is capped below by `IngestionService.sourceRequestLimiter`'s
+    // capacity so this doesn't add real network concurrency beyond what the
+    // app already allows elsewhere — it just stops a background wake from
+    // leaving those slots idle. At ~2 chunks per wake (`backgroundWorkBudget`
+    // / `backgroundUnitDeadline`), that's up to 8 rotation units checked per
+    // wake instead of 4 (fewer when units carry keyword aliases).
     private static let backgroundConcurrentUnits = 4
+
+    // How many `sourceRequestLimiter` acquisitions a unit's `ingestReport`
+    // call can make at once: one task per search keyword (primary + up to
+    // `LocalRefreshRequest.background.maximumAliases` aliases), all issued
+    // concurrently (IngestionService.ingestReport's task group). `.custom`
+    // units fetch via `NetworkManager` directly and never touch
+    // `sourceRequestLimiter`, so they carry no weight here.
+    // Internal and `nonisolated` (not `private`) — pure function of its
+    // arguments, no actor-isolated state — so unit tests can call it
+    // directly via `@testable import` without hopping onto the main actor.
+    nonisolated static func keywordWeight(for unit: BackgroundRefreshUnit) -> Int {
+        switch unit {
+        case .source(let term, _):
+            return IngestionService.searchKeywords(
+                for: term,
+                maximumAliases: LocalRefreshRequest.background.maximumAliases
+            ).count
+        case .custom:
+            return 0
+        }
+    }
+
+    /// End index (exclusive) of the next chunk starting at `unitIndex`: at
+    /// most `backgroundConcurrentUnits` units, and no more than fit under
+    /// `IngestionService.sourceRequestLimiter`'s capacity in total keyword
+    /// weight — otherwise a chunk of alias-bearing terms can ask the shared
+    /// limiter for more concurrent slots than it has, queue past
+    /// `unitDeadline`, and bail out empty instead of ever attempting the
+    /// request. Always admits at least one unit so a single unit heavier
+    /// than the cap still makes progress.
+    /// Internal and `nonisolated` (not `private`) — see `keywordWeight`.
+    nonisolated static func chunkEnd(startingAt unitIndex: Int, in units: [BackgroundRefreshUnit]) -> Int {
+        var end = unitIndex
+        var weight = 0
+        while end < units.count, end - unitIndex < backgroundConcurrentUnits {
+            let unitWeight = keywordWeight(for: units[end])
+            if end > unitIndex, weight + unitWeight > IngestionService.sourceRequestLimiter.capacity {
+                break
+            }
+            weight += unitWeight
+            end += 1
+        }
+        return end
+    }
 
     private init() {}
 
@@ -448,7 +494,7 @@ final class LocalRefreshCoordinator: ObservableObject {
                   Date().timeIntervalSince(startedAt) + Self.backgroundUnitDeadline <= Self.backgroundWorkBudget
             else { break }
 
-            let chunkEnd = min(unitIndex + Self.backgroundConcurrentUnits, plan.units.count)
+            let chunkEnd = Self.chunkEnd(startingAt: unitIndex, in: plan.units)
             let chunk = Array(plan.units[unitIndex..<chunkEnd])
             // Shared across the chunk: every member starts at the same instant,
             // so they share one fetch deadline rather than each getting its own

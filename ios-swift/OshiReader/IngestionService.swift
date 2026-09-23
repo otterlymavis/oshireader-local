@@ -432,7 +432,9 @@ final class IngestionService {
     /// Caps concurrent bing.com/news requests across all in-flight terms.
     private static let bingNewsLimiter = RequestLimiter(limit: 3)
     /// Caps all source requests across foreground and background ingestion.
-    private static let sourceRequestLimiter = RequestLimiter(limit: 4)
+    /// `static let` so `sourceRequestLimiter.capacity` is reachable without
+    /// `await` from outside `IngestionService` — see `RequestLimiter.capacity`.
+    static let sourceRequestLimiter = RequestLimiter(limit: 4)
     static let maximumAliasesPerTerm = 5
 
     /// Removes common analytics parameters only for deduplication. The
@@ -3179,6 +3181,10 @@ final class IngestionService {
 /// suspend until a slot frees up.
 actor RequestLimiter {
     private let limit: Int
+    /// The limiter's capacity, readable without `await` (immutable, set once
+    /// at `init`) so callers that need to size their own concurrency to this
+    /// limiter's actual limit — rather than duplicating the number — can.
+    nonisolated var capacity: Int { limit }
     private var active = 0
     private var waiters: [(id: UUID, continuation: CheckedContinuation<Bool, Never>)] = []
 
