@@ -87,6 +87,8 @@ final class PaidAPNSLifecycleCoordinator {
 final class PlusStore: ObservableObject {
     static let shared = PlusStore()
     static let oneWatchWordProductID = "com.otterpia.oshireader.hosted.lifetime"
+    /// Apple's standard EULA, used as-is since the hosted subscriptions don't need custom terms.
+    static let standardEULAURL = URL(string: "https://www.apple.com/legal/internet-services/itunes/dev/stdeula/")!
 
     static var productIDs: [String] {
         let raw = Bundle.main.object(forInfoDictionaryKey: "PushSubscriptionProductIDs") as? String ?? ""

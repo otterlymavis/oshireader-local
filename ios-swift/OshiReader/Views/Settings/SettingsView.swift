@@ -140,6 +140,11 @@ struct SettingsView: View {
                         Label(i18n.t("privacyPolicy"), systemImage: "hand.raised")
                     }
                     .accessibilityIdentifier("settings.privacyPolicyLink")
+
+                    Link(destination: PlusStore.standardEULAURL) {
+                        Label(i18n.t("termsOfUse"), systemImage: "doc.text")
+                    }
+                    .accessibilityIdentifier("settings.termsOfUseLink")
                 }
 
                 // Section: Source Status (local refresh diagnostics) — kept

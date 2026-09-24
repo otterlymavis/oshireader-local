@@ -1285,6 +1285,12 @@ class I18nManager: ObservableObject {
             "zh-TW": "隱私權政策",
             "zh-CN": "隐私政策"
         ],
+        "termsOfUse": [
+            "en": "Terms of Use (EULA)",
+            "ja": "利用規約(EULA)",
+            "zh-TW": "使用條款(EULA)",
+            "zh-CN": "使用条款(EULA)"
+        ],
         "privacyStoredTitle": [
             "en": "Data Stored on This Device",
             "ja": "このデバイスに保存されるデータ",

@@ -113,6 +113,16 @@ struct PaidBackendSettingsView: View {
                 }
                 Button(i18n.t("paidRestorePurchases")) { Task { await plusStore.restorePurchases() } }
 
+                HStack {
+                    Link(i18n.t("privacyPolicy"), destination: URL(string: "https://otterlymavis.github.io/oshireader-local/privacy/")!)
+                    Text("·")
+                        .foregroundColor(theme.colors.textMuted)
+                    Link(i18n.t("termsOfUse"), destination: PlusStore.standardEULAURL)
+                }
+                .font(.caption2)
+                .foregroundColor(theme.colors.textMuted)
+                .accessibilityIdentifier("settings.paidBackendLegalLinks")
+
                 if plusStore.pushDeliveryState == .selectionRequired {
                     Text(i18n.t("paidPushPausedSelection"))
                         .font(.caption)
