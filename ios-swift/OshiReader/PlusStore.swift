@@ -213,6 +213,18 @@ final class PlusStore: ObservableObject {
                     products = loadedProducts
                     return
                 }
+                // StoreKit returned successfully but with no matching products —
+                // e.g. a misconfigured product identifier or an App Store Connect
+                // propagation delay. Unlike a thrown error, this fell through
+                // silently with no log and no errorMessage, leaving no way to
+                // tell a real configuration bug from a transient hiccup.
+                if !ProductLoadRetryPolicy.shouldRetry(afterAttempt: attempt) {
+                    AppLogger.network.warning(
+                        "StoreKit returned no products for the configured identifiers after \(attempt) attempts"
+                    )
+                    errorMessage = I18nManager.shared.t("paidPurchasesUnavailable")
+                    return
+                }
             } catch {
                 if !ProductLoadRetryPolicy.shouldRetry(afterAttempt: attempt) {
                     errorMessage = error.localizedDescription
