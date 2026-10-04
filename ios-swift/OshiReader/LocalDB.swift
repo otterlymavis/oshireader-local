@@ -997,7 +997,15 @@ class LocalDB: ObservableObject {
                 if let notificationHandler {
                     notificationHandler(notifyItems, terms)
                 } else {
-                    Task {
+                    // notifyItems/terms are captured for the profile active right
+                    // now, but this Task doesn't run until a later run-loop turn.
+                    // If the user switches profiles in between, re-check before
+                    // calling in — otherwise NotificationManager would enqueue and
+                    // persist this profile's items under whichever profile happens
+                    // to be active when the Task starts.
+                    let notifyingProfileID = profileStore.currentProfileIDThreadSafe
+                    Task { [profileStore] in
+                        guard profileStore.currentProfileIDThreadSafe == notifyingProfileID else { return }
                         await NotificationManager.shared.notifyForNewItems(notifyItems, terms: terms)
                     }
                 }
