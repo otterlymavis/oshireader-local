@@ -730,9 +730,18 @@ final class NotificationManager: ObservableObject {
                     center.removeDeliveredNotifications(withIdentifiers: [queued.identifier])
                     return
                 }
-                if queuedIndividualNotifications.first == queued {
-                    queuedIndividualNotifications.removeFirst()
+                // Match by identifier, not full equality: a concurrent
+                // notifyForNewItems() call can merge fresh items into this same
+                // not-yet-drained entry (same identifier) while the request above
+                // is in flight. Comparing `== queued` would then fail on `items`
+                // and leave the (already-fired) entry stuck at the head, where
+                // it gets reprocessed indefinitely instead of the drain advancing.
+                let ledgerItems: [FeedItem]
+                if let dequeuedIndex = queuedIndividualNotifications.firstIndex(where: { $0.identifier == queued.identifier }) {
+                    ledgerItems = queuedIndividualNotifications.remove(at: dequeuedIndex).items
                     persistQueuedIndividualNotifications()
+                } else {
+                    ledgerItems = queued.items
                 }
                 pending.append(request)
                 availableSlots -= 1
@@ -742,8 +751,9 @@ final class NotificationManager: ObservableObject {
                 if usesImmediateBurst { immediateBudget -= 1 }
                 // A grouped request only registers ITS OWN identifier (the
                 // newest item's) with Notification Center. Ledger every bundled
-                // item so the others don't look unseen again if they resurface.
-                for item in queued.items {
+                // item (including any merged in by the race above) so none of
+                // them look unseen again if they resurface.
+                for item in ledgerItems {
                     notifiedItemLedger[Self.notificationIdentifier(forTermID: queued.termID, itemID: item.id)] = schedulingNow
                 }
                 persistNotifiedItemLedger()
