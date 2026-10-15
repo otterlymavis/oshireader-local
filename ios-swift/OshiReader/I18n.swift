@@ -51,6 +51,18 @@ class I18nManager: ObservableObject {
             "zh-TW": "動態",
             "zh-CN": "动态"
         ],
+        "catchUpSummaryFmt": [
+            "en": "%d new matches in your feed",
+            "ja": "フィードに新着%d件",
+            "zh-TW": "動態中有 %d 則新項目",
+            "zh-CN": "动态中有 %d 条新内容"
+        ],
+        "viewFeed": [
+            "en": "View feed",
+            "ja": "フィードを見る",
+            "zh-TW": "查看動態",
+            "zh-CN": "查看动态"
+        ],
         "tabSaved": [
             "en": "Saved",
             "ja": "ブックマーク",

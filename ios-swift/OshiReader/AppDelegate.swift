@@ -50,12 +50,11 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     }
 
     func applicationDidBecomeActive(_ application: UIApplication) {
-        // Pending requests disappear from the system queue as they deliver.
-        // Re-check capacity whenever the app becomes active so persisted
-        // overflow cannot remain stranded after those slots have opened.
+        // The feed already contains matches found while away. Turn pending
+        // local alerts into one in-app catch-up notice on return.
         Task {
+            await NotificationManager.shared.handleAppBecameActive()
             await NotificationManager.shared.refreshAuthorizationStatus()
-            await NotificationManager.shared.drainQueuedIndividualNotifications()
         }
         if PlusStore.shouldSyncBackend {
             if PlusStore.shared.hasActiveEntitlement {
@@ -115,19 +114,20 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         }
     }
 
-    // Present locally scheduled new-item alerts as a banner with sound while
-    // the app is active; background refresh may also schedule these alerts.
+    // Local matches are visible in the feed while the app is open. Keep hosted
+    // push presentation unchanged; suppress only local-alert banners/sounds.
     nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification,
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
-        completionHandler([.banner, .list, .sound, .badge])
-        // While the app stays in the foreground, each delivered notification
-        // frees a pending slot without another lifecycle transition. Replenish
-        // the system queue as those slots open.
-        Task { @MainActor in
-            await NotificationManager.shared.drainQueuedIndividualNotifications()
+        if notification.request.identifier.hasPrefix("oshireader-new-term-") {
+            completionHandler([])
+            Task { @MainActor in
+                NotificationManager.shared.handleForegroundLocalDelivery(notification.request)
+            }
+        } else {
+            completionHandler([.banner, .list, .sound, .badge])
         }
     }
 

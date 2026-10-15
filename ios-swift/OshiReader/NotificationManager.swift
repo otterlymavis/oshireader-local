@@ -35,6 +35,8 @@ private struct QueuedIndividualNotification: Codable, Equatable {
     let items: [FeedItem]
     let includeAttachments: Bool
     let notBefore: Date
+    // Optional so queues saved by earlier app versions remain readable.
+    let enqueuedAt: Date?
 }
 
 @MainActor
@@ -48,6 +50,7 @@ final class NotificationManager: ObservableObject {
 
     @Published private(set) var authorizationStatus: UNAuthorizationStatus = .notDetermined
     @Published private(set) var lastRemoteRegistrationError: String?
+    @Published private(set) var catchUpItemCount = 0
 
     private let center: NotificationCenterClient
     private let remoteRegistration: @MainActor () -> Void
@@ -81,6 +84,8 @@ final class NotificationManager: ObservableObject {
     // resurface (e.g. evicted by the feed cap, then re-ingested). Pruned to the
     // same window LocalDB stops treating a resurfaced item as notifiable at all.
     private var notifiedItemLedger: [String: Date] = [:]
+    private var isAppForeground = false
+    private var foregroundCountedIdentifiers = Set<String>()
 
     init(
         center: NotificationCenterClient = UNUserNotificationCenter.current(),
@@ -356,6 +361,8 @@ final class NotificationManager: ObservableObject {
         queuedIndividualNotifications.removeAll()
         lastIndividualDeliveryDate = nil
         notifiedItemLedger.removeAll()
+        catchUpItemCount = 0
+        foregroundCountedIdentifiers.removeAll()
         persistQueuedIndividualNotifications()
         persistLastIndividualDeliveryDate()
         persistNotifiedItemLedger()
@@ -474,6 +481,7 @@ final class NotificationManager: ObservableObject {
         QuietHoursDigestState.clear(defaults: notificationQueueDefaults)
 
         loadNotificationQueueForCurrentProfileIfNeeded()
+        pruneStaleQueuedNotifications(at: now)
         let pendingIDs = Set(await center.pendingNotificationRequests().map(\.identifier))
         // An item that fell out of the feed cap (or reappears after a watch
         // term/platform is re-added) looks brand new to the merge even though
@@ -500,6 +508,22 @@ final class NotificationManager: ObservableObject {
         }
 
         let deliveryItems = matchingItems.sorted(by: feedItemSortPrecedes).reversed()
+        if isAppForeground {
+            var newCount = 0
+            for item in deliveryItems {
+                guard let term = notifiedTermsByKeyword[item.watch_term_keyword] else { continue }
+                let identifier = Self.notificationIdentifier(forTermID: term.id, itemID: item.id)
+                guard !alreadyNotified(item, identifier: identifier),
+                      foregroundCountedIdentifiers.insert(identifier).inserted else { continue }
+                notifiedItemLedger[identifier] = now
+                newCount += 1
+            }
+            if newCount > 0 {
+                persistNotifiedItemLedger()
+                catchUpItemCount += newCount
+            }
+            return
+        }
         let groupingEnabled = NotificationDeliverySettings.current(defaults: notificationQueueDefaults).groupedByKeyword
 
         func enqueue(_ queued: QueuedIndividualNotification) {
@@ -554,7 +578,8 @@ final class NotificationManager: ObservableObject {
                     termID: term.id,
                     items: combined,
                     includeAttachments: includeAttachments,
-                    notBefore: notBefore
+                    notBefore: notBefore,
+                    enqueuedAt: now
                 ))
             }
         } else {
@@ -567,7 +592,8 @@ final class NotificationManager: ObservableObject {
                     termID: term.id,
                     items: [item],
                     includeAttachments: includeAttachments,
-                    notBefore: notBefore
+                    notBefore: notBefore,
+                    enqueuedAt: now
                 ))
             }
         }
@@ -585,6 +611,7 @@ final class NotificationManager: ObservableObject {
     /// one clump. A single instant item plus a wide gap reads as staggered;
     /// three quick ones 4s apart did not.
     private static let individualDeliverySpacing: TimeInterval = 15
+    private static let maximumQueuedAlertAge: TimeInterval = 24 * 60 * 60
     private static let immediateDeliveryBurst = 1
     private static let individualNotificationQueueKey = "individual_notification_queue"
     private static let individualNotificationIdentifierPrefix = "oshireader-new-term-"
@@ -596,8 +623,93 @@ final class NotificationManager: ObservableObject {
         return queuedIndividualNotifications.count
     }
 
+    /// Returning to the app means these matches are already available in the
+    /// feed. Replace still-pending local alerts with one in-app catch-up count.
+    func handleAppBecameActive() async {
+        isAppForeground = true
+        localNotificationGeneration &+= 1
+        let generation = localNotificationGeneration
+        loadNotificationQueueForCurrentProfileIfNeeded()
+        let now = nowProvider()
+        let pending = await center.pendingNotificationRequests()
+        guard isAppForeground, generation == localNotificationGeneration else { return }
+        let localPending = pending.filter { $0.identifier.hasPrefix(Self.individualNotificationIdentifierPrefix) }
+        let queued = queuedIndividualNotifications
+        queuedIndividualNotifications.removeAll()
+        persistQueuedIndividualNotifications()
+        lastIndividualDeliveryDate = nil
+        persistLastIndividualDeliveryDate()
+
+        var countsByIdentifier: [String: Int] = [:]
+        for request in localPending where !Self.isStaleNotification(userInfo: request.content.userInfo, now: now) {
+            countsByIdentifier[request.identifier] = max(1, request.content.userInfo["new_count"] as? Int ?? 1)
+        }
+        for entry in queued {
+            for item in entry.items {
+                notifiedItemLedger[Self.notificationIdentifier(forTermID: entry.termID, itemID: item.id)] = now
+            }
+            guard !isStale(entry, at: now) else { continue }
+            countsByIdentifier[entry.identifier] = max(countsByIdentifier[entry.identifier] ?? 0, entry.items.count)
+        }
+        persistNotifiedItemLedger()
+        center.removePendingNotificationRequests(withIdentifiers: localPending.map(\.identifier))
+        let count = countsByIdentifier.reduce(into: 0) { total, entry in
+            if foregroundCountedIdentifiers.insert(entry.key).inserted { total += entry.value }
+        }
+        if count > 0 { catchUpItemCount += count }
+    }
+
+    func handleAppEnteredBackground() {
+        isAppForeground = false
+        localNotificationGeneration &+= 1
+        foregroundCountedIdentifiers.removeAll()
+        catchUpItemCount = 0
+    }
+
+    func dismissCatchUp() {
+        catchUpItemCount = 0
+    }
+
+    func handleForegroundLocalDelivery(_ request: UNNotificationRequest) {
+        guard request.identifier.hasPrefix(Self.individualNotificationIdentifierPrefix),
+              foregroundCountedIdentifiers.insert(request.identifier).inserted,
+              !Self.isStaleNotification(userInfo: request.content.userInfo, now: nowProvider()) else { return }
+        catchUpItemCount += max(1, request.content.userInfo["new_count"] as? Int ?? 1)
+    }
+
+    private func isStale(_ entry: QueuedIndividualNotification, at now: Date) -> Bool {
+        let queuedAt = entry.enqueuedAt
+            ?? entry.items.first.flatMap { parseISO8601Date($0.fetched_at) }
+            ?? entry.notBefore
+        return now.timeIntervalSince(queuedAt) > Self.maximumQueuedAlertAge
+    }
+
+    private static func isStaleNotification(userInfo: [AnyHashable: Any], now: Date) -> Bool {
+        let queuedAt = (userInfo["oshireader_local_enqueued_at"] as? TimeInterval)
+            .map { Date(timeIntervalSince1970: $0) }
+            ?? (userInfo["fetched_at"] as? String).flatMap(parseISO8601Date)
+        return queuedAt.map { now.timeIntervalSince($0) > maximumQueuedAlertAge } ?? false
+    }
+
+    private func pruneStaleQueuedNotifications(at now: Date) {
+        let stale = queuedIndividualNotifications.filter { isStale($0, at: now) }
+        guard !stale.isEmpty else { return }
+        for entry in stale {
+            for item in entry.items {
+                notifiedItemLedger[Self.notificationIdentifier(forTermID: entry.termID, itemID: item.id)] = now
+            }
+        }
+        let staleIDs = Set(stale.map(\.identifier))
+        queuedIndividualNotifications.removeAll { staleIDs.contains($0.identifier) }
+        persistQueuedIndividualNotifications()
+        persistNotifiedItemLedger()
+    }
+
     func drainQueuedIndividualNotifications(generation requestedGeneration: Int? = nil) async {
         loadNotificationQueueForCurrentProfileIfNeeded()
+        let now = nowProvider()
+        pruneStaleQueuedNotifications(at: now)
+        guard !isAppForeground else { return }
         if isDrainingIndividualNotifications {
             await withCheckedContinuation { continuation in
                 individualNotificationDrainWaiters.append(continuation)
@@ -627,7 +739,6 @@ final class NotificationManager: ObservableObject {
         var availableSlots = max(0, maximumPendingNotificationRequests - pending.count)
         guard availableSlots > 0 else { return }
 
-        let now = nowProvider()
         let managedPending = pending.filter { request in
             guard request.identifier.hasPrefix(Self.individualNotificationIdentifierPrefix) else { return false }
             // A request tagged for another profile — possible after deleting the
@@ -797,6 +908,7 @@ final class NotificationManager: ObservableObject {
         // Tag the owning profile so a later drain on a different profile (after
         // deleting the active one) doesn't count this request as its own.
         content.userInfo[Self.profileIDUserInfoKey] = notificationQueueProfileID.uuidString
+        content.userInfo["oshireader_local_enqueued_at"] = queued.enqueuedAt?.timeIntervalSince1970
         content.threadIdentifier = queued.identifier
         content.targetContentIdentifier = item.id
         return content
@@ -806,6 +918,8 @@ final class NotificationManager: ObservableObject {
         let currentProfileID = notificationQueueProfileIDProvider()
         guard currentProfileID != notificationQueueProfileID else { return }
         notificationQueueProfileID = currentProfileID
+        catchUpItemCount = 0
+        foregroundCountedIdentifiers.removeAll()
         queuedIndividualNotifications = Self.loadQueuedIndividualNotifications(
             defaults: notificationQueueDefaults,
             profileID: currentProfileID

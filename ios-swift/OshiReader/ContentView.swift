@@ -13,6 +13,7 @@ struct ContentView: View {
     @StateObject private var i18n = I18nManager.shared
     @StateObject private var appearance = AppearanceManager.shared
     @StateObject private var notificationNavigation = NotificationNavigationManager.shared
+    @StateObject private var notifications = NotificationManager.shared
     @StateObject private var intentNavigation = AppIntentNavigationManager.shared
     
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -116,6 +117,40 @@ struct ContentView: View {
         .font(appearance.appFont)
         .ifLet(appearance.dynamicTypeSizeOverride) { view, size in
             view.environment(\.dynamicTypeSize, size)
+        }
+        .safeAreaInset(edge: .top) {
+            if notifications.catchUpItemCount > 0 {
+                HStack(spacing: 12) {
+                    Button {
+                        selectedTab = .feed
+                        notifications.dismissCatchUp()
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: "tray.full")
+                            Text(i18n.tFormat("catchUpSummaryFmt", notifications.catchUpItemCount))
+                            Spacer(minLength: 4)
+                            Text(i18n.t("viewFeed"))
+                                .fontWeight(.semibold)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .accessibilityIdentifier("feed.catchUpSummary")
+
+                    Button {
+                        notifications.dismissCatchUp()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .frame(minWidth: 30, minHeight: 30)
+                    }
+                    .accessibilityLabel(i18n.t("close"))
+                    .accessibilityIdentifier("feed.dismissCatchUp")
+                }
+                .font(.subheadline)
+                .foregroundColor(theme.colors.text)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .background(theme.colors.card)
+            }
         }
         .onAppear {
             updateTabBarAppearance(for: theme.mode)

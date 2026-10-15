@@ -19,6 +19,7 @@ struct OshiReaderApp: App {
         }
         .onChange(of: scenePhase) { _, phase in
             guard phase == .background, !Self.isUnitTesting else { return }
+            NotificationManager.shared.handleAppEnteredBackground()
             // Scene-based SwiftUI apps do not reliably deliver the legacy
             // UIApplicationDelegate background callback. Queue the local feed
             // refresh from the scene lifecycle so new items can be discovered

@@ -2327,6 +2327,109 @@ final class FeedMergingTests: XCTestCase {
         XCTAssertTrue(center.requests.isEmpty)
         XCTAssertNil(QuietHoursDigestState.load(defaults: defaults))
     }
+    @MainActor
+    func testReturningToAppConvertsPendingAndOverflowIntoOneCatchUpCount() async throws {
+        let suiteName = "FeedMergingTests.catch-up.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let profileID = UUID()
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let center = MockNotificationCenter(status: .authorized)
+        let manager = NotificationManager(
+            center: center,
+            notificationQueueDefaults: defaults,
+            notificationQueueProfileIDProvider: { profileID },
+            nowProvider: { now },
+            maximumPendingNotificationRequests: 2
+        )
+        let term = WatchTerm(id: "catch-up", keyword: "Catch Up", notify_on_new: true)
+        let timestamp = iso8601String(from: now)
+        let items = (1...4).map { index in
+            FeedItem(id: "news:catch-up-\(index)", platform: "news", url: "https://example.com/\(index)",
+                     title: "Match \(index)", content_text: nil, author: nil, thumbnail_url: nil,
+                     media_type: "article", published_at: timestamp, watch_term_keyword: term.keyword,
+                     fetched_at: timestamp)
+        }
+        await manager.notifyForNewItems(items, terms: [term], includeAttachments: false)
+        XCTAssertEqual(center.requests.count, 2)
+        XCTAssertEqual(manager.queuedIndividualNotificationCount, 2)
+
+        let hosted = UNNotificationRequest(identifier: "hosted-push", content: UNMutableNotificationContent(), trigger: nil)
+        try await center.add(hosted)
+        await manager.handleAppBecameActive()
+
+        XCTAssertEqual(manager.catchUpItemCount, 4)
+        XCTAssertEqual(manager.queuedIndividualNotificationCount, 0)
+        XCTAssertEqual(center.requests.map(\.identifier), ["hosted-push"])
+        await manager.handleAppBecameActive()
+        XCTAssertEqual(manager.catchUpItemCount, 4, "Repeated activation must not recount the same alerts")
+    }
+
+    @MainActor
+    func testForegroundMatchesStayInFeedWithoutSchedulingBanners() async throws {
+        let suiteName = "FeedMergingTests.foreground.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let center = MockNotificationCenter(status: .authorized)
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let profileID = UUID()
+        let manager = NotificationManager(
+            center: center,
+            notificationQueueDefaults: defaults,
+            notificationQueueProfileIDProvider: { profileID },
+            nowProvider: { now }
+        )
+        await manager.handleAppBecameActive()
+        let term = WatchTerm(id: "foreground", keyword: "Foreground", notify_on_new: true)
+        let timestamp = iso8601String(from: now)
+        let item = FeedItem(id: "news:foreground", platform: "news", url: "https://example.com/new",
+                            title: "New", content_text: nil, author: nil, thumbnail_url: nil,
+                            media_type: "article", published_at: timestamp, watch_term_keyword: term.keyword,
+                            fetched_at: timestamp)
+
+        await manager.notifyForNewItems([item], terms: [term], includeAttachments: false)
+        await manager.notifyForNewItems([item], terms: [term], includeAttachments: false)
+
+        XCTAssertTrue(center.requests.isEmpty)
+        XCTAssertEqual(manager.catchUpItemCount, 1)
+        XCTAssertEqual(manager.queuedIndividualNotificationCount, 0)
+    }
+
+    @MainActor
+    func testOldQueuedAlertsExpireBeforeLaterDelivery() async throws {
+        let suiteName = "FeedMergingTests.stale-alerts.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let center = MockNotificationCenter(status: .authorized)
+        var now = Date(timeIntervalSince1970: 1_800_000_000)
+        let profileID = UUID()
+        let manager = NotificationManager(
+            center: center,
+            notificationQueueDefaults: defaults,
+            notificationQueueProfileIDProvider: { profileID },
+            nowProvider: { now },
+            maximumPendingNotificationRequests: 1
+        )
+        let term = WatchTerm(id: "stale", keyword: "Stale", notify_on_new: true)
+        let timestamp = iso8601String(from: now)
+        let items = (1...3).map { index in
+            FeedItem(id: "news:stale-\(index)", platform: "news", url: "https://example.com/\(index)",
+                     title: "Old \(index)", content_text: nil, author: nil, thumbnail_url: nil,
+                     media_type: "article", published_at: timestamp, watch_term_keyword: term.keyword,
+                     fetched_at: timestamp)
+        }
+        await manager.notifyForNewItems(items, terms: [term], includeAttachments: false)
+        XCTAssertEqual(manager.queuedIndividualNotificationCount, 2)
+        now.addTimeInterval(25 * 60 * 60)
+        center.removePendingNotificationRequests(withIdentifiers: center.requests.map(\.identifier))
+
+        await manager.drainQueuedIndividualNotifications()
+
+        XCTAssertTrue(center.requests.isEmpty)
+        XCTAssertEqual(manager.queuedIndividualNotificationCount, 0)
+        await manager.handleAppBecameActive()
+        XCTAssertEqual(manager.catchUpItemCount, 0)
+    }
 }
 
 private final class MockNotificationCenter: NotificationCenterClient {
