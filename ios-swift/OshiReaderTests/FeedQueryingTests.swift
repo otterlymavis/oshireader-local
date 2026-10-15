@@ -231,6 +231,14 @@ final class FeedQueryingTests: XCTestCase {
     }
 
     func testReaderWebViewRequestsGirlsChannelMobileLayout() {
+        let girlsChannelItem = FeedItem(
+            id: "girlschannel:topic", platform: "GirlsChannel",
+            url: "https://girlschannel.net/topics/6304622/", title: "Topic",
+            content_text: nil, author: nil, thumbnail_url: nil,
+            media_type: "text", published_at: "2026-10-13T00:00:00Z",
+            watch_term_keyword: "Test", fetched_at: "2026-10-13T00:00:00Z"
+        )
+        XCTAssertFalse(ReaderView.initialReaderMode(for: girlsChannelItem))
         XCTAssertEqual(WebViewHelper.customUserAgent(for: "girlschannel"), WebViewHelper.mobileUserAgent)
         XCTAssertEqual(WebViewHelper.customUserAgent(for: "GirlsChannel"), WebViewHelper.mobileUserAgent)
         XCTAssertEqual(WebViewHelper.customUserAgent(for: "twitter"), WebViewHelper.mobileUserAgent)

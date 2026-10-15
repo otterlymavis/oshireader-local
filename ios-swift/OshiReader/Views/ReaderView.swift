@@ -68,6 +68,11 @@ struct ReaderView: View {
         if usesSystemSafari(for: feedItem) {
             return false
         }
+        // GirlsChannel is a comment thread with its own mobile layout. The
+        // generic article styling enlarges its text and breaks that layout.
+        if PlatformRegistry.normalizeID(feedItem.platform) == "girlschannel" {
+            return false
+        }
         return !feedItem.id.hasPrefix("search:")
     }
 
@@ -1593,6 +1598,10 @@ private func shouldBlockReaderRequest(_ rawUrl: String) -> Bool {
 
 private let viewportFixJS = """
 (function () {
+  // This web view can be reused as the reader moves between sources. Check
+  // the document host, not the source that first created the web view.
+  // GirlsChannel already supplies a mobile viewport and layout.
+  if (/(^|\\.)girlschannel\\.net$/i.test(location.hostname)) return;
   var desiredContent = 'width=device-width, initial-scale=1';
 
   function ensureMeta() {
@@ -1606,7 +1615,7 @@ private let viewportFixJS = """
   }
 
   // Legacy fixed-width layouts — old BBS/thread tables, avatar columns,
-  // desktop-only sites like girlschannel.net — often still declare
+  // desktop-only sites — often still declare
   // width=device-width (or nothing at all) while their actual content is
   // hard-coded wider than the screen. A page that *declares* a viewport
   // tells WebKit to trust it, so unlike Mobile Safari's fallback for
