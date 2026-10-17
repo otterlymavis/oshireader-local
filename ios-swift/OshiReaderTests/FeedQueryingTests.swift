@@ -276,7 +276,11 @@ final class FeedQueryingTests: XCTestCase {
             XCTAssertFalse(originalURL.absoluteString.isEmpty, "Empty original URL for \(platform.id)")
             XCTAssertFalse(targetURL.absoluteString.isEmpty, "Empty target URL for \(platform.id)")
             XCTAssertEqual(ReaderView.usesSystemSafari(for: item), platform.id == "5ch")
-            XCTAssertEqual(ReaderView.initialReaderMode(for: item), platform.id != "5ch")
+            XCTAssertEqual(
+                ReaderView.initialReaderMode(for: item),
+                platform.id != "5ch" && platform.id != "girlschannel",
+                "Unexpected initial reader mode for \(platform.id)"
+            )
 
             if platform.id == "5ch" {
                 XCTAssertEqual(

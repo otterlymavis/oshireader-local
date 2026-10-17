@@ -37,10 +37,28 @@ enum BackgroundRefreshOutcome: Equatable {
 final class BackgroundRefreshManager {
     static let shared = BackgroundRefreshManager()
     static let taskIdentifier = "com.otterpia.oshireader.feed-refresh"
-    static let minimumInterval: TimeInterval = 15 * 60
+    // This is an earliest eligibility hint, not a guaranteed polling interval.
+    static let minimumInterval: TimeInterval = 5 * 60
     private static let operationDeadline: TimeInterval = 25
 
-    private init() {}
+    // The OS task identifier is app-wide, so its scheduling hint must survive
+    // process relaunches and profile switches without belonging to one profile.
+    private static let earliestBeginDateDefaultsKey = "background_refresh.earliest_begin_date"
+    private let schedulingDefaults: UserDefaults
+    private let schedulingNow: () -> Date
+    private let submitRefreshRequest: (BGAppRefreshTaskRequest) throws -> Void
+
+    init(
+        defaults: UserDefaults = .standard,
+        now: @escaping () -> Date = { Date() },
+        submit: @escaping (BGAppRefreshTaskRequest) throws -> Void = {
+            try BGTaskScheduler.shared.submit($0)
+        }
+    ) {
+        schedulingDefaults = defaults
+        schedulingNow = now
+        submitRefreshRequest = submit
+    }
 
     private static let lastCompletedAtDefaultsKey = LocalProfileStore.defaultsKey("background_refresh.last_completed_at")
 
@@ -69,17 +87,30 @@ final class BackgroundRefreshManager {
         }
     }
 
-    func schedule() {
+    func schedule(afterTaskLaunch: Bool = false) {
+        let nextEligibility = schedulingNow().addingTimeInterval(Self.minimumInterval)
+        let savedTimestamp = schedulingDefaults.double(forKey: Self.earliestBeginDateDefaultsKey)
         let request = BGAppRefreshTaskRequest(identifier: Self.taskIdentifier)
-        request.earliestBeginDate = Date(timeIntervalSinceNow: Self.minimumInterval)
+        if !afterTaskLaunch, savedTimestamp.isFinite, savedTimestamp > 0 {
+            // Reopening or backgrounding the app must not push an existing
+            // opportunity later. An overdue date remains eligible immediately.
+            request.earliestBeginDate = min(Date(timeIntervalSince1970: savedTimestamp), nextEligibility)
+        } else {
+            // An actual BG task launch consumes its request. Queue a fresh
+            // opportunity before starting work, even if this run later expires.
+            request.earliestBeginDate = nextEligibility
+        }
         do {
             // Submitting the same refresh identifier replaces its pending
             // request; do not cancel first, so a failed submission leaves the
-            // existing request queued and background refresh can still recover.
-            // Submission must also complete before returning: handle(_:) queues
-            // the next opportunity before its current background task can expire
-            // or complete and the process becomes eligible for suspension.
-            try BGTaskScheduler.shared.submit(request)
+            // existing request queued. Always submit synchronously: the saved
+            // date is only a hint, and iOS may have dropped the previous request.
+            // An async pending-request lookup can be suspended before submission.
+            try submitRefreshRequest(request)
+            schedulingDefaults.set(
+                request.earliestBeginDate?.timeIntervalSince1970,
+                forKey: Self.earliestBeginDateDefaultsKey
+            )
             AppLogger.network.notice("Background refresh request submitted")
         } catch {
             AppLogger.network.warning("Background refresh scheduling failed: \(error.localizedDescription)")
@@ -151,7 +182,7 @@ final class BackgroundRefreshManager {
     private func handle(_ task: BGAppRefreshTask) async {
         // Queue the next opportunity before starting network work. If iOS
         // expires or terminates this run, a future refresh remains pending.
-        schedule()
+        schedule(afterTaskLaunch: true)
         let operation = Task { @MainActor in
             await refreshNow()
         }

@@ -1026,16 +1026,16 @@ class I18nManager: ObservableObject {
             "zh-CN": "已启用 %d 个追踪关键字,更新可能需要更长时间。升级至 OshiReader+ 以加快更新速度。"
         ],
         "groupNotificationsToggle": [
-            "en": "Group Notifications",
-            "ja": "通知をまとめる",
-            "zh-TW": "合併通知",
-            "zh-CN": "合并通知"
+            "en": "Rolling Keyword Summaries",
+            "ja": "キーワードごとに通知を更新",
+            "zh-TW": "持續更新關鍵字摘要",
+            "zh-CN": "持续更新关键字摘要"
         ],
         "groupNotificationsFooter": [
-            "en": "When on, all new items for a keyword since your last check arrive as one banner instead of one per item.",
-            "ja": "オンにすると、前回確認してからのキーワードごとの新着はまとめて1件の通知として届きます。",
-            "zh-TW": "開啟後，同一關鍵字自上次查看以來的所有新項目會合併為一則通知，而非逐一發送。",
-            "zh-CN": "开启后，同一关键字自上次查看以来的所有新项目会合并为一条通知，而非逐一发送。"
+            "en": "Keep one notification per keyword and update its count as new posts arrive. Alerts clear as you review the posts.",
+            "ja": "キーワードごとに1件の通知を保ち、新着が増えると件数を更新します。投稿を確認すると、その投稿の通知が消えます。",
+            "zh-TW": "每個關鍵字保留一則通知，並隨新貼文到來更新數量。查看貼文後，相關通知會清除。",
+            "zh-CN": "每个关键字保留一条通知，并随新帖子到来更新数量。查看帖子后，相关通知会清除。"
         ],
         "notificationGroupedCountFmt": [
             "en": "%d new items",

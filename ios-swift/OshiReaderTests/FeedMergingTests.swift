@@ -20,9 +20,8 @@ final class FeedMergingTests: XCTestCase {
         db.compositions.removeAll()
         db.setSubscribedPlatforms(platforms: ["news", "tver", "youtube", "yahoonews", "custom"])
 
-        // NotificationManager persists its individual-notification queue, the
-        // last-delivery spacing anchor, and the notified-item ledger into
-        // `.standard`. Clear all three (plus the grouping toggle) so a test
+        // NotificationManager persists its notification queue, spacing anchor,
+        // and item ledgers into `.standard`. Reset them so a test
         // that builds a manager on the default store can't inherit another
         // test's staggered-delivery state or have its items look "already
         // notified" because an earlier test reused the same term/item ids.
@@ -31,10 +30,14 @@ final class FeedMergingTests: XCTestCase {
             "individual_notification_queue",
             "individual_notification_last_delivery",
             "notified_item_ledger",
+            "rolling_notification_summaries",
             "notification_delivery_grouped_by_keyword",
         ] {
             UserDefaults.standard.removeObject(forKey: LocalProfileStore.defaultsKey(key, profileID: profileID))
         }
+        // Most existing fixtures explicitly exercise individual delivery.
+        // Rolling-summary fixtures opt in separately below.
+        NotificationDeliverySettings(groupedByKeyword: false).save()
     }
 
     override func tearDownWithError() throws {
@@ -1067,10 +1070,10 @@ final class FeedMergingTests: XCTestCase {
 
         await manager.notifyForNewItems(items, terms: [term], includeAttachments: false)
 
-        // One banner for all three, anchored on the newest item (index 3).
+        // One stable banner for the keyword, anchored on the newest item.
         XCTAssertEqual(center.requests.count, 1)
         let request = try XCTUnwrap(center.requests.first)
-        XCTAssertEqual(request.identifier, "oshireader-new-term-grouped-news:grouped-3")
+        XCTAssertEqual(request.identifier, "oshireader-new-term-grouped-summary-\(LocalProfileStore.shared.currentProfileIDThreadSafe.uuidString)")
         XCTAssertEqual(request.content.subtitle, "Grouped item 3")
         XCTAssertEqual(request.content.body, "3 new items")
         XCTAssertEqual(request.content.userInfo["new_count"] as? Int, 3)
@@ -1103,18 +1106,15 @@ final class FeedMergingTests: XCTestCase {
         await manager.notifyForNewItems([item(1), item(2)], terms: [term], includeAttachments: false)
         XCTAssertEqual(center.requests.count, 1)
 
-        // Item 1 falls out of the feed cap and resurfaces alongside a genuinely
-        // new item 3. Only item 3 should produce (or extend) a new banner —
-        // item 1 was already delivered as part of the first group, even though
-        // it never got its own individual request/identifier in Notification
-        // Center to be caught by the pending/delivered check alone.
+        // A resurfaced item must not be counted twice, while previously
+        // notified, unreviewed items stay in the rolling summary.
         center.removePendingNotificationRequests(withIdentifiers: center.requests.map(\.identifier))
         await manager.notifyForNewItems([item(1), item(3)], terms: [term], includeAttachments: false)
 
         XCTAssertEqual(center.requests.count, 1)
         let request = try XCTUnwrap(center.requests.first)
-        XCTAssertEqual(request.identifier, "oshireader-new-term-grouped-ledger-news:grouped-ledger-3")
-        XCTAssertEqual(request.content.userInfo["new_count"] as? Int, 1)
+        XCTAssertEqual(request.identifier, "oshireader-new-term-grouped-ledger-summary-\(LocalProfileStore.shared.currentProfileIDThreadSafe.uuidString)")
+        XCTAssertEqual(request.content.userInfo["new_count"] as? Int, 3)
     }
 
     @MainActor
@@ -1156,6 +1156,360 @@ final class FeedMergingTests: XCTestCase {
         XCTAssertEqual(manager.queuedIndividualNotificationCount, 1)
     }
 
+    func testRollingSummaryIsDefaultAndPreservesExplicitIndividualChoice() throws {
+        let suiteName = "FeedMergingTests.summary-preference.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        XCTAssertTrue(NotificationDeliverySettings.current(defaults: defaults).groupedByKeyword)
+        NotificationDeliverySettings(groupedByKeyword: false).save(defaults: defaults)
+        XCTAssertFalse(NotificationDeliverySettings.current(defaults: defaults).groupedByKeyword)
+    }
+
+    @MainActor
+    func testRollingSummaryReplacesDeliveredBannerAndPersistsUnreadCountAcrossRelaunch() async throws {
+        let previousQuietHours = QuietHoursSettings.current()
+        QuietHoursSettings(enabled: false, startMinuteOfDay: 1320, endMinuteOfDay: 480).save()
+        defer { previousQuietHours.save() }
+        let suiteName = "FeedMergingTests.rolling-relaunch.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let profileID = UUID()
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let center = MockNotificationCenter(status: .authorized)
+        func makeManager() -> NotificationManager {
+            NotificationManager(center: center, notificationQueueDefaults: defaults,
+                                notificationQueueProfileIDProvider: { profileID }, nowProvider: { now })
+        }
+        let term = WatchTerm(id: "rolling-relaunch", keyword: "Rolling", notify_on_new: true)
+        let items = (1...3).map { notificationItem(index: $0, term: term, now: now) }
+        let identifier = "oshireader-new-term-rolling-relaunch-summary-\(profileID.uuidString)"
+
+        await makeManager().notifyForNewItems(Array(items.prefix(2)), terms: [term], includeAttachments: false)
+        XCTAssertEqual(center.requests.map(\.identifier), [identifier])
+        center.removeAllPendingNotificationRequests()
+        center.deliveredIdentifiers = [identifier]
+
+        // Reload persisted unread members, even when the next refresh only
+        // contains one of the old items alongside the newest one.
+        await makeManager().notifyForNewItems([items[0], items[2]], terms: [term], includeAttachments: false)
+
+        XCTAssertEqual(center.requests.map(\.identifier), [identifier])
+        XCTAssertEqual(center.requests.first?.content.userInfo["new_count"] as? Int, 3)
+        XCTAssertEqual(center.requests.first?.content.targetContentIdentifier, items[2].id)
+        // A delayed replacement keeps the old banner until its trigger fires.
+        // When it fires, the same ID replaces it rather than adding a second.
+        center.deliverRequest(identifier: identifier)
+        XCTAssertEqual(center.deliveredIdentifiers, [identifier])
+        XCTAssertTrue(center.requests.isEmpty)
+    }
+
+    @MainActor
+    func testReviewShrinksSummarySilentlyThenRemovesItWithoutReplayingReviewedPosts() async throws {
+        let previousQuietHours = QuietHoursSettings.current()
+        QuietHoursSettings(enabled: false, startMinuteOfDay: 1320, endMinuteOfDay: 480).save()
+        defer { previousQuietHours.save() }
+        let suiteName = "FeedMergingTests.rolling-review.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let profileID = UUID()
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let center = MockNotificationCenter(status: .authorized)
+        func makeManager() -> NotificationManager {
+            NotificationManager(center: center, notificationQueueDefaults: defaults,
+                                notificationQueueProfileIDProvider: { profileID }, nowProvider: { now })
+        }
+        let manager = makeManager()
+        let term = WatchTerm(id: "rolling-review", keyword: "Review", notify_on_new: true)
+        let items = (1...2).map { notificationItem(index: $0, term: term, now: now) }
+        await manager.notifyForNewItems(items, terms: [term], includeAttachments: false)
+        let identifier = try XCTUnwrap(center.requests.first?.identifier)
+        center.removeAllPendingNotificationRequests()
+        center.deliveredIdentifiers = [identifier]
+
+        await manager.markReviewed(itemID: items[1].id)
+
+        let remaining = try XCTUnwrap(center.requests.first)
+        XCTAssertEqual(remaining.identifier, identifier)
+        XCTAssertEqual(remaining.content.userInfo["new_count"] as? Int, 1)
+        XCTAssertEqual(remaining.content.targetContentIdentifier, items[0].id)
+        XCTAssertNil(remaining.content.sound)
+        XCTAssertEqual(remaining.content.interruptionLevel, .passive)
+        XCTAssertTrue(center.deliveredIdentifiers.isEmpty)
+
+        await manager.markReviewed(itemID: items[0].id)
+        XCTAssertTrue(center.requests.isEmpty)
+        XCTAssertEqual(manager.queuedIndividualNotificationCount, 0)
+
+        await makeManager().notifyForNewItems(items, terms: [term], includeAttachments: false)
+        XCTAssertTrue(center.requests.isEmpty, "Reviewed posts must stay reviewed across a relaunch")
+    }
+
+    @MainActor
+    func testReviewCancelsIndividualPendingDeliveredAndOverflowAlerts() async throws {
+        let previousQuietHours = QuietHoursSettings.current()
+        QuietHoursSettings(enabled: false, startMinuteOfDay: 1320, endMinuteOfDay: 480).save()
+        defer { previousQuietHours.save() }
+        let suiteName = "FeedMergingTests.individual-review.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        NotificationDeliverySettings(groupedByKeyword: false).save(defaults: defaults)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let profileID = UUID()
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let center = MockNotificationCenter(status: .authorized)
+        let manager = NotificationManager(center: center, notificationQueueDefaults: defaults,
+                                          notificationQueueProfileIDProvider: { profileID },
+                                          nowProvider: { now }, maximumPendingNotificationRequests: 1)
+        let term = WatchTerm(id: "individual-review", keyword: "Review Individual", notify_on_new: true)
+        let items = (1...3).map { notificationItem(index: $0, term: term, now: now) }
+        await manager.notifyForNewItems(items, terms: [term], includeAttachments: false)
+        XCTAssertEqual(center.requests.count, 1)
+        XCTAssertEqual(manager.queuedIndividualNotificationCount, 2)
+        let pending = try XCTUnwrap(center.requests.first)
+        let pendingItemID = try XCTUnwrap(pending.content.targetContentIdentifier)
+        center.deliveredIdentifiers = [pending.identifier]
+
+        // Cancel overflow first, so clearing the pending slot cannot release
+        // posts that have already been reviewed.
+        for item in items where item.id != pendingItemID {
+            await manager.markReviewed(itemID: item.id)
+        }
+        XCTAssertEqual(manager.queuedIndividualNotificationCount, 0)
+        await manager.markReviewed(itemID: pendingItemID)
+        await manager.drainQueuedIndividualNotifications()
+
+        XCTAssertTrue(center.requests.isEmpty)
+        XCTAssertTrue(center.deliveredIdentifiers.isEmpty)
+        await manager.notifyForNewItems(items, terms: [term], includeAttachments: false)
+        XCTAssertTrue(center.requests.isEmpty)
+    }
+
+    @MainActor
+    func testReviewOnlyClearsActiveProfilesSummaryAndLeavesRemoteAlerts() async throws {
+        let previousQuietHours = QuietHoursSettings.current()
+        QuietHoursSettings(enabled: false, startMinuteOfDay: 1320, endMinuteOfDay: 480).save()
+        defer { previousQuietHours.save() }
+        let suiteName = "FeedMergingTests.summary-review-profiles.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let profileA = UUID()
+        let profileB = UUID()
+        var activeProfile = profileA
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let center = MockNotificationCenter(status: .authorized)
+        let manager = NotificationManager(center: center, notificationQueueDefaults: defaults,
+                                          notificationQueueProfileIDProvider: { activeProfile }, nowProvider: { now })
+        let term = WatchTerm(id: "same-term", keyword: "Same", notify_on_new: true)
+        let item = notificationItem(index: 1, term: term, now: now)
+        let identifierA = "oshireader-new-term-same-term-summary-\(profileA.uuidString)"
+        let identifierB = "oshireader-new-term-same-term-summary-\(profileB.uuidString)"
+        await manager.notifyForNewItems([item], terms: [term], includeAttachments: false)
+        center.removeAllPendingNotificationRequests()
+        center.deliveredIdentifiers = [identifierA, "hosted-push"]
+        activeProfile = profileB
+        await manager.notifyForNewItems([item], terms: [term], includeAttachments: false)
+        XCTAssertEqual(center.requests.map(\.identifier), [identifierB])
+
+        await manager.markReviewed(itemID: item.id)
+
+        XCTAssertTrue(center.requests.isEmpty)
+        XCTAssertEqual(Set(center.deliveredIdentifiers), Set([identifierA, "hosted-push"]))
+        activeProfile = profileA
+        await manager.markReviewed(itemID: item.id)
+        XCTAssertEqual(center.deliveredIdentifiers, ["hosted-push"])
+    }
+
+    @MainActor
+    func testReviewAndNewMatchesPreserveQuietHoursSummaryDeliveryTime() async throws {
+        let previousQuietHours = QuietHoursSettings.current()
+        let quietHours = QuietHoursSettings(enabled: true, startMinuteOfDay: 1320, endMinuteOfDay: 480)
+        quietHours.save()
+        defer { previousQuietHours.save() }
+        let suiteName = "FeedMergingTests.summary-quiet-review.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let profileID = UUID()
+        var now = try XCTUnwrap(Calendar.current.date(bySettingHour: 23, minute: 0, second: 0, of: Date()))
+        let originalNow = now
+        let expectedDelivery = quietHours.nextEndDate(after: now)
+        let center = MockNotificationCenter(status: .authorized)
+        let manager = NotificationManager(center: center, notificationQueueDefaults: defaults,
+                                          notificationQueueProfileIDProvider: { profileID }, nowProvider: { now })
+        let term = WatchTerm(id: "quiet-summary", keyword: "Quiet Summary", notify_on_new: true)
+        let items = (1...3).map { notificationItem(index: $0, term: term, now: originalNow) }
+        await manager.notifyForNewItems(Array(items.prefix(2)), terms: [term], includeAttachments: false)
+        now.addTimeInterval(5 * 60)
+        await manager.markReviewed(itemID: items[1].id)
+
+        var request = try XCTUnwrap(center.requests.first)
+        var trigger = try XCTUnwrap(request.trigger as? UNTimeIntervalNotificationTrigger)
+        XCTAssertEqual(now.addingTimeInterval(trigger.timeInterval).timeIntervalSince1970,
+                       expectedDelivery.timeIntervalSince1970, accuracy: 0.01)
+        XCTAssertEqual(request.content.userInfo["new_count"] as? Int, 1)
+        XCTAssertNil(request.content.sound)
+
+        now.addTimeInterval(5 * 60)
+        await manager.notifyForNewItems([items[2]], terms: [term], includeAttachments: false)
+        XCTAssertEqual(center.requests.count, 1)
+        request = try XCTUnwrap(center.requests.first)
+        trigger = try XCTUnwrap(request.trigger as? UNTimeIntervalNotificationTrigger)
+        XCTAssertEqual(now.addingTimeInterval(trigger.timeInterval).timeIntervalSince1970,
+                       expectedDelivery.timeIntervalSince1970, accuracy: 0.01)
+        XCTAssertEqual(request.content.userInfo["new_count"] as? Int, 2)
+    }
+
+    @MainActor
+    func testReviewDuringInFlightSummaryAddDoesNotRestoreReviewedAlert() async throws {
+        let previousQuietHours = QuietHoursSettings.current()
+        QuietHoursSettings(enabled: false, startMinuteOfDay: 1320, endMinuteOfDay: 480).save()
+        defer { previousQuietHours.save() }
+        let suiteName = "FeedMergingTests.in-flight-summary-review.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let profileID = UUID()
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let center = MockNotificationCenter(status: .authorized)
+        let manager = NotificationManager(center: center, notificationQueueDefaults: defaults,
+                                          notificationQueueProfileIDProvider: { profileID }, nowProvider: { now })
+        let term = WatchTerm(id: "in-flight", keyword: "In Flight", notify_on_new: true)
+        let item = notificationItem(index: 1, term: term, now: now)
+        let addStarted = expectation(description: "Summary add started")
+        let reviewStarted = expectation(description: "Review started while add is suspended")
+        var resumeAdd: CheckedContinuation<Void, Never>?
+        center.onAdd = { _ in
+            center.onAdd = nil
+            addStarted.fulfill()
+            await withCheckedContinuation { resumeAdd = $0 }
+        }
+        let notificationTask = Task {
+            await manager.notifyForNewItems([item], terms: [term], includeAttachments: false)
+        }
+        await fulfillment(of: [addStarted], timeout: 2)
+        let reviewTask = Task {
+            reviewStarted.fulfill()
+            await manager.markReviewed(itemID: item.id)
+        }
+        await fulfillment(of: [reviewStarted], timeout: 2)
+        XCTAssertEqual(manager.queuedIndividualNotificationCount, 0)
+        resumeAdd?.resume()
+        await notificationTask.value
+        await reviewTask.value
+
+        XCTAssertTrue(center.requests.isEmpty)
+        XCTAssertTrue(center.deliveredIdentifiers.isEmpty)
+        await manager.notifyForNewItems([item], terms: [term], includeAttachments: false)
+        XCTAssertTrue(center.requests.isEmpty)
+    }
+
+    @MainActor
+    func testOverlappingReviewsDoNotRestoreLastUnreadSummary() async throws {
+        let previousQuietHours = QuietHoursSettings.current()
+        QuietHoursSettings(enabled: false, startMinuteOfDay: 1320, endMinuteOfDay: 480).save()
+        defer { previousQuietHours.save() }
+        let suiteName = "FeedMergingTests.overlapping-summary-reviews.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let profileID = UUID()
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let center = MockNotificationCenter(status: .authorized)
+        let manager = NotificationManager(center: center, notificationQueueDefaults: defaults,
+                                          notificationQueueProfileIDProvider: { profileID }, nowProvider: { now })
+        let term = WatchTerm(id: "overlapping-reviews", keyword: "Reviews", notify_on_new: true)
+        let items = (1...2).map { notificationItem(index: $0, term: term, now: now) }
+        await manager.notifyForNewItems(items, terms: [term], includeAttachments: false)
+        let updateStarted = expectation(description: "First review updating remaining summary")
+        let secondReviewStarted = expectation(description: "Second post reviewed during summary update")
+        var resumeUpdate: CheckedContinuation<Void, Never>?
+        center.onAdd = { _ in
+            center.onAdd = nil
+            updateStarted.fulfill()
+            await withCheckedContinuation { resumeUpdate = $0 }
+        }
+        let firstReview = Task { await manager.markReviewed(itemID: items[1].id) }
+        await fulfillment(of: [updateStarted], timeout: 2)
+        let secondReview = Task {
+            secondReviewStarted.fulfill()
+            await manager.markReviewed(itemID: items[0].id)
+        }
+        await fulfillment(of: [secondReviewStarted], timeout: 2)
+        resumeUpdate?.resume()
+        await firstReview.value
+        await secondReview.value
+
+        XCTAssertTrue(center.requests.isEmpty)
+        XCTAssertTrue(center.deliveredIdentifiers.isEmpty)
+        XCTAssertEqual(manager.queuedIndividualNotificationCount, 0)
+    }
+
+    @MainActor
+    func testNewVerifiedFiveChActivityCanNotifyAfterReviewingEarlierActivity() async throws {
+        let previousQuietHours = QuietHoursSettings.current()
+        QuietHoursSettings(enabled: false, startMinuteOfDay: 1320, endMinuteOfDay: 480).save()
+        defer { previousQuietHours.save() }
+        let suiteName = "FeedMergingTests.reviewed-five-ch-activity.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let profileID = UUID()
+        var now = Date(timeIntervalSince1970: 1_800_000_000)
+        let center = MockNotificationCenter(status: .authorized)
+        let manager = NotificationManager(center: center, notificationQueueDefaults: defaults,
+                                          notificationQueueProfileIDProvider: { profileID }, nowProvider: { now })
+        let term = WatchTerm(id: "reviewed-thread", keyword: "Thread", notify_on_new: true)
+        func activity(at date: Date) -> FeedItem {
+            FeedItem(id: "5ch:reviewed-thread", platform: "5ch", url: "https://example.5ch.net/test/read.cgi/board/123/",
+                     title: "Thread replies", content_text: nil, author: nil, thumbnail_url: nil,
+                     media_type: "article", published_at: iso8601String(from: date), watch_term_keyword: term.keyword,
+                     fetched_at: iso8601String(from: date), source: IngestionService.fiveChVerifiedActivitySource)
+        }
+        let oldActivity = activity(at: now.addingTimeInterval(-60))
+        await manager.notifyForNewItems([oldActivity], terms: [term], includeAttachments: false)
+        XCTAssertEqual(center.requests.count, 1)
+        await manager.markReviewed(itemID: oldActivity.id)
+        await manager.notifyForNewItems([oldActivity], terms: [term], includeAttachments: false)
+        XCTAssertTrue(center.requests.isEmpty, "The already reviewed activity must not replay")
+
+        now.addTimeInterval(120)
+        await manager.notifyForNewItems([activity(at: now.addingTimeInterval(-1))], terms: [term], includeAttachments: false)
+
+        XCTAssertEqual(center.requests.count, 1)
+        XCTAssertEqual(center.requests.first?.content.userInfo["new_count"] as? Int, 1)
+        XCTAssertEqual(center.requests.first?.content.targetContentIdentifier, oldActivity.id)
+    }
+
+    @MainActor
+    func testOpeningAppWithoutReviewPreservesUnreadRollingSummary() async throws {
+        let previousQuietHours = QuietHoursSettings.current()
+        QuietHoursSettings(enabled: false, startMinuteOfDay: 1320, endMinuteOfDay: 480).save()
+        defer { previousQuietHours.save() }
+        let suiteName = "FeedMergingTests.foreground-summary-unread.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let profileID = UUID()
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let center = MockNotificationCenter(status: .authorized)
+        let manager = NotificationManager(center: center, notificationQueueDefaults: defaults,
+                                          notificationQueueProfileIDProvider: { profileID }, nowProvider: { now })
+        let term = WatchTerm(id: "foreground-summary", keyword: "Foreground Summary", notify_on_new: true)
+        let items = (1...3).map { notificationItem(index: $0, term: term, now: now) }
+        await manager.notifyForNewItems(Array(items.prefix(2)), terms: [term], includeAttachments: false)
+
+        await manager.handleAppBecameActive()
+        manager.handleAppEnteredBackground()
+        await manager.notifyForNewItems([items[2]], terms: [term], includeAttachments: false)
+
+        XCTAssertEqual(center.requests.count, 1)
+        XCTAssertEqual(center.requests.first?.content.userInfo["new_count"] as? Int, 3,
+                       "Opening the feed must not mark its posts as reviewed")
+    }
+
+    private func notificationItem(index: Int, term: WatchTerm, now: Date) -> FeedItem {
+        let timestamp = iso8601String(from: now.addingTimeInterval(TimeInterval(index)))
+        return FeedItem(id: "news:\(term.id)-\(index)", platform: "news", url: "https://example.com/\(term.id)/\(index)",
+                        title: "Match \(index)", content_text: nil, author: nil, thumbnail_url: nil,
+                        media_type: "article", published_at: timestamp, watch_term_keyword: term.keyword,
+                        fetched_at: timestamp)
+    }
+
     @MainActor
     func testNotificationQueuePreservesOverflowUntilPendingCapacityIsAvailable() async throws {
         let previousQuietHours = QuietHoursSettings.current()
@@ -1165,6 +1519,7 @@ final class FeedMergingTests: XCTestCase {
         let suiteName = "FeedMergingTests.notification-overflow.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defaults.removePersistentDomain(forName: suiteName)
+        NotificationDeliverySettings(groupedByKeyword: false).save(defaults: defaults)
         defer { defaults.removePersistentDomain(forName: suiteName) }
         let profileID = UUID()
         let center = MockNotificationCenter(status: .authorized)
@@ -1290,6 +1645,7 @@ final class FeedMergingTests: XCTestCase {
         let suiteName = "FeedMergingTests.notification-cooldown.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defaults.removePersistentDomain(forName: suiteName)
+        NotificationDeliverySettings(groupedByKeyword: false).save(defaults: defaults)
         defer { defaults.removePersistentDomain(forName: suiteName) }
         let profileID = UUID()
 
@@ -1348,6 +1704,7 @@ final class FeedMergingTests: XCTestCase {
         let suiteName = "FeedMergingTests.notification-profiles.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defaults.removePersistentDomain(forName: suiteName)
+        NotificationDeliverySettings(groupedByKeyword: false).save(defaults: defaults)
         defer { defaults.removePersistentDomain(forName: suiteName) }
 
         let profileA = UUID()
@@ -1793,13 +2150,13 @@ final class FeedMergingTests: XCTestCase {
         )
 
         await manager.notifyForNewItems([item], terms: [term])
+        let originalDelivery = try XCTUnwrap(center.requests.first?.content.userInfo["oshireader_local_scheduled_delivery_at"] as? TimeInterval)
         await manager.notifyForNewItems([item], terms: [term])
 
         XCTAssertEqual(center.requests.count, 1)
         XCTAssertEqual(center.requests.first?.identifier, "oshireader-new-term-digest-news:digest")
-        XCTAssertTrue(
-            center.removedPendingIdentifiers.joined().contains("oshireader-new-term-digest-news:digest")
-        )
+        XCTAssertEqual(center.requests.first?.content.userInfo["oshireader_local_scheduled_delivery_at"] as? TimeInterval,
+                       originalDelivery, "A duplicate must not postpone the original delivery")
     }
 
     @MainActor
@@ -2299,6 +2656,7 @@ final class FeedMergingTests: XCTestCase {
         let suiteName = "FeedMergingTests.legacy-digest-migration.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defaults.removePersistentDomain(forName: suiteName)
+        NotificationDeliverySettings(groupedByKeyword: false).save(defaults: defaults)
         defer { defaults.removePersistentDomain(forName: suiteName) }
         QuietHoursDigestState(
             windowStart: Date().timeIntervalSince1970,
@@ -2331,6 +2689,7 @@ final class FeedMergingTests: XCTestCase {
     func testReturningToAppConvertsPendingAndOverflowIntoOneCatchUpCount() async throws {
         let suiteName = "FeedMergingTests.catch-up.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        NotificationDeliverySettings(groupedByKeyword: false).save(defaults: defaults)
         defer { defaults.removePersistentDomain(forName: suiteName) }
         let profileID = UUID()
         let now = Date(timeIntervalSince1970: 1_800_000_000)
@@ -2369,6 +2728,7 @@ final class FeedMergingTests: XCTestCase {
     func testForegroundMatchesStayInFeedWithoutSchedulingBanners() async throws {
         let suiteName = "FeedMergingTests.foreground.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        NotificationDeliverySettings(groupedByKeyword: false).save(defaults: defaults)
         defer { defaults.removePersistentDomain(forName: suiteName) }
         let center = MockNotificationCenter(status: .authorized)
         let now = Date(timeIntervalSince1970: 1_800_000_000)
@@ -2399,6 +2759,7 @@ final class FeedMergingTests: XCTestCase {
     func testOldQueuedAlertsExpireBeforeLaterDelivery() async throws {
         let suiteName = "FeedMergingTests.stale-alerts.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        NotificationDeliverySettings(groupedByKeyword: false).save(defaults: defaults)
         defer { defaults.removePersistentDomain(forName: suiteName) }
         let center = MockNotificationCenter(status: .authorized)
         var now = Date(timeIntervalSince1970: 1_800_000_000)
@@ -2436,6 +2797,7 @@ private final class MockNotificationCenter: NotificationCenterClient {
     private(set) var status: UNAuthorizationStatus
     private let grantsAuthorization: Bool
     var onAuthorizationStatus: (() async -> Void)?
+    var onAdd: ((UNNotificationRequest) async -> Void)?
     private(set) var authorizationRequestCount = 0
     private(set) var requests: [UNNotificationRequest] = []
     private(set) var categories: Set<UNNotificationCategory> = []
@@ -2468,7 +2830,17 @@ private final class MockNotificationCenter: NotificationCenterClient {
     }
 
     func add(_ request: UNNotificationRequest) async throws {
+        await onAdd?(request)
+        requests.removeAll { $0.identifier == request.identifier }
+        if request.trigger == nil { deliveredIdentifiers.removeAll { $0 == request.identifier } }
         requests.append(request)
+    }
+
+    func deliverRequest(identifier: String) {
+        guard requests.contains(where: { $0.identifier == identifier }) else { return }
+        requests.removeAll { $0.identifier == identifier }
+        deliveredIdentifiers.removeAll { $0 == identifier }
+        deliveredIdentifiers.append(identifier)
     }
 
     func setNotificationCategories(_ categories: Set<UNNotificationCategory>) {
@@ -2482,6 +2854,7 @@ private final class MockNotificationCenter: NotificationCenterClient {
 
     func removeAllDeliveredNotifications() {
         removeAllDeliveredCount += 1
+        deliveredIdentifiers.removeAll()
     }
 
     func removePendingNotificationRequests(withIdentifiers identifiers: [String]) {

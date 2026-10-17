@@ -92,6 +92,37 @@ platform :ios do
     )
   end
 
+  desc "Build OshiReader Local (free build) and upload to TestFlight"
+  lane :beta do
+    key = app_store_connect_key
+    version = get_version_number(
+      xcodeproj: "OshiReader.xcodeproj",
+      target: "OshiReader"
+    )
+    next_build = latest_testflight_build_number(
+      api_key: key,
+      app_identifier: "com.otterpia.oshireader",
+      version: version,
+      initial_build_number: 0
+    ).to_i + 1
+    UI.message("Building version #{version} (#{next_build}) for TestFlight…")
+    build_app(
+      project: "OshiReader.xcodeproj",
+      scheme: "OshiReader Local",
+      configuration: "Release",
+      export_method: "app-store",
+      output_directory: "./build/beta",
+      output_name: "OshiReader-Local.ipa",
+      xcargs: "CURRENT_PROJECT_VERSION=#{next_build}"
+    )
+    upload_to_testflight(
+      api_key: key,
+      ipa: "./build/beta/OshiReader-Local.ipa",
+      skip_waiting_for_build_processing: true
+    )
+    UI.success("Uploaded build #{next_build} to TestFlight 🎉")
+  end
+
   desc <<~DESC
     Build the Debug app (OshiReader Local scheme) and install it on a connected
     iPhone so you can run a real StoreKit sandbox purchase against the hosted

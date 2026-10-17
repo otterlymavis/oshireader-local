@@ -54,6 +54,8 @@ struct ReaderView: View {
     /// feed items; this steps back within one article's own page history.
     @State private var canGoBackInPage = false
     @State private var goBackCounter = 0
+    @State private var reviewedItemIDs: Set<String> = []
+    @State private var isReaderVisible = false
 
     init(feedItem: FeedItem, siblingItems: [FeedItem] = [], onNavigate: ((FeedItem) -> Void)? = nil) {
         self.feedItem = feedItem
@@ -127,6 +129,7 @@ struct ReaderView: View {
 
     func navigate(to item: FeedItem) {
         currentItem = item
+        webLoadState = .loading
         readerMode = Self.initialReaderMode(for: item)
         isTranslated = UserDefaults.standard.bool(forKey: LocalProfileStore.defaultsKey("auto_translate_reader")) && !Self.usesSystemSafari(for: item)
         isSigningIntoX = false
@@ -145,6 +148,8 @@ struct ReaderView: View {
         // reasoning as the single sibling read in the toolbar below.
         let usesSafari = Self.usesSystemSafari(for: currentItem)
         let originalURL = originalPageUrl
+        let displayedItemID = currentItem.id
+        let displayedProfileID = LocalProfileStore.shared.currentProfileIDThreadSafe
         VStack(spacing: 0) {
             if let url = targetUrl {
                 ZStack {
@@ -154,6 +159,9 @@ struct ReaderView: View {
                             .background(bgColor)
                             .onAppear {
                                 webLoadState = .loaded
+                                if isReaderVisible {
+                                    acknowledgeReviewedItem(displayedItemID, profileID: displayedProfileID)
+                                }
                             }
                     } else {
                         WebViewHelper(
@@ -174,6 +182,9 @@ struct ReaderView: View {
                             onNavigationHistoryChange: { canGoBack in canGoBackInPage = canGoBack },
                             onLoadStateChange: { state in
                                 webLoadState = state
+                                if state == .loaded, isReaderVisible {
+                                    acknowledgeReviewedItem(displayedItemID, profileID: displayedProfileID)
+                                }
                                 if state == .loading {
                                     isSelectingImages = false
                                     isSavingSelectedImages = false
@@ -381,11 +392,18 @@ struct ReaderView: View {
             Text(saveImageStatus)
         }
         .onAppear {
+            isReaderVisible = true
+            if webLoadState == .loaded {
+                acknowledgeReviewedItem(displayedItemID, profileID: displayedProfileID)
+            }
             readerTheme = theme.mode
             fontSize = appearance.readerFontSize
             if UserDefaults.standard.bool(forKey: LocalProfileStore.defaultsKey("auto_translate_reader")) {
                 isTranslated = true
             }
+        }
+        .onDisappear {
+            isReaderVisible = false
         }
         .onChange(of: appearance.fontSizeChoice) {
             fontSize = appearance.readerFontSize
@@ -666,7 +684,25 @@ struct ReaderView: View {
 
     private func openInExternalBrowser() {
         guard let url = originalPageUrl else { return }
-        UIApplication.shared.open(url)
+        let itemID = currentItem.id
+        let profileID = LocalProfileStore.shared.currentProfileIDThreadSafe
+        UIApplication.shared.open(url) { opened in
+            if opened {
+                acknowledgeReviewedItem(itemID, profileID: profileID)
+            }
+        }
+    }
+
+    /// Only a displayed article or a successful browser handoff counts as a
+    /// review. Visiting the feed, selecting Save, and failed loads leave alerts.
+    private func acknowledgeReviewedItem(_ itemID: String, profileID: UUID) {
+        guard LocalProfileStore.shared.currentProfileIDThreadSafe == profileID else { return }
+        let reviewID = "\(profileID.uuidString):\(itemID)"
+        guard reviewedItemIDs.insert(reviewID).inserted else { return }
+        Task { @MainActor in
+            guard LocalProfileStore.shared.currentProfileIDThreadSafe == profileID else { return }
+            await NotificationManager.shared.markReviewed(itemID: itemID)
+        }
     }
 
     private var readerLoadStateOverlay: some View {

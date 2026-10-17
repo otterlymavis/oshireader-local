@@ -1,8 +1,8 @@
 import Foundation
 
-/// Whether new-item alerts fire individually (one banner per item, as they've
-/// always worked) or grouped into one banner per keyword per refresh. Purely a
-/// presentation choice — grouping still respects Quiet Hours, per-term
+/// Whether new-item alerts fire individually (one banner per item) or update
+/// one rolling summary per keyword until the posts are reviewed. Purely a
+/// presentation choice — summaries still respect Quiet Hours, per-term
 /// `notify_on_new`, and the paid-push ownership handoff exactly like the
 /// individual path.
 struct NotificationDeliverySettings: Equatable {
@@ -13,7 +13,8 @@ struct NotificationDeliverySettings: Equatable {
     }
 
     static func current(defaults: UserDefaults = .standard) -> NotificationDeliverySettings {
-        NotificationDeliverySettings(groupedByKeyword: defaults.bool(forKey: key))
+        let storedChoice = defaults.object(forKey: key) as? Bool
+        return NotificationDeliverySettings(groupedByKeyword: storedChoice ?? true)
     }
 
     func save(defaults: UserDefaults = .standard) {

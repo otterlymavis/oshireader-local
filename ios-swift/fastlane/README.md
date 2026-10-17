@@ -31,6 +31,14 @@ Upload OshiReader Local metadata to App Store Connect
 
 Download OshiReader Local metadata from App Store Connect
 
+### ios beta
+
+```sh
+[bundle exec] fastlane ios beta
+```
+
+Build OshiReader Local (free build) and upload to TestFlight
+
 ### ios dev_device
 
 ```sh
