@@ -558,6 +558,17 @@ struct FeedView: View {
     }
 
     private var feedList: some View {
+        ScrollViewReader { proxy in
+            feedListContent
+                // dropFirst: the publisher replays its current value on subscribe.
+                .onReceive(NotificationManager.shared.$catchUpRevealRequest.dropFirst()) { _ in
+                    guard let newest = cachedVisibleItems.first else { return }
+                    withAnimation { proxy.scrollTo(newest.id, anchor: .top) }
+                }
+        }
+    }
+
+    private var feedListContent: some View {
         List {
             ForEach(cachedVisibleItems) { item in
                 feedListRow(for: item)

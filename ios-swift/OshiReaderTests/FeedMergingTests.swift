@@ -1536,6 +1536,29 @@ final class FeedMergingTests: XCTestCase {
     }
 
     @MainActor
+    func testViewFeedOnCatchUpRequestsRevealAndDismisses() async throws {
+        let suiteName = "FeedMergingTests.catch-up-reveal.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let profileID = UUID()
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let manager = NotificationManager(center: MockNotificationCenter(status: .authorized),
+                                          notificationQueueDefaults: defaults,
+                                          notificationQueueProfileIDProvider: { profileID }, nowProvider: { now })
+        let term = WatchTerm(id: "catch-up-reveal", keyword: "Reveal", notify_on_new: true)
+        await manager.handleAppBecameActive()
+        await manager.notifyForNewItems([notificationItem(index: 1, term: term, now: now)], terms: [term],
+                                        includeAttachments: false)
+        XCTAssertEqual(manager.catchUpItemCount, 1)
+
+        manager.revealCatchUp()
+        XCTAssertEqual(manager.catchUpItemCount, 0)
+        XCTAssertEqual(manager.catchUpRevealRequest, 1, "The feed scrolls even when it is already the visible tab")
+        manager.dismissCatchUp()
+        XCTAssertEqual(manager.catchUpRevealRequest, 1, "The close button only dismisses")
+    }
+
+    @MainActor
     func testSummaryQueuedAtActivationPostsSilentlyAfterLeavingApp() async throws {
         let previousQuietHours = QuietHoursSettings.current()
         QuietHoursSettings(enabled: false, startMinuteOfDay: 1320, endMinuteOfDay: 480).save()

@@ -123,7 +123,7 @@ struct ContentView: View {
                 HStack(spacing: 12) {
                     Button {
                         selectedTab = .feed
-                        notifications.dismissCatchUp()
+                        notifications.revealCatchUp()
                     } label: {
                         HStack(spacing: 8) {
                             Image(systemName: "tray.full")
@@ -133,6 +133,9 @@ struct ContentView: View {
                                 .fontWeight(.semibold)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
+                        // Without this only the icon and text are hit-testable;
+                        // a tap on the spacer between them is ignored.
+                        .contentShape(Rectangle())
                     }
                     .accessibilityIdentifier("feed.catchUpSummary")
 

@@ -80,6 +80,7 @@ final class NotificationManager: ObservableObject {
     @Published private(set) var authorizationStatus: UNAuthorizationStatus = .notDetermined
     @Published private(set) var lastRemoteRegistrationError: String?
     @Published private(set) var catchUpItemCount = 0
+    @Published private(set) var catchUpRevealRequest = 0
 
     private let center: NotificationCenterClient
     private let remoteRegistration: @MainActor () -> Void
@@ -848,6 +849,13 @@ final class NotificationManager: ObservableObject {
         catchUpItemCount = 0
     }
 
+    /// "View feed" on the catch-up notice. The feed may already be the visible
+    /// tab, so bump a request the feed list answers by scrolling to its newest
+    /// items; dismissing alone would look like the tap did nothing.
+    func revealCatchUp() {
+        catchUpRevealRequest &+= 1
+        dismissCatchUp()
+    }
 
     func handleForegroundLocalDelivery(_ request: UNNotificationRequest) {
         guard request.identifier.hasPrefix(Self.individualNotificationIdentifierPrefix),
