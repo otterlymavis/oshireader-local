@@ -1502,6 +1502,141 @@ final class FeedMergingTests: XCTestCase {
                        "Opening the feed must not mark its posts as reviewed")
     }
 
+    @MainActor
+    func testForegroundMatchesWithRollingSummaryDoNotAlertOnLeavingApp() async throws {
+        let previousQuietHours = QuietHoursSettings.current()
+        QuietHoursSettings(enabled: false, startMinuteOfDay: 1320, endMinuteOfDay: 480).save()
+        defer { previousQuietHours.save() }
+        let suiteName = "FeedMergingTests.foreground-rolling.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let profileID = UUID()
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let center = MockNotificationCenter(status: .authorized)
+        let manager = NotificationManager(center: center, notificationQueueDefaults: defaults,
+                                          notificationQueueProfileIDProvider: { profileID }, nowProvider: { now })
+        XCTAssertTrue(NotificationDeliverySettings.current(defaults: defaults).groupedByKeyword)
+        let term = WatchTerm(id: "foreground-rolling", keyword: "Foreground Rolling", notify_on_new: true)
+        let items = (1...3).map { notificationItem(index: $0, term: term, now: now) }
+
+        await manager.handleAppBecameActive()
+        await manager.notifyForNewItems(Array(items.prefix(2)), terms: [term], includeAttachments: false)
+        XCTAssertTrue(center.requests.isEmpty)
+        XCTAssertEqual(manager.catchUpItemCount, 2)
+        XCTAssertEqual(manager.queuedIndividualNotificationCount, 0)
+
+        manager.handleAppEnteredBackground()
+        await manager.drainQueuedIndividualNotifications()
+        XCTAssertTrue(center.requests.isEmpty, "Leaving the app must not alert for matches seen in the feed")
+
+        await manager.notifyForNewItems(items, terms: [term], includeAttachments: false)
+        XCTAssertEqual(center.requests.count, 1)
+        XCTAssertEqual(center.requests.first?.content.userInfo["new_count"] as? Int, 1,
+                       "The next summary counts only matches found while away")
+    }
+
+    @MainActor
+    func testSummaryQueuedAtActivationPostsSilentlyAfterLeavingApp() async throws {
+        let previousQuietHours = QuietHoursSettings.current()
+        QuietHoursSettings(enabled: false, startMinuteOfDay: 1320, endMinuteOfDay: 480).save()
+        defer { previousQuietHours.save() }
+        let suiteName = "FeedMergingTests.queued-summary-activation.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let profileID = UUID()
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let hosted = UNNotificationRequest(identifier: "hosted-push", content: UNMutableNotificationContent(), trigger: nil)
+        let center = MockNotificationCenter(status: .authorized, requests: [hosted])
+        let manager = NotificationManager(center: center, notificationQueueDefaults: defaults,
+                                          notificationQueueProfileIDProvider: { profileID }, nowProvider: { now },
+                                          maximumPendingNotificationRequests: 1)
+        let term = WatchTerm(id: "queued-summary", keyword: "Queued Summary", notify_on_new: true)
+        let items = (1...2).map { notificationItem(index: $0, term: term, now: now) }
+        await manager.notifyForNewItems(items, terms: [term], includeAttachments: false)
+        XCTAssertEqual(manager.queuedIndividualNotificationCount, 1, "No free slot, so the summary stays queued")
+
+        await manager.handleAppBecameActive()
+        XCTAssertEqual(manager.catchUpItemCount, 2)
+        center.removePendingNotificationRequests(withIdentifiers: ["hosted-push"])
+        manager.handleAppEnteredBackground()
+        await manager.drainQueuedIndividualNotifications()
+
+        let summary = try XCTUnwrap(center.requests.first)
+        XCTAssertEqual(summary.content.userInfo["new_count"] as? Int, 2)
+        XCTAssertNil(summary.content.sound, "The catch-up notice already covered these posts")
+        XCTAssertEqual(summary.content.interruptionLevel, .passive)
+    }
+
+    @MainActor
+    func testReviewingDeliveredSummaryInForegroundDoesNotRaiseCatchUp() async throws {
+        let previousQuietHours = QuietHoursSettings.current()
+        QuietHoursSettings(enabled: false, startMinuteOfDay: 1320, endMinuteOfDay: 480).save()
+        defer { previousQuietHours.save() }
+        let suiteName = "FeedMergingTests.review-foreground.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let profileID = UUID()
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let center = MockNotificationCenter(status: .authorized)
+        let manager = NotificationManager(center: center, notificationQueueDefaults: defaults,
+                                          notificationQueueProfileIDProvider: { profileID }, nowProvider: { now })
+        let term = WatchTerm(id: "review-foreground", keyword: "Review Foreground", notify_on_new: true)
+        let items = (1...3).map { notificationItem(index: $0, term: term, now: now) }
+        await manager.notifyForNewItems(items, terms: [term], includeAttachments: false)
+        let identifier = try XCTUnwrap(center.requests.first?.identifier)
+        center.deliverRequest(identifier: identifier)
+
+        await manager.handleAppBecameActive()
+        XCTAssertEqual(manager.catchUpItemCount, 0, "A summary already delivered is not a catch-up item")
+        await manager.markReviewed(itemID: items[2].id)
+
+        let update = try XCTUnwrap(center.requests.first { $0.identifier == identifier })
+        XCTAssertEqual(update.content.userInfo["new_count"] as? Int, 2)
+        XCTAssertTrue(NotificationManager.isReviewUpdate(update))
+        manager.handleForegroundLocalDelivery(update)
+        XCTAssertEqual(manager.catchUpItemCount, 0, "Opening a post must not announce new matches")
+
+        let original = UNNotificationRequest(identifier: identifier, content: UNMutableNotificationContent(), trigger: nil)
+        XCTAssertFalse(NotificationManager.isReviewUpdate(original))
+    }
+
+    @MainActor
+    func testRollingSummaryDropsAgedOutPostsAndCapsItsSize() async throws {
+        let previousQuietHours = QuietHoursSettings.current()
+        QuietHoursSettings(enabled: false, startMinuteOfDay: 1320, endMinuteOfDay: 480).save()
+        defer { previousQuietHours.save() }
+        let suiteName = "FeedMergingTests.rolling-bounds.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let profileID = UUID()
+        var now = Date(timeIntervalSince1970: 1_800_000_000)
+        let center = MockNotificationCenter(status: .authorized)
+        let manager = NotificationManager(center: center, notificationQueueDefaults: defaults,
+                                          notificationQueueProfileIDProvider: { profileID }, nowProvider: { now })
+        let term = WatchTerm(id: "rolling-bounds", keyword: "Rolling Bounds", notify_on_new: true)
+
+        let burst = (1...150).map { notificationItem(index: $0, term: term, now: now) }
+        await manager.notifyForNewItems(burst, terms: [term], includeAttachments: false)
+        let identifier = try XCTUnwrap(center.requests.first?.identifier)
+        XCTAssertEqual(center.requests.first?.content.userInfo["new_count"] as? Int, 100)
+        XCTAssertEqual(center.requests.first?.content.targetContentIdentifier, burst[149].id,
+                       "The cap keeps the newest posts")
+        center.deliverRequest(identifier: identifier)
+
+        // Unopened posts age out of the summary once the merge could no
+        // longer notify them, instead of inflating every later count.
+        now.addTimeInterval(4 * 24 * 60 * 60)
+        let fresh = notificationItem(index: 1_000, term: term, now: now)
+        await manager.notifyForNewItems([fresh], terms: [term], includeAttachments: false)
+        XCTAssertEqual(center.requests.first?.content.userInfo["new_count"] as? Int, 1)
+        center.deliverRequest(identifier: identifier)
+
+        now.addTimeInterval(4 * 24 * 60 * 60)
+        await manager.drainQueuedIndividualNotifications()
+        XCTAssertFalse(center.deliveredIdentifiers.contains(identifier),
+                       "A summary whose posts have all aged out is removed")
+    }
+
     private func notificationItem(index: Int, term: WatchTerm, now: Date) -> FeedItem {
         let timestamp = iso8601String(from: now.addingTimeInterval(TimeInterval(index)))
         return FeedItem(id: "news:\(term.id)-\(index)", platform: "news", url: "https://example.com/\(term.id)/\(index)",

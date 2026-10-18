@@ -498,6 +498,7 @@ final class NotificationManager: ObservableObject {
             // A review refreshes the visible count without a new interruption.
             content.sound = nil
             content.interruptionLevel = .passive
+            content.userInfo[Self.reviewUpdateUserInfoKey] = true
             let scheduledAt = pendingRequest?.content.userInfo[Self.scheduledDeliveryAtUserInfoKey] as? TimeInterval
             let delay = scheduledAt.map { $0 - nowProvider().timeIntervalSince1970 } ?? 0
             let trigger = delay > 0 ? UNTimeIntervalNotificationTrigger(timeInterval: max(1, delay), repeats: false) : nil
@@ -656,7 +657,10 @@ final class NotificationManager: ObservableObject {
 
         let deliveryItems = matchingItems.sorted(by: feedItemSortPrecedes).reversed()
         let groupingEnabled = NotificationDeliverySettings.current(defaults: notificationQueueDefaults).groupedByKeyword
-        if isAppForeground && !groupingEnabled {
+        // Foreground matches are already visible in the feed, in either
+        // delivery mode. Count them for the in-app notice only; folding them
+        // into a rolling summary would post a banner as soon as the app leaves.
+        if isAppForeground {
             var newCount = 0
             for item in deliveryItems {
                 guard let term = notifiedTermsByKeyword[item.watch_term_keyword] else { continue }
@@ -704,11 +708,12 @@ final class NotificationManager: ObservableObject {
                 let existingItems = (rollingSummaries[notificationIdentifier]?.items ?? []) + queuedItems
                 var combinedByID: [String: FeedItem] = [:]
                 for item in existingItems + newItems { combinedByID[item.id] = item }
-                let combined = combinedByID.values.filter {
+                let combined = Self.boundedSummaryItems(combinedByID.values.filter {
                     guard let reviewedAt = notifiedItemLedger[Self.reviewedItemKey($0.id)] else { return true }
                     return $0.source == IngestionService.fiveChVerifiedActivitySource
                         && (parseISO8601Date($0.published_at) ?? .distantPast) > reviewedAt
-                }.sorted(by: feedItemSortPrecedes)
+                }, now: now)
+                guard !combined.isEmpty else { continue }
                 let summary = QueuedIndividualNotification(
                     identifier: notificationIdentifier,
                     termID: term.id,
@@ -720,13 +725,6 @@ final class NotificationManager: ObservableObject {
                 rollingSummaries[notificationIdentifier] = summary
                 queuedIndividualNotifications.removeAll { $0.termID == term.id }
                 enqueue(summary)
-                if isAppForeground {
-                    for item in newItems {
-                        let itemIdentifier = Self.notificationIdentifier(forTermID: term.id, itemID: item.id)
-                        notifiedItemLedger[itemIdentifier] = now
-                        if foregroundCountedIdentifiers.insert(itemIdentifier).inserted { catchUpItemCount += 1 }
-                    }
-                }
             }
             persistRollingSummaries()
             persistNotifiedItemLedger()
@@ -768,6 +766,15 @@ final class NotificationManager: ObservableObject {
 
     private static func reviewedItemKey(_ itemID: String) -> String { "reviewed:\(itemID)" }
 
+    private nonisolated static let reviewUpdateUserInfoKey = "oshireader_local_review_update"
+
+    /// A summary re-posted by `markReviewed` only lowers an existing count. It
+    /// is not a new arrival, so it must not raise the catch-up notice, and it
+    /// stays in Notification Centre rather than vanishing in the foreground.
+    nonisolated static func isReviewUpdate(_ request: UNNotificationRequest) -> Bool {
+        request.content.userInfo[reviewUpdateUserInfoKey] as? Bool == true
+    }
+
     private func rollingSummaryIdentifier(forTermID termID: String) -> String {
         Self.notificationIdentifierPrefix(forTermID: termID) + "summary-\(notificationQueueProfileID.uuidString)"
     }
@@ -803,7 +810,9 @@ final class NotificationManager: ObservableObject {
         guard isAppForeground, generation == localNotificationGeneration else { return }
         let localPending = pending.filter { Self.isLocalRequest($0, profileID: notificationQueueProfileID) }
         let queued = queuedIndividualNotifications
-        queuedIndividualNotifications.removeAll { !isRollingSummary($0.identifier) }
+        // The catch-up notice below covers a queued summary, so its later
+        // post (once the app leaves) refreshes the count without interrupting.
+        queuedIndividualNotifications = queued.compactMap { isRollingSummary($0.identifier) ? $0.silenced() : nil }
         persistQueuedIndividualNotifications()
         lastIndividualDeliveryDate = nil
         persistLastIndividualDeliveryDate()
@@ -839,8 +848,10 @@ final class NotificationManager: ObservableObject {
         catchUpItemCount = 0
     }
 
+
     func handleForegroundLocalDelivery(_ request: UNNotificationRequest) {
         guard request.identifier.hasPrefix(Self.individualNotificationIdentifierPrefix),
+              !Self.isReviewUpdate(request),
               foregroundCountedIdentifiers.insert(request.identifier).inserted,
               !Self.isStaleNotification(userInfo: request.content.userInfo, now: nowProvider()) else { return }
         catchUpItemCount += max(1, request.content.userInfo["new_count"] as? Int ?? 1)
@@ -860,7 +871,51 @@ final class NotificationManager: ObservableObject {
         return queuedAt.map { now.timeIntervalSince($0) > maximumQueuedAlertAge } ?? false
     }
 
+    private static let maximumRollingSummaryItems = 100
+
+    /// Newest-first summary members the merge could still notify. Posts that
+    /// are never opened (or fall out of the feed cap) would otherwise stay in
+    /// a summary forever, inflating its count and its persisted size.
+    private static func boundedSummaryItems(_ items: [FeedItem], now: Date) -> [FeedItem] {
+        let recent = items.filter { item in
+            guard let published = parseISO8601Date(item.published_at) ?? parseISO8601Date(item.fetched_at) else {
+                return true
+            }
+            return now.timeIntervalSince(published) <= notifiedItemLedgerRetention
+        }
+        return Array(recent.sorted(by: feedItemSortPrecedes).prefix(maximumRollingSummaryItems))
+    }
+
+    private func pruneRollingSummaries(at now: Date) {
+        var emptiedIDs: [String] = []
+        var changed = false
+        for (identifier, summary) in rollingSummaries {
+            let bounded = Self.boundedSummaryItems(summary.items, now: now)
+            guard bounded.count != summary.items.count else { continue }
+            changed = true
+            if bounded.isEmpty {
+                rollingSummaries[identifier] = nil
+                queuedIndividualNotifications.removeAll { $0.identifier == identifier }
+                emptiedIDs.append(identifier)
+            } else {
+                rollingSummaries[identifier] = summary.replacingItems(bounded)
+                if let index = queuedIndividualNotifications.firstIndex(where: { $0.identifier == identifier }) {
+                    queuedIndividualNotifications[index] = queuedIndividualNotifications[index].replacingItems(bounded)
+                }
+            }
+        }
+        guard changed else { return }
+        if !emptiedIDs.isEmpty {
+            // Every member has aged out, so the visible summary is stale too.
+            center.removePendingNotificationRequests(withIdentifiers: emptiedIDs)
+            center.removeDeliveredNotifications(withIdentifiers: emptiedIDs)
+        }
+        persistRollingSummaries()
+        persistQueuedIndividualNotifications()
+    }
+
     private func pruneStaleQueuedNotifications(at now: Date) {
+        pruneRollingSummaries(at: now)
         let stale = queuedIndividualNotifications.filter { isStale($0, at: now) }
         guard !stale.isEmpty else { return }
         for entry in stale {

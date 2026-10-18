@@ -122,6 +122,10 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
         if notification.request.identifier.hasPrefix("oshireader-new-term-") {
+            guard !NotificationManager.isReviewUpdate(notification.request) else {
+                completionHandler([.list])
+                return
+            }
             completionHandler([])
             Task { @MainActor in
                 NotificationManager.shared.handleForegroundLocalDelivery(notification.request)
