@@ -158,6 +158,9 @@ struct ContentView: View {
         .onAppear {
             updateTabBarAppearance(for: theme.mode)
             handlePendingShareDrain(db.processPendingShares())
+            if ProcessInfo.processInfo.arguments.contains("--uitesting-catch-up") {
+                notifications.seedCatchUpForUITesting(count: 3)
+            }
         }
         .onChange(of: theme.mode) { _, newMode in
             updateTabBarAppearance(for: newMode)

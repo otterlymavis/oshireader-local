@@ -241,6 +241,30 @@ final class OshiReaderUITests: XCTestCase {
         XCTAssertTrue(nextButton?.isEnabled ?? false)
     }
 
+    func testCatchUpBarTapAnywhereScrollsFeedToNewestAndDismisses() throws {
+        app.terminate()
+        app.launchArguments = ["--uitesting", "--uitesting-all-platform-sort-feed", "--uitesting-catch-up"]
+        app.launch()
+
+        let bar = app.buttons["feed.catchUpSummary"]
+        XCTAssertTrue(bar.waitForExistence(timeout: 5))
+        // The all-platform fixture dates YouTube newest. Match its title, not
+        // the card label: that includes a relative time that ticks over.
+        let newestTitle = app.staticTexts["UITest Oshi YouTube item"]
+        XCTAssertTrue(newestTitle.waitForExistence(timeout: 5))
+
+        app.swipeUp()
+        app.swipeUp()
+        XCTAssertFalse(newestTitle.exists && newestTitle.isHittable, "Feed should have scrolled away from the top")
+
+        // Tap the blank middle of the bar, between the count and "View feed".
+        bar.coordinate(withNormalizedOffset: CGVector(dx: 0.6, dy: 0.5)).tap()
+
+        XCTAssertTrue(bar.waitForNonExistence(timeout: 3), "Tapping the bar should dismiss it")
+        let backAtTop = NSPredicate { _, _ in newestTitle.exists && newestTitle.isHittable }
+        wait(for: [expectation(for: backAtTop, evaluatedWith: nil)], timeout: 3)
+    }
+
     func testSearchFlow() throws {
         tapTab(index: 1, labels: ["Search"])
 

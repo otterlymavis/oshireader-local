@@ -857,6 +857,13 @@ final class NotificationManager: ObservableObject {
         dismissCatchUp()
     }
 
+    /// UI-test fixture: the catch-up bar otherwise needs real alerts pending
+    /// while the app was away.
+    func seedCatchUpForUITesting(count: Int) {
+        guard ProcessInfo.processInfo.arguments.contains("--uitesting") else { return }
+        catchUpItemCount = count
+    }
+
     func handleForegroundLocalDelivery(_ request: UNNotificationRequest) {
         guard request.identifier.hasPrefix(Self.individualNotificationIdentifierPrefix),
               !Self.isReviewUpdate(request),
