@@ -17,8 +17,11 @@ final class NotificationAlertTranslator {
     static let shared = NotificationAlertTranslator()
 
     /// Hard cap per string so a stalled translation can't eat the background
-    /// refresh budget.
-    private static let deadlineSeconds: Double = 4
+    /// refresh budget (callers also cap their total, see `NotificationManager`).
+    private static let deadlineSeconds: Double = 1.5
+    /// How long a pair stays skipped after it was found not installed or a
+    /// call timed out, so later alerts don't pay for the same answer again.
+    private static let unavailablePairBackoff: TimeInterval = 10 * 60
     /// Alerts only show ~100 characters; translating more is wasted work.
     private static let maximumSourceLength = 400
     // Sized for a scrolled feed (title + snippet per card), not just alerts.
@@ -28,6 +31,7 @@ final class NotificationAlertTranslator {
     // review, so remember results instead of re-translating.
     private var cache: [String: String] = [:]
     private var cacheOrder: [String] = []
+    private var unavailablePairsUntil: [String: Date] = [:]
 
     func translate(_ text: String, to appLanguage: String) async -> String {
         guard !Self.isTesting,
@@ -40,14 +44,31 @@ final class NotificationAlertTranslator {
         if let cached = cache[cacheKey] { return cached }
 
         guard #available(iOS 26.0, *) else { return text }
+        let pairKey = "\(source.rawValue)>\(appLanguage)"
+        if let until = unavailablePairsUntil[pairKey], until > Date() { return text }
         let sourceLocale = Locale.Language(identifier: source.rawValue)
         let targetLocale = target.locale
-        let translated = await Self.withDeadline(Self.deadlineSeconds) {
+        let outcome = await Self.withDeadline(Self.deadlineSeconds) {
             await Self.translateOnDevice(sourceText, from: sourceLocale, to: targetLocale)
         }
-        guard let translated, !translated.isEmpty else { return text }
-        remember(translated, for: cacheKey)
-        return translated
+        switch outcome {
+        case .translated(let translated) where !translated.isEmpty:
+            unavailablePairsUntil[pairKey] = nil
+            remember(translated, for: cacheKey)
+            return translated
+        case .notInstalled, nil:
+            // nil = timed out. Either way, stop asking for a while.
+            unavailablePairsUntil[pairKey] = Date().addingTimeInterval(Self.unavailablePairBackoff)
+            return text
+        default:
+            return text
+        }
+    }
+
+    /// Settings calls this after a download finishes so a just-installed pair
+    /// is tried again right away instead of after the backoff.
+    func resetUnavailablePairs() {
+        unavailablePairsUntil.removeAll()
     }
 
     // Unit / UI test runs keep the original text: the simulator has no
@@ -122,21 +143,27 @@ final class NotificationAlertTranslator {
 
     // MARK: - Translation
 
+    enum TranslationOutcome: Sendable {
+        case translated(String)
+        case notInstalled
+        case failed
+    }
+
     @available(iOS 26.0, *)
     private nonisolated static func translateOnDevice(
         _ text: String,
         from source: Locale.Language,
         to target: Locale.Language
-    ) async -> String? {
+    ) async -> TranslationOutcome {
         // A missing model can't be downloaded without UI, so only use pairs
         // that are already installed.
-        guard await LanguageAvailability().status(from: source, to: target) == .installed else { return nil }
+        guard await LanguageAvailability().status(from: source, to: target) == .installed else { return .notInstalled }
         do {
             let session = TranslationSession(installedSource: source, target: target)
-            return try await session.translate(text).targetText
+            return .translated(try await session.translate(text).targetText)
         } catch {
             AppLogger.notifications.error("Notification translation failed: \(error.localizedDescription)")
-            return nil
+            return .failed
         }
     }
 
@@ -144,12 +171,12 @@ final class NotificationAlertTranslator {
     /// operation is cancelled but not awaited, so a hung call can't block.
     /// Whichever side finishes first cancels the other, so a fast translation
     /// doesn't leave its timer sleeping (feed scrolling starts many of these).
-    nonisolated static func withDeadline(
+    nonisolated static func withDeadline<Value: Sendable>(
         _ seconds: Double,
-        _ operation: @escaping @Sendable () async -> String?
-    ) async -> String? {
+        _ operation: @escaping @Sendable () async -> Value?
+    ) async -> Value? {
         await withCheckedContinuation { continuation in
-            let gate = ResumeOnce(continuation)
+            let gate = ResumeOnce<Value>(continuation)
             let work = CancellableTaskBox()
             let timer = Task {
                 guard (try? await Task.sleep(for: .seconds(seconds))) != nil else { return }
@@ -165,15 +192,15 @@ final class NotificationAlertTranslator {
     }
 }
 
-private final class ResumeOnce: @unchecked Sendable {
+private final class ResumeOnce<Value>: @unchecked Sendable {
     private let lock = NSLock()
-    private var continuation: CheckedContinuation<String?, Never>?
+    private var continuation: CheckedContinuation<Value?, Never>?
 
-    init(_ continuation: CheckedContinuation<String?, Never>) {
+    init(_ continuation: CheckedContinuation<Value?, Never>) {
         self.continuation = continuation
     }
 
-    func resume(_ value: String?) {
+    func resume(_ value: Value?) {
         lock.lock()
         let pending = continuation
         continuation = nil

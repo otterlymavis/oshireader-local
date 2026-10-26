@@ -491,6 +491,7 @@ final class NotificationManager: ObservableObject {
         center.removePendingNotificationRequests(withIdentifiers: pendingToRemove)
         center.removeDeliveredNotifications(withIdentifiers: deliveredToRemove)
 
+        let translationDeadline = Date().addingTimeInterval(Self.alertTranslationBudget)
         for identifier in affectedSummaryIDs {
             guard notificationQueueProfileIDProvider() == profileID else { return }
             guard let summary = rollingSummaries[identifier] else {
@@ -501,7 +502,7 @@ final class NotificationManager: ObservableObject {
             let pendingRequest = pending.first { $0.identifier == identifier }
             guard pendingRequest != nil || delivered.contains(where: { $0.identifier == identifier }) else { continue }
             let revision = localNotificationGeneration
-            let content = await notificationContent(for: summary.withoutAttachments())
+            let content = await notificationContent(for: summary.withoutAttachments(), translationDeadline: translationDeadline)
             guard notificationQueueProfileIDProvider() == profileID,
                   revision == localNotificationGeneration else { continue }
             // A review refreshes the visible count without a new interruption.
@@ -758,6 +759,11 @@ final class NotificationManager: ObservableObject {
 
     private static let quietHoursDigestIdentifier = "oshireader-quiet-hours-digest"
 
+    /// Total wall-clock time one drain / review may spend translating alert
+    /// text. Scheduling runs at the end of a ~25s background refresh, so past
+    /// this the remaining alerts keep their original text instead of risking
+    /// the BG deadline cancelling the drain before `center.add`.
+    private static let alertTranslationBudget: TimeInterval = 3
     private static let alertSubtitleLimit = 50
     private static let alertBodyLimit = 100
     /// The very first ready item in a drain fires with no artificial delay so
@@ -1018,6 +1024,9 @@ final class NotificationManager: ObservableObject {
         var deliveryCursor = [latestRecordedDelivery, recentDelivery]
             .compactMap { $0 }.max() ?? now.addingTimeInterval(-Self.individualDeliverySpacing)
 
+        // Real clock, not `nowProvider`: this bounds actual time spent.
+        let translationDeadline = Date().addingTimeInterval(Self.alertTranslationBudget)
+
         // How many of this drain's alerts may skip the inter-item spacing and
         // fire right away.
         var immediateBudget: Int
@@ -1052,7 +1061,7 @@ final class NotificationManager: ObservableObject {
             let replacesPending = pending.contains { $0.identifier == queued.identifier }
             guard availableSlots > 0 || replacesPending else { return }
             guard !Task.isCancelled, generation == localNotificationGeneration else { return }
-            let content = await notificationContent(for: queued)
+            let content = await notificationContent(for: queued, translationDeadline: translationDeadline)
             guard !Task.isCancelled, generation == localNotificationGeneration else { return }
 
             // Attachment preparation can suspend for several seconds. Base the
@@ -1128,7 +1137,10 @@ final class NotificationManager: ObservableObject {
         }
     }
 
-    private func notificationContent(for queued: QueuedIndividualNotification) async -> UNMutableNotificationContent {
+    private func notificationContent(
+        for queued: QueuedIndividualNotification,
+        translationDeadline: Date
+    ) async -> UNMutableNotificationContent {
         // The anchor — always the newest item (`queued.items` is newest-first,
         // enforced where each `QueuedIndividualNotification` is built). A
         // grouped entry (`items.count > 1`) still names and links through this
@@ -1142,13 +1154,13 @@ final class NotificationManager: ObservableObject {
         // the user's own wording and stays as typed.
         let alertLanguage = alertLanguageProvider()
         if let itemTitle, !itemTitle.isEmpty {
-            let shownTitle = await translateAlertText(itemTitle, alertLanguage)
+            let shownTitle = await translatedAlertText(itemTitle, language: alertLanguage, deadline: translationDeadline)
             content.subtitle = Self.limitedAlertText(shownTitle, limit: Self.alertSubtitleLimit)
         }
         if queued.items.count > 1 {
             content.body = I18nManager.shared.tFormat("notificationGroupedCountFmt", queued.items.count)
         } else if let itemBody, !itemBody.isEmpty, itemBody != itemTitle {
-            let shownBody = await translateAlertText(itemBody, alertLanguage)
+            let shownBody = await translatedAlertText(itemBody, language: alertLanguage, deadline: translationDeadline)
             content.body = Self.limitedAlertText(shownBody, limit: Self.alertBodyLimit)
         } else if content.subtitle.isEmpty {
             let fallback = item.url.isEmpty ? "1 new item found." : item.url
@@ -1295,6 +1307,13 @@ final class NotificationManager: ObservableObject {
 
     private static func notifiedItemLedgerStorageKey(profileID: UUID) -> String {
         LocalProfileStore.defaultsKey("notified_item_ledger", profileID: profileID)
+    }
+
+    /// Original text once the drain's translation budget is spent or the
+    /// refresh is being cancelled — translation must never cost an alert.
+    private func translatedAlertText(_ text: String, language: String, deadline: Date) async -> String {
+        guard !Task.isCancelled, Date() < deadline else { return text }
+        return await translateAlertText(text, language)
     }
 
     private static func limitedAlertText(_ value: String, limit: Int) -> String {

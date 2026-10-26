@@ -2070,6 +2070,41 @@ final class FeedMergingTests: XCTestCase {
         XCTAssertEqual(content.userInfo["item_title"] as? String, "新曲が公開されました")
     }
 
+    @MainActor
+    func testSlowTranslationCannotStopAlertsFromBeingScheduled() async throws {
+        let center = MockNotificationCenter(status: .authorized)
+        var calls = 0
+        let manager = NotificationManager(
+            center: center,
+            alertLanguageProvider: { "en" },
+            translateAlertText: { text, _ in
+                calls += 1
+                try? await Task.sleep(for: .seconds(2))
+                return "[en] \(text)"
+            }
+        )
+        let term = WatchTerm(id: "slow-translate", keyword: "推し", notify_on_new: true)
+        let nowString = ISO8601DateFormatter().string(from: Date())
+        let items = (1...3).map { index in
+            FeedItem(
+                id: "news:slow-\(index)", platform: "news", url: "https://example.com/slow-\(index)",
+                title: "投稿\(index)", content_text: nil, author: nil, thumbnail_url: nil,
+                media_type: "article", published_at: nowString, watch_term_keyword: term.keyword,
+                fetched_at: nowString
+            )
+        }
+
+        let started = Date()
+        await manager.notifyForNewItems(items, terms: [term], includeAttachments: false)
+
+        // The 3s budget allows two 2s calls at most; everything still schedules.
+        XCTAssertLessThanOrEqual(calls, 2)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 6)
+        XCTAssertFalse(center.requests.isEmpty)
+        let subtitles = center.requests.map(\.content.subtitle)
+        XCTAssertTrue(subtitles.contains { !$0.hasPrefix("[en]") }, "\(subtitles)")
+    }
+
     func testNotificationTranslatorSkipsTextAlreadyInAppLanguage() throws {
         let japanese = try XCTUnwrap(NotificationAlertTranslator.targetLanguage(forAppLanguage: "ja")).natural
         let english = try XCTUnwrap(NotificationAlertTranslator.targetLanguage(forAppLanguage: "en")).natural

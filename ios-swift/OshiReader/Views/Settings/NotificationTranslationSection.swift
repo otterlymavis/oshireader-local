@@ -43,7 +43,10 @@ struct NotificationTranslationSection: View {
         .translationTask(downloadConfiguration) { session in
             // Shows the system download sheet when the pair isn't installed yet.
             try? await session.prepareTranslation()
-            await MainActor.run { downloadConfiguration = nil }
+            await MainActor.run {
+                downloadConfiguration = nil
+                NotificationAlertTranslator.shared.resetUnavailablePairs()
+            }
             await refreshStatuses()
         }
         .task(id: i18n.lang) { await refreshStatuses() }
