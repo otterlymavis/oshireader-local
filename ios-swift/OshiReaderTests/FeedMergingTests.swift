@@ -2039,6 +2039,63 @@ final class FeedMergingTests: XCTestCase {
     }
 
     @MainActor
+    func testLocalNotificationShowsTranslatedPostTextButKeepsKeyword() async throws {
+        let center = MockNotificationCenter(status: .authorized)
+        var translationCalls: [(String, String)] = []
+        let manager = NotificationManager(
+            center: center,
+            alertLanguageProvider: { "en" },
+            translateAlertText: { text, language in
+                translationCalls.append((text, language))
+                return "[\(language)] \(text)"
+            }
+        )
+        let term = WatchTerm(id: "translate", keyword: "推しの名前", notify_on_new: true)
+        let nowString = ISO8601DateFormatter().string(from: Date())
+        let item = FeedItem(
+            id: "news:translate", platform: "news", url: "https://example.com/translate",
+            title: "新曲が公開されました", content_text: "ライブの詳細はこちら", author: nil, thumbnail_url: nil,
+            media_type: "article", published_at: nowString, watch_term_keyword: term.keyword,
+            fetched_at: nowString
+        )
+
+        await manager.notifyForNewItems([item], terms: [term], includeAttachments: false)
+
+        let content = try XCTUnwrap(center.requests.first?.content)
+        XCTAssertEqual(content.title, "推しの名前")
+        XCTAssertEqual(content.subtitle, "[en] 新曲が公開されました")
+        XCTAssertEqual(content.body, "[en] ライブの詳細はこちら")
+        XCTAssertEqual(translationCalls.map(\.1), ["en", "en"])
+        // The reader / preview payload keeps the original post text.
+        XCTAssertEqual(content.userInfo["item_title"] as? String, "新曲が公開されました")
+    }
+
+    func testNotificationTranslatorSkipsTextAlreadyInAppLanguage() throws {
+        let japanese = try XCTUnwrap(NotificationAlertTranslator.targetLanguage(forAppLanguage: "ja")).natural
+        let english = try XCTUnwrap(NotificationAlertTranslator.targetLanguage(forAppLanguage: "en")).natural
+        let traditional = try XCTUnwrap(NotificationAlertTranslator.targetLanguage(forAppLanguage: "zh-TW")).natural
+
+        XCTAssertNil(NotificationAlertTranslator.sourceLanguageNeedingTranslation("新曲が公開されました", target: japanese))
+        XCTAssertEqual(NotificationAlertTranslator.sourceLanguageNeedingTranslation("新曲が公開されました", target: english), .japanese)
+        XCTAssertNil(NotificationAlertTranslator.sourceLanguageNeedingTranslation("The new single is out today", target: english))
+        XCTAssertEqual(NotificationAlertTranslator.sourceLanguageNeedingTranslation("The new single is out today", target: japanese), .english)
+        // Kanji-heavy Japanese with kana must not be read as Chinese.
+        XCTAssertEqual(NotificationAlertTranslator.sourceLanguageNeedingTranslation("東京公演の日程が決定しました", target: traditional), .japanese)
+        XCTAssertNil(NotificationAlertTranslator.sourceLanguageNeedingTranslation("   ", target: english))
+        XCTAssertNil(NotificationAlertTranslator.targetLanguage(forAppLanguage: "fr"))
+    }
+
+    func testNotificationTranslatorPreparesCommonSourcesOtherThanAppLanguage() {
+        let identifiers: (String) -> [String] = { language in
+            NotificationAlertTranslator.sourceLanguagesToPrepare(forAppLanguage: language).map(\.minimalIdentifier)
+        }
+        XCTAssertEqual(identifiers("ja"), ["en"])
+        XCTAssertEqual(identifiers("en"), ["ja"])
+        XCTAssertEqual(identifiers("zh-TW"), ["ja", "en"])
+        XCTAssertEqual(identifiers("fr"), [])
+    }
+
+    @MainActor
     func testLocalNotificationUsesPlusAlertLimitsAndSuppressesDuplicateBody() async throws {
         let center = MockNotificationCenter(status: .authorized)
         let manager = NotificationManager(center: center)

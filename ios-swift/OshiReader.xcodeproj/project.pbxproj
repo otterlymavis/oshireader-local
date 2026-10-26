@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		00F290956537C98A04BE0DC5 /* NotificationAlertTranslator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 479C9F03FCAA842F1AB5C6CE /* NotificationAlertTranslator.swift */; };
 		0147BADA6F83002DDCCEF492 /* PaidPushTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFB93D67FEBB4EF9B7FE304B /* PaidPushTests.swift */; };
 		04ECF722D087530C866ACCCF /* app_icon_preview_black_bg.png in Resources */ = {isa = PBXBuildFile; fileRef = 16AC7000186EF1AE3E971C44 /* app_icon_preview_black_bg.png */; };
 		05DC981DC95AD50E05C6336E /* ICloudSyncSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAEF97E830E2C709924CEBC3 /* ICloudSyncSettingsView.swift */; };
@@ -104,6 +105,7 @@
 		C7868506F2B4BC5F5D81ED34 /* WidgetSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44856E26AE8119108F4EF73D /* WidgetSnapshot.swift */; };
 		C97A019FA31C7241CFFEFCCB /* app_icon_preview_dark_mode_outline.png in Resources */ = {isa = PBXBuildFile; fileRef = 470F1460E896D82E6ED8B5A3 /* app_icon_preview_dark_mode_outline.png */; };
 		CB45E12713243928A5088590 /* LocalDB.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC815F05EA634BBCAB4CCF02 /* LocalDB.swift */; };
+		CBD8FE72D221C32C495A5D5E /* NotificationTranslationSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C047753B7C7880512A94128 /* NotificationTranslationSection.swift */; };
 		D52495292898CC66D9765714 /* OshiView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 16205C1ECDAC6AB69095DEDA /* OshiView.swift */; };
 		DB8D0FBCCF101C3203585F90 /* UserNotifications.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 8451BE642CEFB0250CC38029 /* UserNotifications.framework */; };
 		DF209DB68817A4F2F8248D5B /* NotificationNavigationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 720597F8B0D3B8680AAB2C90 /* NotificationNavigationManager.swift */; };
@@ -210,7 +212,9 @@
 		44E39475BA19C302F4FA4E34 /* MainInterface.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = MainInterface.storyboard; sourceTree = "<group>"; };
 		459E75CAD522B9781519DCDF /* AppGroup.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppGroup.swift; sourceTree = "<group>"; };
 		470F1460E896D82E6ED8B5A3 /* app_icon_preview_dark_mode_outline.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = app_icon_preview_dark_mode_outline.png; sourceTree = "<group>"; };
+		479C9F03FCAA842F1AB5C6CE /* NotificationAlertTranslator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationAlertTranslator.swift; sourceTree = "<group>"; };
 		49BBAB62B30911CFD45062E6 /* OshiReaderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OshiReaderTests.swift; sourceTree = "<group>"; };
+		4C047753B7C7880512A94128 /* NotificationTranslationSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationTranslationSection.swift; sourceTree = "<group>"; };
 		56F97FCE5F8F2EFBC98E2310 /* OshiReader.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = OshiReader.entitlements; sourceTree = "<group>"; };
 		5C607233A1D4F78BDDD5A7C4 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		5C6C1CB795D1C2C6476413D4 /* SavedBookmarksTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SavedBookmarksTests.swift; sourceTree = "<group>"; };
@@ -358,6 +362,7 @@
 				E7B54D0D337B943C234DD82C /* HostedSourceStatusView.swift */,
 				AAEF97E830E2C709924CEBC3 /* ICloudSyncSettingsView.swift */,
 				0FC3F55F7896C2F1670977F9 /* NotificationSettingsView.swift */,
+				4C047753B7C7880512A94128 /* NotificationTranslationSection.swift */,
 				BCB49683A8799B72746A15A6 /* PaidBackendSettingsView.swift */,
 				A2869465BDD01355AC22442F /* PrivacyPolicyView.swift */,
 				2180149C9256C0D1EE52951D /* ReaderSettingsView.swift */,
@@ -489,6 +494,7 @@
 				753E0324E3B4665896516C12 /* LocalRefreshCoordinator.swift */,
 				14C7E2AD85F46D55CDAD349D /* Models.swift */,
 				BA4656BA51F509A9A84ED250 /* NetworkManager.swift */,
+				479C9F03FCAA842F1AB5C6CE /* NotificationAlertTranslator.swift */,
 				C57E67E3249F42C007E1E661 /* NotificationDeliverySettings.swift */,
 				CA093C93D4514C0B73101C23 /* NotificationManager.swift */,
 				720597F8B0D3B8680AAB2C90 /* NotificationNavigationManager.swift */,
@@ -836,10 +842,12 @@
 				1139EA0DCA66701E71B071F7 /* LocalRefreshCoordinator.swift in Sources */,
 				92793B84417591C6F67CB6B4 /* Models.swift in Sources */,
 				BE3D630219B70EABDAEA04BA /* NetworkManager.swift in Sources */,
+				00F290956537C98A04BE0DC5 /* NotificationAlertTranslator.swift in Sources */,
 				58362EFF206206356F4A6E97 /* NotificationDeliverySettings.swift in Sources */,
 				3FA51D07DCDCD47A84902360 /* NotificationManager.swift in Sources */,
 				DF209DB68817A4F2F8248D5B /* NotificationNavigationManager.swift in Sources */,
 				AE934F2A3A2459DF45805CAE /* NotificationSettingsView.swift in Sources */,
+				CBD8FE72D221C32C495A5D5E /* NotificationTranslationSection.swift in Sources */,
 				C390F5E971F63FEB201C0124 /* OPMLExporter.swift in Sources */,
 				A0AC4C89B94E168EE1AC6027 /* OshiReaderApp.swift in Sources */,
 				D52495292898CC66D9765714 /* OshiView.swift in Sources */,

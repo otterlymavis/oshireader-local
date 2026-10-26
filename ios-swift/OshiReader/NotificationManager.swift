@@ -92,6 +92,8 @@ final class NotificationManager: ObservableObject {
     private let notificationQueueProfileIDProvider: () -> UUID
     private let nowProvider: () -> Date
     private let maximumPendingNotificationRequests: Int
+    private let alertLanguageProvider: @MainActor () -> String
+    private let translateAlertText: @MainActor (String, String) async -> String
     private let maximumAttachmentBytes: Int64 = 10 * 1024 * 1024
     private var localNotificationGeneration = 0
     private var authorizationRequestTask: Task<(granted: Bool, status: UNAuthorizationStatus), Never>?
@@ -144,7 +146,11 @@ final class NotificationManager: ObservableObject {
             LocalProfileStore.shared.currentProfileIDThreadSafe
         },
         nowProvider: @escaping () -> Date = Date.init,
-        maximumPendingNotificationRequests: Int = 60
+        maximumPendingNotificationRequests: Int = 60,
+        alertLanguageProvider: @escaping @MainActor () -> String = { I18nManager.shared.lang },
+        translateAlertText: @escaping @MainActor (String, String) async -> String = { text, language in
+            await NotificationAlertTranslator.shared.translate(text, to: language)
+        }
     ) {
         let initialQueueProfileID = notificationQueueProfileIDProvider()
         self.center = center
@@ -157,6 +163,8 @@ final class NotificationManager: ObservableObject {
         self.notificationQueueProfileIDProvider = notificationQueueProfileIDProvider
         self.nowProvider = nowProvider
         self.maximumPendingNotificationRequests = maximumPendingNotificationRequests
+        self.alertLanguageProvider = alertLanguageProvider
+        self.translateAlertText = translateAlertText
         self.notificationQueueProfileID = initialQueueProfileID
         self.queuedIndividualNotifications = Self.loadQueuedIndividualNotifications(
             defaults: notificationQueueDefaults,
@@ -1130,13 +1138,18 @@ final class NotificationManager: ObservableObject {
         content.title = item.watch_term_keyword
         let itemTitle = cleanDisplayText(item.title)
         let itemBody = cleanDisplayText(item.content_text)
+        // Post text is shown in the user's app language; the keyword title is
+        // the user's own wording and stays as typed.
+        let alertLanguage = alertLanguageProvider()
         if let itemTitle, !itemTitle.isEmpty {
-            content.subtitle = Self.limitedAlertText(itemTitle, limit: Self.alertSubtitleLimit)
+            let shownTitle = await translateAlertText(itemTitle, alertLanguage)
+            content.subtitle = Self.limitedAlertText(shownTitle, limit: Self.alertSubtitleLimit)
         }
         if queued.items.count > 1 {
             content.body = I18nManager.shared.tFormat("notificationGroupedCountFmt", queued.items.count)
         } else if let itemBody, !itemBody.isEmpty, itemBody != itemTitle {
-            content.body = Self.limitedAlertText(itemBody, limit: Self.alertBodyLimit)
+            let shownBody = await translateAlertText(itemBody, alertLanguage)
+            content.body = Self.limitedAlertText(shownBody, limit: Self.alertBodyLimit)
         } else if content.subtitle.isEmpty {
             let fallback = item.url.isEmpty ? "1 new item found." : item.url
             content.body = Self.limitedAlertText(fallback, limit: Self.alertBodyLimit)

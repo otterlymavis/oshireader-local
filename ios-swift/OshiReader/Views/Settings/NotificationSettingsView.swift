@@ -138,6 +138,10 @@ struct NotificationSettingsView: View {
                     .foregroundColor(theme.colors.textMuted)
             }
 
+            if #available(iOS 26.0, *) {
+                NotificationTranslationSection(theme: theme, i18n: i18n)
+            }
+
             Section {
                 Toggle(i18n.t("quietHoursToggle"), isOn: Binding(
                     get: { quietHoursSettings.enabled },

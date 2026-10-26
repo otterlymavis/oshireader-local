@@ -63,6 +63,36 @@ class I18nManager: ObservableObject {
             "zh-TW": "查看動態",
             "zh-CN": "查看动态"
         ],
+        "notificationTranslationHeader": [
+            "en": "Notification translation",
+            "ja": "通知の翻訳",
+            "zh-TW": "通知翻譯",
+            "zh-CN": "通知翻译"
+        ],
+        "notificationTranslationFooter": [
+            "en": "Posts in other languages are translated on this iPhone into the app language before they're shown in notifications. Download the languages above so this also works in the background.",
+            "ja": "他の言語の投稿は、通知に表示する前にこの iPhone 上でアプリの言語に翻訳されます。バックグラウンドでも翻訳できるよう、上の言語をダウンロードしてください。",
+            "zh-TW": "其他語言的貼文會先在這支 iPhone 上翻譯成 App 語言，再顯示於通知中。請下載上方的語言，讓背景通知也能翻譯。",
+            "zh-CN": "其他语言的帖子会先在这台 iPhone 上翻译成 App 语言，再显示在通知中。请下载上方的语言，让后台通知也能翻译。"
+        ],
+        "translationStatusReady": [
+            "en": "Ready",
+            "ja": "準備完了",
+            "zh-TW": "已就緒",
+            "zh-CN": "已就绪"
+        ],
+        "translationStatusUnsupported": [
+            "en": "Not available",
+            "ja": "利用不可",
+            "zh-TW": "無法使用",
+            "zh-CN": "不可用"
+        ],
+        "translationDownload": [
+            "en": "Download",
+            "ja": "ダウンロード",
+            "zh-TW": "下載",
+            "zh-CN": "下载"
+        ],
         "tabSaved": [
             "en": "Saved",
             "ja": "ブックマーク",
