@@ -142,18 +142,25 @@ final class NotificationAlertTranslator {
 
     /// Returns `nil` if `operation` hasn't finished within `seconds`; the
     /// operation is cancelled but not awaited, so a hung call can't block.
-    private nonisolated static func withDeadline(
+    /// Whichever side finishes first cancels the other, so a fast translation
+    /// doesn't leave its timer sleeping (feed scrolling starts many of these).
+    nonisolated static func withDeadline(
         _ seconds: Double,
         _ operation: @escaping @Sendable () async -> String?
     ) async -> String? {
         await withCheckedContinuation { continuation in
             let gate = ResumeOnce(continuation)
-            let work = Task { gate.resume(await operation()) }
-            Task {
-                try? await Task.sleep(for: .seconds(seconds))
+            let work = CancellableTaskBox()
+            let timer = Task {
+                guard (try? await Task.sleep(for: .seconds(seconds))) != nil else { return }
                 work.cancel()
                 gate.resume(nil)
             }
+            work.set(Task {
+                let result = await operation()
+                timer.cancel()
+                gate.resume(result)
+            })
         }
     }
 }
@@ -172,5 +179,29 @@ private final class ResumeOnce: @unchecked Sendable {
         continuation = nil
         lock.unlock()
         pending?.resume(returning: value)
+    }
+}
+
+/// Lets the deadline timer cancel a task created after it; a `cancel()` that
+/// lands first cancels the task as soon as it's set.
+private final class CancellableTaskBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var task: Task<Void, Never>?
+    private var isCancelled = false
+
+    func set(_ task: Task<Void, Never>) {
+        lock.lock()
+        self.task = task
+        let cancelNow = isCancelled
+        lock.unlock()
+        if cancelNow { task.cancel() }
+    }
+
+    func cancel() {
+        lock.lock()
+        isCancelled = true
+        let pending = task
+        lock.unlock()
+        pending?.cancel()
     }
 }

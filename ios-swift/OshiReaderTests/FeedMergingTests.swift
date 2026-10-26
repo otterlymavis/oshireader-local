@@ -2128,6 +2128,19 @@ final class FeedMergingTests: XCTestCase {
         XCTAssertFalse(state.showsOriginal("a"))
     }
 
+    func testTranslationDeadlineReturnsFastResultAndGivesUpOnSlowOne() async {
+        let fast = await NotificationAlertTranslator.withDeadline(1) { "done" }
+        XCTAssertEqual(fast, "done")
+
+        let started = Date()
+        let slow = await NotificationAlertTranslator.withDeadline(0.1) {
+            try? await Task.sleep(for: .seconds(5))
+            return "late"
+        }
+        XCTAssertNil(slow)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 2)
+    }
+
     func testNotificationTranslatorPreparesCommonSourcesOtherThanAppLanguage() {
         let identifiers: (String) -> [String] = { language in
             NotificationAlertTranslator.sourceLanguagesToPrepare(forAppLanguage: language).map(\.minimalIdentifier)
