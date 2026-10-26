@@ -16,6 +16,7 @@ struct LocalProfileSettings: Codable, Equatable {
     let fontSizeChoice: String?
     let language: String?
     let autoTranslateReader: Bool?
+    let translateFeed: Bool?
 
     static func load(profileID: UUID, defaults: UserDefaults = .standard) -> LocalProfileSettings {
         LocalProfileSettings(
@@ -24,7 +25,8 @@ struct LocalProfileSettings: Codable, Equatable {
             fontChoice: defaults.string(forKey: LocalProfileStore.defaultsKey("app_font_choice", profileID: profileID)),
             fontSizeChoice: defaults.string(forKey: LocalProfileStore.defaultsKey("app_font_size_choice", profileID: profileID)),
             language: defaults.string(forKey: LocalProfileStore.defaultsKey("selected_lang", profileID: profileID)),
-            autoTranslateReader: defaults.object(forKey: LocalProfileStore.defaultsKey("auto_translate_reader", profileID: profileID)) as? Bool
+            autoTranslateReader: defaults.object(forKey: LocalProfileStore.defaultsKey("auto_translate_reader", profileID: profileID)) as? Bool,
+            translateFeed: defaults.object(forKey: LocalProfileStore.defaultsKey(FeedTranslationState.enabledKey, profileID: profileID)) as? Bool
         )
     }
 
@@ -35,7 +37,8 @@ struct LocalProfileSettings: Codable, Equatable {
             ("app_font_choice", fontChoice),
             ("app_font_size_choice", fontSizeChoice),
             ("selected_lang", language),
-            ("auto_translate_reader", autoTranslateReader)
+            ("auto_translate_reader", autoTranslateReader),
+            (FeedTranslationState.enabledKey, translateFeed)
         ]
         for (key, value) in values {
             let storageKey = LocalProfileStore.defaultsKey(key, profileID: profileID)

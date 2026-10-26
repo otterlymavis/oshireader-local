@@ -23,6 +23,7 @@
 		1C4CDBFD8F1F4384C3CCA202 /* CloudSyncManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = DFC4064786481670E5051013 /* CloudSyncManager.swift */; };
 		1F5F15211AEF3A6A4335A881 /* PlatformRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 86982AF846CF5F002A8068BE /* PlatformRegistry.swift */; };
 		24B8DB32CD3DA922463E1D01 /* I18nTranslationsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 711DA15EF5C72099ADC21791 /* I18nTranslationsTests.swift */; };
+		2900AF5AC0B858A33B944506 /* FeedTranslationState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C32D46F8575265000B529CB /* FeedTranslationState.swift */; };
 		29A8075BD371F81336CBAD15 /* PrivacyPolicyView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2869465BDD01355AC22442F /* PrivacyPolicyView.swift */; };
 		2D631170F7550DEF263CFE8E /* QuietHours.swift in Sources */ = {isa = PBXBuildFile; fileRef = 91138D12C85BFE8A84D02216 /* QuietHours.swift */; };
 		327B36C567E87CCAD097DC4C /* OshiReaderNotificationContent.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 283CC012C9E18599FBD8C1E7 /* OshiReaderNotificationContent.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
@@ -220,6 +221,7 @@
 		49BBAB62B30911CFD45062E6 /* OshiReaderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OshiReaderTests.swift; sourceTree = "<group>"; };
 		4C047753B7C7880512A94128 /* NotificationTranslationSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationTranslationSection.swift; sourceTree = "<group>"; };
 		56F97FCE5F8F2EFBC98E2310 /* OshiReader.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = OshiReader.entitlements; sourceTree = "<group>"; };
+		5C32D46F8575265000B529CB /* FeedTranslationState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeedTranslationState.swift; sourceTree = "<group>"; };
 		5C607233A1D4F78BDDD5A7C4 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		5C6C1CB795D1C2C6476413D4 /* SavedBookmarksTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SavedBookmarksTests.swift; sourceTree = "<group>"; };
 		5CC07FF11F19D7FE9B1FAE96 /* OshiReaderUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OshiReaderUITests.swift; sourceTree = "<group>"; };
@@ -490,6 +492,7 @@
 				5C607233A1D4F78BDDD5A7C4 /* ContentView.swift */,
 				D664F1A79B84759EDFCFE098 /* EncryptedBackup.swift */,
 				34D8E3C1B440572DBA2FD128 /* ExtensionStrings.swift */,
+				5C32D46F8575265000B529CB /* FeedTranslationState.swift */,
 				75492232667474AE9C22A904 /* I18n.swift */,
 				C96792D04C20B7635508EF1E /* Info.plist */,
 				12A70A437B3A48A6BBA842CF /* IngestionService.swift */,
@@ -835,6 +838,7 @@
 				8E124CC45D5FCE6055056943 /* DataProfilesSettingsView.swift in Sources */,
 				873A32EA2C39E65224BABDCA /* EncryptedBackup.swift in Sources */,
 				5FE268AC78158D090A4D06BE /* ExtensionStrings.swift in Sources */,
+				2900AF5AC0B858A33B944506 /* FeedTranslationState.swift in Sources */,
 				45853A8BCEBA615F1B1717A4 /* FeedView.swift in Sources */,
 				60585715858466B338A4F086 /* ForegroundAutoRefresh.swift in Sources */,
 				E5EBBB84219705ED18D72BAB /* HostedSourceStatusView.swift in Sources */,

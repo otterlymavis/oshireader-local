@@ -2085,6 +2085,49 @@ final class FeedMergingTests: XCTestCase {
         XCTAssertNil(NotificationAlertTranslator.targetLanguage(forAppLanguage: "fr"))
     }
 
+    @MainActor
+    func testFeedTranslationSettingIsPerProfileAndTravelsWithProfileSettings() throws {
+        let state = FeedTranslationState.shared
+        let source = UUID()
+        let copy = UUID()
+        defer {
+            for id in [source, copy] {
+                UserDefaults.standard.removeObject(forKey: LocalProfileStore.defaultsKey(FeedTranslationState.enabledKey, profileID: id))
+            }
+        }
+
+        XCTAssertFalse(state.isEnabled(profileID: source))
+        let revision = state.settingRevision
+        state.setEnabled(true, profileID: source)
+        XCTAssertEqual(state.settingRevision, revision + 1)
+        XCTAssertEqual(state.isEnabled(profileID: source), FeedTranslationState.isSupported)
+        XCTAssertFalse(state.isEnabled(profileID: copy))
+
+        let settings = LocalProfileSettings.load(profileID: source)
+        XCTAssertEqual(settings.translateFeed, true)
+        let decoded = try JSONDecoder().decode(LocalProfileSettings.self, from: JSONEncoder().encode(settings))
+        decoded.apply(to: copy)
+        XCTAssertEqual(state.isEnabled(profileID: copy), FeedTranslationState.isSupported)
+
+        // Settings exported before this key existed still decode.
+        let legacy = try JSONDecoder().decode(LocalProfileSettings.self, from: Data(#"{"language":"ja"}"#.utf8))
+        XCTAssertNil(legacy.translateFeed)
+    }
+
+    @MainActor
+    func testFeedTranslationShowOriginalTogglesPerItem() {
+        let state = FeedTranslationState.shared
+        defer {
+            if state.showsOriginal("a") { state.toggleOriginal("a") }
+        }
+        XCTAssertFalse(state.showsOriginal("a"))
+        state.toggleOriginal("a")
+        XCTAssertTrue(state.showsOriginal("a"))
+        XCTAssertFalse(state.showsOriginal("b"))
+        state.toggleOriginal("a")
+        XCTAssertFalse(state.showsOriginal("a"))
+    }
+
     func testNotificationTranslatorPreparesCommonSourcesOtherThanAppLanguage() {
         let identifiers: (String) -> [String] = { language in
             NotificationAlertTranslator.sourceLanguagesToPrepare(forAppLanguage: language).map(\.minimalIdentifier)

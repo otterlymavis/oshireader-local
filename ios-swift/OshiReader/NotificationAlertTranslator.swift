@@ -2,8 +2,9 @@ import Foundation
 import NaturalLanguage
 import Translation
 
-/// Translates a local notification's post title / body into the app language
-/// the user picked (`I18nManager.lang`) before the banner is scheduled.
+/// Translates post titles / bodies into the app language the user picked
+/// (`I18nManager.lang`): local alerts before they're scheduled, paid pushes in
+/// the service extension, and feed cards when "Translate feed" is on.
 ///
 /// On-device only (Apple Translation, iOS 26+ for the UI-less
 /// `TranslationSession(installedSource:target:)`), so it also works inside a
@@ -20,7 +21,8 @@ final class NotificationAlertTranslator {
     private static let deadlineSeconds: Double = 4
     /// Alerts only show ~100 characters; translating more is wasted work.
     private static let maximumSourceLength = 400
-    private static let maximumCachedTranslations = 300
+    // Sized for a scrolled feed (title + snippet per card), not just alerts.
+    private static let maximumCachedTranslations = 600
 
     // Rolling summaries re-post the same anchor title on every refresh and
     // review, so remember results instead of re-translating.

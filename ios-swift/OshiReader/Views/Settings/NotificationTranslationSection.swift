@@ -9,6 +9,8 @@ import Translation
 struct NotificationTranslationSection: View {
     @ObservedObject var theme: ThemeManager
     @ObservedObject var i18n: I18nManager
+    var headerKey = "notificationTranslationHeader"
+    var footerKey = "notificationTranslationFooter"
     @Environment(\.scenePhase) private var scenePhase
 
     private struct LanguagePair: Identifiable {
@@ -32,11 +34,11 @@ struct NotificationTranslationSection: View {
                 .accessibilityIdentifier("settings.notificationTranslation.\(pair.id)")
             }
 
-            Text(i18n.t("notificationTranslationFooter"))
+            Text(i18n.t(footerKey))
                 .font(.caption)
                 .foregroundColor(theme.colors.textMuted)
         } header: {
-            Text(i18n.t("notificationTranslationHeader"))
+            Text(i18n.t(headerKey))
         }
         .translationTask(downloadConfiguration) { session in
             // Shows the system download sheet when the pair isn't installed yet.

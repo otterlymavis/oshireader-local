@@ -75,6 +75,48 @@ class I18nManager: ObservableObject {
             "zh-TW": "其他語言的貼文會先在這支 iPhone 上翻譯成 App 語言，再顯示於通知中。請下載上方的語言，讓背景通知也能翻譯。",
             "zh-CN": "其他语言的帖子会先在这台 iPhone 上翻译成 App 语言，再显示在通知中。请下载上方的语言，让后台通知也能翻译。"
         ],
+        "translateFeed": [
+            "en": "Translate feed",
+            "ja": "フィードを翻訳",
+            "zh-TW": "翻譯動態",
+            "zh-CN": "翻译动态"
+        ],
+        "translateFeedFooter": [
+            "en": "Shows titles and snippets in other languages in the app language. Long-press a post to see the original.",
+            "ja": "他の言語のタイトルと本文をアプリの言語で表示します。投稿を長押しすると原文を表示できます。",
+            "zh-TW": "以 App 語言顯示其他語言的標題與摘要。長按貼文即可查看原文。",
+            "zh-CN": "以 App 语言显示其他语言的标题和摘要。长按帖子即可查看原文。"
+        ],
+        "feedTranslationFooter": [
+            "en": "Translation runs on this iPhone. Download the languages above to translate posts written in them.",
+            "ja": "翻訳はこの iPhone 上で行われます。上の言語をダウンロードすると、その言語の投稿を翻訳できます。",
+            "zh-TW": "翻譯會在這支 iPhone 上進行。下載上方的語言後，即可翻譯以該語言撰寫的貼文。",
+            "zh-CN": "翻译会在这台 iPhone 上进行。下载上方的语言后，即可翻译用该语言撰写的帖子。"
+        ],
+        "translationLanguagesHeader": [
+            "en": "Translation languages",
+            "ja": "翻訳する言語",
+            "zh-TW": "翻譯語言",
+            "zh-CN": "翻译语言"
+        ],
+        "translatedTag": [
+            "en": "Translated",
+            "ja": "翻訳済み",
+            "zh-TW": "已翻譯",
+            "zh-CN": "已翻译"
+        ],
+        "showOriginal": [
+            "en": "Show original",
+            "ja": "原文を表示",
+            "zh-TW": "顯示原文",
+            "zh-CN": "显示原文"
+        ],
+        "showTranslation": [
+            "en": "Show translation",
+            "ja": "翻訳を表示",
+            "zh-TW": "顯示翻譯",
+            "zh-CN": "显示翻译"
+        ],
         "translationStatusReady": [
             "en": "Ready",
             "ja": "準備完了",

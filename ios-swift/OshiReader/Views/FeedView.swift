@@ -117,6 +117,7 @@ struct FeedView: View {
     @StateObject private var refreshDiagnostics = RefreshDiagnostics.shared
     @StateObject private var refreshCoordinator = LocalRefreshCoordinator.shared
     @StateObject private var recentTermUsage = RecentTermUsageStore.shared
+    @StateObject private var feedTranslation = FeedTranslationState.shared
     
     @State private var selectedKeyword: String? = nil
     @State private var selectedPlatform: String? = nil
@@ -807,6 +808,7 @@ struct FeedView: View {
             .contextMenu {
                 saveToggleButton(for: item)
                 shareButton(for: item)
+                translationToggleButton(for: item)
                 stopFollowingButton(for: item)
                 hidePostButton(for: item)
             }
@@ -835,6 +837,7 @@ struct FeedView: View {
             .contextMenu {
                 saveToggleButton(for: item)
                 shareButton(for: item)
+                translationToggleButton(for: item)
                 stopFollowingButton(for: item)
                 hidePostButton(for: item)
             }
@@ -860,6 +863,20 @@ struct FeedView: View {
                 Label(i18n.t("share"), systemImage: "square.and.arrow.up")
             }
             .tint(theme.colors.primary)
+        }
+    }
+
+    /// Offered whenever feed translation is on; for a post that needed no
+    /// translation it just has no visible effect.
+    @ViewBuilder
+    private func translationToggleButton(for item: FeedItem) -> some View {
+        if feedTranslation.isEnabled() {
+            let showsOriginal = feedTranslation.showsOriginal(item.id)
+            Button {
+                feedTranslation.toggleOriginal(item.id)
+            } label: {
+                Label(i18n.t(showsOriginal ? "showTranslation" : "showOriginal"), systemImage: "translate")
+            }
         }
     }
 
@@ -1001,6 +1018,28 @@ struct FeedCard: View {
     let theme: ThemeManager
     @StateObject private var appearance = AppearanceManager.shared
     @StateObject private var i18n = I18nManager.shared
+    @StateObject private var feedTranslation = FeedTranslationState.shared
+    @State private var translation: FeedCardTranslation?
+
+    private struct FeedCardTranslation {
+        let title: String?
+        let content: String?
+    }
+
+    private var originalTitle: String? { cleanDisplayText(item.title) }
+    private var originalContent: String? { cleanDisplayText(item.content_text) }
+
+    /// Only set while the card is actually showing translated text.
+    private var shownTranslation: FeedCardTranslation? {
+        feedTranslation.showsOriginal(item.id) ? nil : translation
+    }
+
+    private var displayTitle: String? { shownTranslation?.title ?? originalTitle }
+    private var displayContent: String? { shownTranslation?.content ?? originalContent }
+
+    private var translationTaskID: String {
+        "\(item.id)|\(i18n.lang)|\(feedTranslation.settingRevision)"
+    }
 
     private var dateLabel: String {
         let relative = relativeTime(from: item.published_at)
@@ -1013,11 +1052,12 @@ struct FeedCard: View {
     private var accessibilitySummary: String {
         let meta = theme.metadata(for: item.platform)
         let parts: [String?] = [
-            cleanDisplayText(item.title),
+            displayTitle,
             cleanDisplayText(item.author),
             item.watch_term_keyword.isEmpty ? nil : item.watch_term_keyword,
             meta.name,
             isSaved ? i18n.t("tabSaved") : nil,
+            shownTranslation == nil ? nil : i18n.t("translatedTag"),
             dateLabel
         ]
         return parts.compactMap { $0 }.joined(separator: ", ")
@@ -1058,6 +1098,13 @@ struct FeedCard: View {
                 
                 Spacer()
                 
+                if shownTranslation != nil {
+                    Label(i18n.t("translatedTag"), systemImage: "translate")
+                        .font(appearance.font(size: 10))
+                        .foregroundColor(theme.colors.textMuted)
+                        .accessibilityIdentifier("feed.card.translated")
+                }
+
                 if isSaved {
                     Image(systemName: "bookmark.fill")
                         .foregroundColor(theme.colors.primary)
@@ -1071,7 +1118,7 @@ struct FeedCard: View {
             
             HStack(alignment: .top, spacing: 10) {
                 VStack(alignment: .leading, spacing: 4) {
-                    if let title = cleanDisplayText(item.title) {
+                    if let title = displayTitle {
                         Text(title)
                             .font(appearance.font(size: 15))
                             .fontWeight(.bold)
@@ -1088,7 +1135,7 @@ struct FeedCard: View {
                             .lineLimit(1)
                     }
                     
-                    if let content = cleanDisplayText(item.content_text) {
+                    if let content = displayContent {
                         Text(content)
                             .font(appearance.font(size: 12))
                             .foregroundColor(theme.colors.textSub)
@@ -1113,6 +1160,27 @@ struct FeedCard: View {
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilitySummary)
         .accessibilityIdentifier("feed.card.\(item.id)")
+        .task(id: translationTaskID) { await translateIfEnabled() }
+    }
+
+    private func translateIfEnabled() async {
+        guard feedTranslation.isEnabled() else {
+            translation = nil
+            return
+        }
+        let language = i18n.lang
+        var title: String?
+        var content: String?
+        if let originalTitle {
+            let translated = await NotificationAlertTranslator.shared.translate(originalTitle, to: language)
+            if translated != originalTitle { title = translated }
+        }
+        if let originalContent {
+            let translated = await NotificationAlertTranslator.shared.translate(originalContent, to: language)
+            if translated != originalContent { content = translated }
+        }
+        guard !Task.isCancelled else { return }
+        translation = (title == nil && content == nil) ? nil : FeedCardTranslation(title: title, content: content)
     }
     
     private func relativeTime(from isoDate: String) -> String {
