@@ -9,6 +9,7 @@ final class NotificationService: UNNotificationServiceExtension {
     private var receiptTask: URLSessionDataTask?
     private var contentWorkFinished = false
     private var receiptWorkFinished = true
+    private var translationWorkFinished = true
     private var activeRequestID: UUID?
 
     override func didReceive(
@@ -21,6 +22,7 @@ final class NotificationService: UNNotificationServiceExtension {
         activeRequestID = requestID
         contentWorkFinished = false
         receiptWorkFinished = true
+        translationWorkFinished = true
         self.contentHandler = contentHandler
         guard let content = request.content.mutableCopy() as? UNMutableNotificationContent else {
             finish(with: request.content)
@@ -28,6 +30,7 @@ final class NotificationService: UNNotificationServiceExtension {
         }
         bestAttemptContent = content
         receiptWorkFinished = !sendReceiptDiagnostic(userInfo: content.userInfo, requestID: requestID)
+        startTranslation(of: content, requestID: requestID)
 
         guard let url = thumbnailURL(from: content.userInfo) else {
             contentWorkFinished = true
@@ -84,7 +87,8 @@ final class NotificationService: UNNotificationServiceExtension {
     }
 
     private func finishWhenReady() {
-        guard contentWorkFinished, receiptWorkFinished, let bestAttemptContent else { return }
+        guard contentWorkFinished, receiptWorkFinished, translationWorkFinished,
+              let bestAttemptContent else { return }
         finish(with: bestAttemptContent)
     }
 
@@ -93,6 +97,28 @@ final class NotificationService: UNNotificationServiceExtension {
         self.contentHandler = nil
         activeRequestID = nil
         contentHandler(content)
+    }
+
+    /// Shows the post title / body in the user's app language, like local
+    /// alerts. The keyword title stays as the user typed it; anything the
+    /// translator can't handle keeps the server's text.
+    private func startTranslation(of content: UNMutableNotificationContent, requestID: UUID) {
+        let subtitle = content.subtitle
+        let body = content.body
+        guard !subtitle.isEmpty || !body.isEmpty else { return }
+        translationWorkFinished = false
+        let language = SharedAppLanguage.current
+        Task { @MainActor in
+            let translator = NotificationAlertTranslator.shared
+            let shownSubtitle = subtitle.isEmpty ? subtitle : await translator.translate(subtitle, to: language)
+            let shownBody = body.isEmpty ? body : await translator.translate(body, to: language)
+            // Expired or superseded: that content was already handed off.
+            guard self.activeRequestID == requestID else { return }
+            content.subtitle = shownSubtitle
+            content.body = shownBody
+            self.translationWorkFinished = true
+            self.finishWhenReady()
+        }
     }
 
     private func thumbnailURL(from userInfo: [AnyHashable: Any]) -> URL? {

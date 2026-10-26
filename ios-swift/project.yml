@@ -105,6 +105,9 @@ targets:
     deploymentTarget: "17.0"
     sources:
       - path: OshiReaderNotificationService
+      - path: OshiReader/AppLogger.swift
+      - path: OshiReader/AppGroup.swift
+      - path: OshiReader/NotificationAlertTranslator.swift
     dependencies:
       - sdk: UserNotifications.framework
     settings:
@@ -112,6 +115,7 @@ targets:
         INFOPLIST_FILE: OshiReaderNotificationService/Info.plist
         PRODUCT_BUNDLE_IDENTIFIER: com.otterpia.oshireader.NotificationService
         PRODUCT_NAME: OshiReaderNotificationService
+        CODE_SIGN_ENTITLEMENTS: OshiReaderNotificationService/OshiReaderNotificationService.entitlements
         APPLICATION_EXTENSION_API_ONLY: YES
         ENABLE_DEBUG_DYLIB: NO
         DEVELOPMENT_TEAM: D8H3TBWH7P
