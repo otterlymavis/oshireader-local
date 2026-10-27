@@ -165,11 +165,15 @@ final class BackgroundRefreshManager {
         }
         timeout.cancel()
         if Task.isCancelled || result.completion == .expired {
+            BackgroundRunTrace.count(Task.isCancelled ? "cancelled_by_ios" : "hit_operation_deadline", 1)
             LocalRefreshCoordinator.shared.cancel()
             worker.cancel()
             return .failed
         }
-        guard result.completion == .completed else { return .failed }
+        guard result.completion == .completed else {
+            BackgroundRunTrace.count("refresh_not_completed", 1)
+            return .failed
+        }
         Self.recordCompletion()
         guard result.succeeded else { return .failed }
         return result.addedCount > 0 ? .newData : .noData
@@ -183,14 +187,19 @@ final class BackgroundRefreshManager {
         // Queue the next opportunity before starting network work. If iOS
         // expires or terminates this run, a future refresh remains pending.
         schedule(afterTaskLaunch: true)
+        BackgroundRunTrace.begin()
         let operation = Task { @MainActor in
             await refreshNow()
         }
         task.expirationHandler = { [weak self, operation] in
             operation.cancel()
-            Task { @MainActor in self?.cancelActiveRefresh() }
+            Task { @MainActor in
+                BackgroundRunTrace.finish(outcome: "expired_by_ios")
+                self?.cancelActiveRefresh()
+            }
         }
         let outcome = await operation.value
+        BackgroundRunTrace.finish(outcome: "\(outcome)")
         task.setTaskCompleted(success: outcome != .failed)
     }
 }

@@ -202,6 +202,10 @@ final class LocalRefreshCoordinator: ObservableObject {
     // chunk when the remaining budget can fit one more `backgroundUnitDeadline`,
     // so its wall time is bounded by `backgroundWorkBudget` itself, not
     // `backgroundWorkBudget + backgroundUnitDeadline`.
+    // The budget is measured from the start of the whole background run, so
+    // the 5ch maintenance above counts against it too — measuring from after
+    // it let a run spend 7s + 16s before merging and scheduling alerts even
+    // began, overrunning the 25s operation deadline.
     private static let backgroundWorkBudget: TimeInterval = 16
     private static let backgroundUnitDeadline: TimeInterval = 7
     // Units are independent network fetches (one term+platform, or one custom
@@ -457,6 +461,7 @@ final class LocalRefreshCoordinator: ObservableObject {
     }
 
     private func performBackground(generation: Int, profileID: UUID) async -> LocalRefreshResult {
+        let runStartedAt = Date()
         let db = LocalDB.shared
         let sourceRevision = db.dataRevision
         let completedUnitKey = LocalProfileStore.defaultsKey("background_refresh.last_completed_unit_id", profileID: profileID)
@@ -471,10 +476,12 @@ final class LocalRefreshCoordinator: ObservableObject {
         )
         // The 5ch subject index is disposable cache maintenance and is kept
         // outside source ingestion/status accounting.
+        let fiveChStartedAt = Date()
         await IngestionService.shared.maintainFiveChIndex(
             profileID: profileID,
             deadline: Date(timeIntervalSinceNow: min(Self.backgroundUnitDeadline, Self.backgroundWorkBudget))
         )
+        BackgroundRunTrace.record("five_ch_index", since: fiveChStartedAt)
         guard !plan.units.isEmpty else {
             return LocalRefreshResult(completion: .completed, addedCount: 0, sourceStatuses: [], customRefreshCompleted: true)
         }
@@ -491,7 +498,7 @@ final class LocalRefreshCoordinator: ObservableObject {
         backgroundLoop: while unitIndex < plan.units.count {
             guard !Task.isCancelled,
                   isCurrent(generation: generation, profileID: profileID),
-                  Date().timeIntervalSince(startedAt) + Self.backgroundUnitDeadline <= Self.backgroundWorkBudget
+                  Date().timeIntervalSince(runStartedAt) + Self.backgroundUnitDeadline <= Self.backgroundWorkBudget
             else { break }
 
             let chunkEnd = Self.chunkEnd(startingAt: unitIndex, in: plan.units)
@@ -500,6 +507,7 @@ final class LocalRefreshCoordinator: ObservableObject {
             // so they share one fetch deadline rather than each getting its own
             // clock re-based on however long its predecessor took.
             let unitDeadline = Date(timeIntervalSinceNow: Self.backgroundUnitDeadline)
+            let fetchStartedAt = Date()
 
             let fetchResults: [Int: (items: [FeedItem], statuses: [SourceRefreshStatus], customCompleted: Bool)] =
                 await withTaskGroup(
@@ -517,6 +525,8 @@ final class LocalRefreshCoordinator: ObservableObject {
                     }
                     return collected
                 }
+            BackgroundRunTrace.record("fetch", since: fetchStartedAt)
+            let mergeStartedAt = Date()
 
             // One combined check for the whole chunk in place of the former
             // per-unit checks — if it fails, nothing in this chunk merges and
@@ -567,8 +577,11 @@ final class LocalRefreshCoordinator: ObservableObject {
                 UserDefaults.standard.set(unit.stableID, forKey: completedUnitKey)
                 UserDefaults.standard.removeObject(forKey: legacyCursorKey)
             }
+            BackgroundRunTrace.record("merge_save", since: mergeStartedAt)
             unitIndex = chunkEnd
         }
+        BackgroundRunTrace.count("units_completed", completedCount)
+        BackgroundRunTrace.count("units_planned", plan.units.count)
 
         // O6: single end-of-refresh write of the health history, covering both
         // normal completion and an early `break` (deadline / cancellation).
@@ -580,12 +593,15 @@ final class LocalRefreshCoordinator: ObservableObject {
         if !Task.isCancelled,
            isCurrent(generation: generation, profileID: profileID),
            !notificationItems.isEmpty {
+            let notifyStartedAt = Date()
             await NotificationManager.shared.notifyForNewItems(
                 notificationItems,
                 terms: db.terms,
                 includeAttachments: false
             )
+            BackgroundRunTrace.record("notify", since: notifyStartedAt)
         }
+        BackgroundRunTrace.count("notification_items", notificationItems.count)
 
         let completion: LocalRefreshCompletion = Task.isCancelled || !isCurrent(generation: generation, profileID: profileID)
             ? .cancelled

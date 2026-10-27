@@ -66,6 +66,7 @@
 		6981317FF64555AC90CF5868 /* WallpaperRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F5CB32111D0FB50693DE4BD /* WallpaperRenderer.swift */; };
 		69C38841AFD337A40569AFB4 /* OshiReaderShareExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 3CB59FE6D93CC7AD75547E56 /* OshiReaderShareExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		6D45589EEAE5938D4A146332 /* NotificationViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0EF0BA8188C3E098C537A3D4 /* NotificationViewController.swift */; };
+		743F660E72AD1787BA51F711 /* BackgroundRunTrace.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B560E45CD9F81334B6A04D4 /* BackgroundRunTrace.swift */; };
 		75F9570478935E8B02FC3AC5 /* OPMLExportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19AB271592D587FC13D28880 /* OPMLExportTests.swift */; };
 		7A25A83CCF90673F8E2BB8A0 /* OshiReaderWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = 767B63640366C3537A66102B /* OshiReaderWidget.swift */; };
 		7DF1A94CE5DC06966EF67058 /* PlusStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFEE73C3EA123E2E45BE416F /* PlusStore.swift */; };
@@ -238,6 +239,7 @@
 		767B63640366C3537A66102B /* OshiReaderWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OshiReaderWidget.swift; sourceTree = "<group>"; };
 		7757DA33C395BD65387A4309 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		7B2255286B25465F174B44E4 /* app_icon_preview_white_otter_black_bg.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = app_icon_preview_white_otter_black_bg.png; sourceTree = "<group>"; };
+		7B560E45CD9F81334B6A04D4 /* BackgroundRunTrace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundRunTrace.swift; sourceTree = "<group>"; };
 		80E757C2516D2F21FD7446E0 /* PushTermRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushTermRegistry.swift; sourceTree = "<group>"; };
 		84500A11E3895A0801822A4E /* FeedView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeedView.swift; sourceTree = "<group>"; };
 		8451BE642CEFB0250CC38029 /* UserNotifications.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UserNotifications.framework; path = System/Library/Frameworks/UserNotifications.framework; sourceTree = SDKROOT; };
@@ -488,6 +490,7 @@
 				4368E390D899599CB9800BBF /* AutoRefreshSettings.swift */,
 				5FAFCC06D9B5C39A50FD1995 /* BackendClient.swift */,
 				EB4698197160905DBD0B1085 /* BackgroundRefreshManager.swift */,
+				7B560E45CD9F81334B6A04D4 /* BackgroundRunTrace.swift */,
 				DFC4064786481670E5051013 /* CloudSyncManager.swift */,
 				5C607233A1D4F78BDDD5A7C4 /* ContentView.swift */,
 				D664F1A79B84759EDFCFE098 /* EncryptedBackup.swift */,
@@ -832,6 +835,7 @@
 				F46CEBC6E65E66A628181196 /* AvatarEditorView.swift in Sources */,
 				641FC40BA65E7095FCD5DE81 /* BackendClient.swift in Sources */,
 				F5552C78BFC7538E35202795 /* BackgroundRefreshManager.swift in Sources */,
+				743F660E72AD1787BA51F711 /* BackgroundRunTrace.swift in Sources */,
 				1C4CDBFD8F1F4384C3CCA202 /* CloudSyncManager.swift in Sources */,
 				6272FB99110FEDA507C0F5D8 /* ContentView.swift in Sources */,
 				9B6B9F8DC4D72FD9CB5D1F12 /* CredentialsSettingsView.swift in Sources */,
