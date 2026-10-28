@@ -103,13 +103,19 @@ struct BackgroundRefreshPlan: Equatable {
 }
 
 enum BackgroundRefreshCheckpoint {
+    // Unit fetches are cut off at the deadline themselves, so a chunk with a
+    // timed-out source returns a few ms *after* it. Without this slack that
+    // chunk was always discarded and the checkpoint never moved past it, so
+    // every later wake retried the same chunk and fetched nothing.
+    static let lateCompletionGrace: TimeInterval = 1
+
     static func isValid(
         sourceRevision: Int,
         currentRevision: Int,
         completedAt: Date,
         deadline: Date
     ) -> Bool {
-        sourceRevision == currentRevision && completedAt <= deadline
+        sourceRevision == currentRevision && completedAt <= deadline.addingTimeInterval(lateCompletionGrace)
     }
 }
 

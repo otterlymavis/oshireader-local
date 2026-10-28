@@ -3481,10 +3481,18 @@ final class OshiReaderTests: XCTestCase {
             completedAt: deadline,
             deadline: deadline
         ))
+        // A chunk whose slowest source was cut off at the deadline lands just
+        // after it; it must still count, or the rotation stalls on it.
+        XCTAssertTrue(BackgroundRefreshCheckpoint.isValid(
+            sourceRevision: 4,
+            currentRevision: 4,
+            completedAt: deadline.addingTimeInterval(0.013),
+            deadline: deadline
+        ))
         XCTAssertFalse(BackgroundRefreshCheckpoint.isValid(
             sourceRevision: 4,
             currentRevision: 4,
-            completedAt: deadline.addingTimeInterval(0.001),
+            completedAt: deadline.addingTimeInterval(BackgroundRefreshCheckpoint.lateCompletionGrace + 0.001),
             deadline: deadline
         ))
     }
