@@ -203,17 +203,21 @@ final class LocalRefreshCoordinator: ObservableObject {
     private var generation = 0
     // A background wake is rare and the OS only grants ~30s total; leave
     // headroom under `BackgroundRefreshManager.operationDeadline` (25s) for
-    // `maintainFiveChIndex` (bounded by the same `backgroundUnitDeadline`)
-    // plus this loop. The loop's own continuation check below only starts a
+    // this loop, merging and alert scheduling; `maintainFiveChIndex` only
+    // uses what's left of the budget afterwards. The loop's own continuation check below only starts a
     // chunk when the remaining budget can fit one more `backgroundUnitDeadline`,
     // so its wall time is bounded by `backgroundWorkBudget` itself, not
     // `backgroundWorkBudget + backgroundUnitDeadline`.
-    // The budget is measured from the start of the whole background run, so
-    // the 5ch maintenance above counts against it too — measuring from after
-    // it let a run spend 7s + 16s before merging and scheduling alerts even
-    // began, overrunning the 25s operation deadline.
+    // The budget is measured from the start of the whole background run —
+    // measuring from after the (then up-front) 5ch maintenance let a run
+    // spend 7s + 16s before merging and scheduling alerts even began,
+    // overrunning the 25s operation deadline.
     private static let backgroundWorkBudget: TimeInterval = 16
     private static let backgroundUnitDeadline: TimeInterval = 7
+    // Leftover-time 5ch index maintenance: skipped when less than this is
+    // left, and one `fiveChSubjectLimiter` round (4 boards) when it runs.
+    private static let minimumFiveChMaintenanceWindow: TimeInterval = 2
+    private static let backgroundFiveChBoardCount = 4
     // Units are independent network fetches (one term+platform, or one custom
     // URL) — running several concurrently covers more of the rotation per
     // wake instead of serializing it, without changing the per-unit timeout
@@ -480,14 +484,6 @@ final class LocalRefreshCoordinator: ObservableObject {
             lastCompletedUnitID: UserDefaults.standard.string(forKey: completedUnitKey),
             legacyCursor: UserDefaults.standard.integer(forKey: legacyCursorKey)
         )
-        // The 5ch subject index is disposable cache maintenance and is kept
-        // outside source ingestion/status accounting.
-        let fiveChStartedAt = Date()
-        await IngestionService.shared.maintainFiveChIndex(
-            profileID: profileID,
-            deadline: Date(timeIntervalSinceNow: min(Self.backgroundUnitDeadline, Self.backgroundWorkBudget))
-        )
-        BackgroundRunTrace.record("five_ch_index", since: fiveChStartedAt)
         guard !plan.units.isEmpty else {
             return LocalRefreshResult(completion: .completed, addedCount: 0, sourceStatuses: [], customRefreshCompleted: true)
         }
@@ -608,6 +604,24 @@ final class LocalRefreshCoordinator: ObservableObject {
             BackgroundRunTrace.record("notify", since: notifyStartedAt)
         }
         BackgroundRunTrace.count("notification_items", notificationItems.count)
+
+        // The 5ch subject index is disposable cache maintenance, kept outside
+        // source ingestion/status accounting. Background 5ch units search
+        // Google News, not this index — it only pre-warms the next foreground
+        // scan — so it gets whatever budget the fetches and alerts left over
+        // instead of running first and crowding out source units.
+        let fiveChDeadline = runStartedAt.addingTimeInterval(Self.backgroundWorkBudget)
+        if !Task.isCancelled,
+           isCurrent(generation: generation, profileID: profileID),
+           fiveChDeadline.timeIntervalSinceNow >= Self.minimumFiveChMaintenanceWindow {
+            let fiveChStartedAt = Date()
+            await IngestionService.shared.maintainFiveChIndex(
+                profileID: profileID,
+                deadline: fiveChDeadline,
+                boardCount: Self.backgroundFiveChBoardCount
+            )
+            BackgroundRunTrace.record("five_ch_index", since: fiveChStartedAt)
+        }
 
         let completion: LocalRefreshCompletion = Task.isCancelled || !isCurrent(generation: generation, profileID: profileID)
             ? .cancelled

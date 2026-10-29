@@ -1270,7 +1270,7 @@ final class IngestionService {
 
     /// Advances the disposable profile-scoped board index. Failures are
     /// intentionally swallowed: this is maintenance, not a feed source.
-    func maintainFiveChIndex(profileID: UUID, deadline: Date) async {
+    func maintainFiveChIndex(profileID: UUID, deadline: Date, boardCount: Int = 16) async {
         guard !Task.isCancelled, Date() < deadline else { return }
         let store = FiveChIndexStore.shared
         let now = now()
@@ -1290,7 +1290,7 @@ final class IngestionService {
             let boards = Self.parseFiveChBBsmenu(text)
             if !boards.isEmpty { await store.updateCatalog(boards, fetchedAt: now, profileID: profileID) }
         }
-        let batch = await store.nextBatch(for: profileID, count: 16)
+        let batch = await store.nextBatch(for: profileID, count: boardCount)
         guard !batch.boards.isEmpty else { return }
         let successful = await withTaskGroup(of: FiveChIndexStore.BoardSnapshot?.self,
                                              returning: [FiveChIndexStore.BoardSnapshot].self) { group in
