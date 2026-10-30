@@ -543,40 +543,48 @@ final class LocalRefreshCoordinator: ObservableObject {
             else { break backgroundLoop }
 
             let mergeStartedAt = BackgroundRunTrace.startPhase("merge_save")
-            for (offset, unit) in chunk.enumerated() {
-                guard let unitResult = fetchResults[offset] else { continue }
-                let mergeResult = unitResult.items.isEmpty
-                    ? LocalDB.FeedMergeResult(addedCount: 0, didMutate: false)
-                    : db.mergeItemsResult(
-                        newItems: unitResult.items,
-                        sourceRevision: sourceRevision,
-                        notificationHandler: { items, _ in
-                            notificationBatch.capture(items)
-                        }
-                    )
-                if mergeResult.didMutate {
-                    db.flushPendingFeedItemsSave()
-                }
-                addedCount += mergeResult.addedCount
-                customCompleted = customCompleted && unitResult.customCompleted
-                if !unitResult.statuses.isEmpty {
-                    RefreshDiagnostics.shared.recordSourceStatuses(unitResult.statuses)
-                    // `persist: false` — the health history is re-encoded and
-                    // written to UserDefaults once after the loop
-                    // (`flushPendingHealthRecords`) rather than on every unit (O6).
-                    // `replacingRecordsSince: startedAt` makes each call rewrite
-                    // this refresh's records for the seen sources, so the final
-                    // in-memory state equals what a single end-of-loop call
-                    // produces.
-                    RefreshDiagnostics.shared.recordCompletedSourceStatuses(
-                        RefreshDiagnostics.shared.sourceStatuses,
-                        replacingRecordsSince: startedAt,
-                        persist: false
-                    )
-                    didRecordSourceStatuses = true
-                }
-                completedCount += 1
-                UserDefaults.standard.set(unit.stableID, forKey: completedUnitKey)
+            // One merge (and one feed-file write) per chunk, not per unit:
+            // each merge re-sorts and re-caps the whole feed and the flush
+            // encodes it synchronously, which on device cost ~0.5s per unit.
+            // The checkpoint is chunk-granular already (see above).
+            let unitResults = chunk.indices.compactMap { offset in
+                fetchResults[offset].map { (unit: chunk[offset], result: $0) }
+            }
+            let itemBatches = unitResults.map(\.result.items).filter { !$0.isEmpty }
+            let mergeResult = itemBatches.isEmpty
+                ? LocalDB.FeedMergeResult(addedCount: 0, didMutate: false)
+                : db.mergeItemsBatchedResult(
+                    newItemsBatches: itemBatches,
+                    sourceRevision: sourceRevision,
+                    notificationHandler: { items, _ in
+                        notificationBatch.capture(items)
+                    }
+                )
+            if mergeResult.didMutate {
+                db.flushPendingFeedItemsSave()
+            }
+            addedCount += mergeResult.addedCount
+            customCompleted = customCompleted && unitResults.allSatisfy(\.result.customCompleted)
+            let chunkStatuses = unitResults.flatMap(\.result.statuses)
+            if !chunkStatuses.isEmpty {
+                RefreshDiagnostics.shared.recordSourceStatuses(chunkStatuses)
+                // `persist: false` — the health history is re-encoded and
+                // written to UserDefaults once after the loop
+                // (`flushPendingHealthRecords`) rather than on every chunk (O6).
+                // `replacingRecordsSince: startedAt` makes each call rewrite
+                // this refresh's records for the seen sources, so the final
+                // in-memory state equals what a single end-of-loop call
+                // produces.
+                RefreshDiagnostics.shared.recordCompletedSourceStatuses(
+                    RefreshDiagnostics.shared.sourceStatuses,
+                    replacingRecordsSince: startedAt,
+                    persist: false
+                )
+                didRecordSourceStatuses = true
+            }
+            completedCount += unitResults.count
+            if let lastUnit = unitResults.last?.unit {
+                UserDefaults.standard.set(lastUnit.stableID, forKey: completedUnitKey)
                 UserDefaults.standard.removeObject(forKey: legacyCursorKey)
             }
             BackgroundRunTrace.record("merge_save", since: mergeStartedAt)
