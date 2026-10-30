@@ -1019,6 +1019,7 @@ struct FeedCard: View {
     @StateObject private var appearance = AppearanceManager.shared
     @StateObject private var i18n = I18nManager.shared
     @StateObject private var feedTranslation = FeedTranslationState.shared
+    @ObservedObject private var profiles = LocalProfileStore.shared
     @State private var translation: FeedCardTranslation?
 
     private struct FeedCardTranslation {
@@ -1037,8 +1038,18 @@ struct FeedCard: View {
     private var displayTitle: String? { shownTranslation?.title ?? originalTitle }
     private var displayContent: String? { shownTranslation?.content ?? originalContent }
 
+    // Also keyed on what `translateIfEnabled` reads that has no change
+    // signal of its own: the active profile's setting (profile switches and
+    // imports rewrite it) and the item text (a merge can update it in place).
     private var translationTaskID: String {
-        "\(item.id)|\(i18n.lang)|\(feedTranslation.settingRevision)"
+        [
+            item.id,
+            i18n.lang,
+            String(feedTranslation.settingRevision),
+            profiles.activeProfileID.uuidString,
+            String(feedTranslation.isEnabled()),
+            String((originalTitle ?? "").hashValue ^ (originalContent ?? "").hashValue)
+        ].joined(separator: "|")
     }
 
     private var dateLabel: String {

@@ -29,6 +29,12 @@ final class FeedTranslationState: ObservableObject {
         settingRevision += 1
     }
 
+    /// Re-runs every card's translation, e.g. after a language download made
+    /// a pair available that cards already gave up on.
+    func retranslateAll() {
+        settingRevision += 1
+    }
+
     func showsOriginal(_ itemID: String) -> Bool {
         originalItemIDs.contains(itemID)
     }

@@ -46,6 +46,7 @@ struct NotificationTranslationSection: View {
             await MainActor.run {
                 downloadConfiguration = nil
                 NotificationAlertTranslator.shared.resetUnavailablePairs()
+                FeedTranslationState.shared.retranslateAll()
             }
             await refreshStatuses()
         }
@@ -87,10 +88,17 @@ struct NotificationTranslationSection: View {
         if pairs.map(\.source) != sources || pairs.first?.target != target {
             pairs = sources.map { LanguagePair(source: $0, target: target, status: nil) }
         }
+        // Work on a copy: another refresh (language change, return to
+        // foreground, finished download) can replace `pairs` during the awaits,
+        // and writing back by index would then hit the wrong pair or run past
+        // the end.
+        var refreshed = pairs
         let availability = LanguageAvailability()
-        for index in pairs.indices {
-            pairs[index].status = await availability.status(from: pairs[index].source, to: target)
+        for index in refreshed.indices {
+            refreshed[index].status = await availability.status(from: refreshed[index].source, to: target)
         }
+        guard pairs.map(\.source) == refreshed.map(\.source), pairs.first?.target == target else { return }
+        pairs = refreshed
     }
 
     /// Language names follow the app language, not the device locale.

@@ -509,7 +509,7 @@ final class LocalRefreshCoordinator: ObservableObject {
             // so they share one fetch deadline rather than each getting its own
             // clock re-based on however long its predecessor took.
             let unitDeadline = Date(timeIntervalSinceNow: Self.backgroundUnitDeadline)
-            let fetchStartedAt = Date()
+            let fetchStartedAt = BackgroundRunTrace.startPhase("fetch")
 
             let fetchResults: [Int: (items: [FeedItem], statuses: [SourceRefreshStatus], customCompleted: Bool)] =
                 await withTaskGroup(
@@ -528,7 +528,6 @@ final class LocalRefreshCoordinator: ObservableObject {
                     return collected
                 }
             BackgroundRunTrace.record("fetch", since: fetchStartedAt)
-            let mergeStartedAt = Date()
 
             // One combined check for the whole chunk in place of the former
             // per-unit checks — if it fails, nothing in this chunk merges and
@@ -543,6 +542,7 @@ final class LocalRefreshCoordinator: ObservableObject {
                   )
             else { break backgroundLoop }
 
+            let mergeStartedAt = BackgroundRunTrace.startPhase("merge_save")
             for (offset, unit) in chunk.enumerated() {
                 guard let unitResult = fetchResults[offset] else { continue }
                 let mergeResult = unitResult.items.isEmpty
@@ -595,7 +595,7 @@ final class LocalRefreshCoordinator: ObservableObject {
         if !Task.isCancelled,
            isCurrent(generation: generation, profileID: profileID),
            !notificationItems.isEmpty {
-            let notifyStartedAt = Date()
+            let notifyStartedAt = BackgroundRunTrace.startPhase("notify")
             await NotificationManager.shared.notifyForNewItems(
                 notificationItems,
                 terms: db.terms,
@@ -614,7 +614,7 @@ final class LocalRefreshCoordinator: ObservableObject {
         if !Task.isCancelled,
            isCurrent(generation: generation, profileID: profileID),
            fiveChDeadline.timeIntervalSinceNow >= Self.minimumFiveChMaintenanceWindow {
-            let fiveChStartedAt = Date()
+            let fiveChStartedAt = BackgroundRunTrace.startPhase("five_ch_index")
             await IngestionService.shared.maintainFiveChIndex(
                 profileID: profileID,
                 deadline: fiveChDeadline,

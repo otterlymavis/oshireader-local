@@ -194,6 +194,9 @@ final class BackgroundRefreshManager {
         task.expirationHandler = { [weak self, operation] in
             operation.cancel()
             Task { @MainActor in
+                // Finish here, not after `operation` returns: iOS may suspend
+                // the app right after this handler. The trace closes whichever
+                // phase was still running, so the slow step stays visible.
                 BackgroundRunTrace.finish(outcome: "expired_by_ios")
                 self?.cancelActiveRefresh()
             }

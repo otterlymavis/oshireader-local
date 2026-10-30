@@ -19,9 +19,13 @@ final class NotificationAlertTranslator {
     /// Hard cap per string so a stalled translation can't eat the background
     /// refresh budget (callers also cap their total, see `NotificationManager`).
     private static let deadlineSeconds: Double = 1.5
-    /// How long a pair stays skipped after it was found not installed or a
-    /// call timed out, so later alerts don't pay for the same answer again.
+    /// How long a pair stays skipped after it was found not installed or
+    /// kept timing out, so later alerts don't pay for the same answer again.
     private static let unavailablePairBackoff: TimeInterval = 10 * 60
+    /// Timeouts in a row before a pair is skipped. One slow call (a first
+    /// model load while a feed full of cards translates at once) mustn't turn
+    /// translation off for every card and alert for 10 minutes.
+    private static let timeoutsBeforeBackoff = 3
     /// Alerts only show ~100 characters; translating more is wasted work.
     private static let maximumSourceLength = 400
     // Sized for a scrolled feed (title + snippet per card), not just alerts.
@@ -32,6 +36,7 @@ final class NotificationAlertTranslator {
     private var cache: [String: String] = [:]
     private var cacheOrder: [String] = []
     private var unavailablePairsUntil: [String: Date] = [:]
+    private var consecutiveTimeouts: [String: Int] = [:]
 
     func translate(_ text: String, to appLanguage: String) async -> String {
         guard !Self.isTesting,
@@ -54,11 +59,20 @@ final class NotificationAlertTranslator {
         switch outcome {
         case .translated(let translated) where !translated.isEmpty:
             unavailablePairsUntil[pairKey] = nil
+            consecutiveTimeouts[pairKey] = nil
             remember(translated, for: cacheKey)
             return translated
-        case .notInstalled, nil:
-            // nil = timed out. Either way, stop asking for a while.
+        case .notInstalled:
             unavailablePairsUntil[pairKey] = Date().addingTimeInterval(Self.unavailablePairBackoff)
+            return text
+        case nil:
+            let timeouts = consecutiveTimeouts[pairKey, default: 0] + 1
+            if timeouts >= Self.timeoutsBeforeBackoff {
+                consecutiveTimeouts[pairKey] = nil
+                unavailablePairsUntil[pairKey] = Date().addingTimeInterval(Self.unavailablePairBackoff)
+            } else {
+                consecutiveTimeouts[pairKey] = timeouts
+            }
             return text
         default:
             return text
@@ -69,6 +83,7 @@ final class NotificationAlertTranslator {
     /// is tried again right away instead of after the backoff.
     func resetUnavailablePairs() {
         unavailablePairsUntil.removeAll()
+        consecutiveTimeouts.removeAll()
     }
 
     // Unit / UI test runs keep the original text: the simulator has no
@@ -127,11 +142,25 @@ final class NotificationAlertTranslator {
         guard !trimmed.isEmpty else { return nil }
         // Kana is Japanese-only. Short kanji-heavy Japanese titles are otherwise
         // easily read as Chinese, which would "translate" Japanese for ja users.
-        if trimmed.unicodeScalars.contains(where: isKana) { return .japanese }
+        // Kana with kanji, or kana that isn't swamped by Latin letters, is
+        // Japanese ("SixTONES新曲MV公開へ", "ちゃんみなLIVE TOUR"); a kana name
+        // inside an English sentence is left to the recognizer.
+        var kana = 0, han = 0, latin = 0
+        for scalar in trimmed.unicodeScalars {
+            if isKana(scalar) { kana += 1 } else if isHan(scalar) { han += 1 } else if scalar.isASCII, scalar.properties.isAlphabetic { latin += 1 }
+        }
+        if kana > 0, han > 0 || kana * 2 >= latin { return .japanese }
         let recognizer = NLLanguageRecognizer()
         recognizer.processString(trimmed)
         guard let language = recognizer.dominantLanguage, language != .undetermined else { return nil }
         return language
+    }
+
+    private nonisolated static func isHan(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.value {
+        case 0x3400...0x4DBF, 0x4E00...0x9FFF: return true
+        default: return false
+        }
     }
 
     private nonisolated static func isKana(_ scalar: Unicode.Scalar) -> Bool {

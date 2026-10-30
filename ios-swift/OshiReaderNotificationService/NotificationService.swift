@@ -12,7 +12,17 @@ final class NotificationService: UNNotificationServiceExtension {
     private var translationWorkFinished = true
     private var activeRequestID: UUID?
 
+    // All request state and the mutable content are touched only on the main
+    // thread: the translation runs on the main actor, and iOS doesn't promise
+    // which thread these overrides are called on.
     override func didReceive(
+        _ request: UNNotificationRequest,
+        withContentHandler contentHandler: @escaping (UNNotificationContent) -> Void
+    ) {
+        onMain { self.start(request, withContentHandler: contentHandler) }
+    }
+
+    private func start(
         _ request: UNNotificationRequest,
         withContentHandler contentHandler: @escaping (UNNotificationContent) -> Void
     ) {
@@ -42,9 +52,11 @@ final class NotificationService: UNNotificationServiceExtension {
         urlRequest.timeoutInterval = 8
         downloadTask = URLSession.shared.downloadTask(with: urlRequest) { [weak self] tempURL, response, _ in
             guard let self else { return }
+            var attachment: UNNotificationAttachment?
             defer {
                 DispatchQueue.main.async {
                     guard self.activeRequestID == requestID else { return }
+                    if let attachment { content.attachments = [attachment] }
                     self.downloadTask = nil
                     self.contentWorkFinished = true
                     self.finishWhenReady()
@@ -68,9 +80,7 @@ final class NotificationService: UNNotificationServiceExtension {
                 // Keep the thumbnail out of the collapsed banner/lock screen; it only
                 // appears in the custom expanded view when the user long-presses.
                 let options = [UNNotificationAttachmentOptionsThumbnailHiddenKey: true]
-                content.attachments = [
-                    try UNNotificationAttachment(identifier: "preview", url: destination, options: options)
-                ]
+                attachment = try UNNotificationAttachment(identifier: "preview", url: destination, options: options)
             } catch {
                 return
             }
@@ -79,11 +89,17 @@ final class NotificationService: UNNotificationServiceExtension {
     }
 
     override func serviceExtensionTimeWillExpire() {
-        downloadTask?.cancel()
-        receiptTask?.cancel()
-        if let bestAttemptContent {
-            finish(with: bestAttemptContent)
+        onMain {
+            self.downloadTask?.cancel()
+            self.receiptTask?.cancel()
+            if let bestAttemptContent = self.bestAttemptContent {
+                self.finish(with: bestAttemptContent)
+            }
         }
+    }
+
+    private func onMain(_ work: @escaping () -> Void) {
+        if Thread.isMainThread { work() } else { DispatchQueue.main.async(execute: work) }
     }
 
     private func finishWhenReady() {

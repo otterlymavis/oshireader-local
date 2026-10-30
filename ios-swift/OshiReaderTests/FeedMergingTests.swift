@@ -2116,6 +2116,11 @@ final class FeedMergingTests: XCTestCase {
         XCTAssertEqual(NotificationAlertTranslator.sourceLanguageNeedingTranslation("The new single is out today", target: japanese), .english)
         // Kanji-heavy Japanese with kana must not be read as Chinese.
         XCTAssertEqual(NotificationAlertTranslator.sourceLanguageNeedingTranslation("東京公演の日程が決定しました", target: traditional), .japanese)
+        // Japanese mixing in romaji names is still Japanese...
+        XCTAssertEqual(NotificationAlertTranslator.detectedLanguage(of: "SixTONES新曲MV公開へ"), .japanese)
+        XCTAssertEqual(NotificationAlertTranslator.detectedLanguage(of: "ちゃんみなLIVE TOUR"), .japanese)
+        // ...but one kana name in an English sentence doesn't make it Japanese.
+        XCTAssertEqual(NotificationAlertTranslator.detectedLanguage(of: "The new single from あいみょん was announced today"), .english)
         XCTAssertNil(NotificationAlertTranslator.sourceLanguageNeedingTranslation("   ", target: english))
         XCTAssertNil(NotificationAlertTranslator.targetLanguage(forAppLanguage: "fr"))
     }
