@@ -30,6 +30,12 @@ final class RefreshDiagnostics: ObservableObject {
 
     static let healthHistoryKey = "refresh_diagnostics.source_health_history"
     static let healthHistoryRetention: TimeInterval = 10 * 24 * 60 * 60
+    /// Checks newer than this stay one record each (the cooldown streak and
+    /// this refresh's `replacingRecordsSince` rewrite work on them); older
+    /// ones are folded into one record per source, day and outcome. Frequent
+    /// foreground refreshes otherwise grew the history to ~40k records (4MB
+    /// of JSON re-encoded into UserDefaults after every refresh).
+    static let rawHealthHistoryWindow: TimeInterval = 6 * 60 * 60
 
     /// Consecutive failed checks (from the most recent, unbroken by a
     /// success) before a source is considered chronically broken and put in
@@ -52,6 +58,11 @@ final class RefreshDiagnostics: ObservableObject {
         let itemCount: Int
         let queryCount: Int
         let failure: SourceRefreshFailure?
+        /// Checks this record stands for once folded by `compacted`; nil for a
+        /// single check (and in history written before compaction existed).
+        var checkCount: Int? = nil
+
+        var weight: Int { checkCount ?? 1 }
     }
 
     private enum Key {
@@ -286,7 +297,7 @@ final class RefreshDiagnostics: ObservableObject {
             var streak = 0
             for record in realRecords.reversed() {
                 guard record.outcome == .failed else { break }
-                streak += 1
+                streak += record.weight
             }
             if streak >= Self.cooldownFailureThreshold {
                 cooldown.insert(sourceID)
@@ -297,7 +308,7 @@ final class RefreshDiagnostics: ObservableObject {
 
     private func rebuildHealthSummaries(now: Date, persist: Bool = true) {
         let cutoff = now.addingTimeInterval(-Self.healthHistoryRetention)
-        healthRecords = healthRecords.filter { $0.checkedAt >= cutoff }
+        healthRecords = Self.compacted(healthRecords.filter { $0.checkedAt >= cutoff }, now: now)
         let grouped = Dictionary(grouping: healthRecords, by: \.sourceID)
         sourceHealthSummaries = grouped.keys.sorted().compactMap { sourceID in
             guard let records = grouped[sourceID],
@@ -311,10 +322,10 @@ final class RefreshDiagnostics: ObservableObject {
             return SourceHealthSummary(
                 id: sourceID,
                 currentStatus: current,
-                receivedCount: records.filter { $0.outcome == .received }.count,
-                staleCount: records.filter { $0.outcome == .stale }.count,
-                emptyCount: records.filter { $0.outcome == .noResults }.count,
-                failedCount: records.filter { $0.outcome == .failed }.count,
+                receivedCount: Self.checkCount(records, .received),
+                staleCount: Self.checkCount(records, .stale),
+                emptyCount: Self.checkCount(records, .noResults),
+                failedCount: Self.checkCount(records, .failed),
                 totalItemCount: records.reduce(0) { $0 + $1.itemCount },
                 lastCheckedAt: latest.checkedAt,
                 lastFailure: records
@@ -323,6 +334,49 @@ final class RefreshDiagnostics: ObservableObject {
             )
         }
         if persist { persistHealthRecords() }
+    }
+
+    private static func checkCount(_ records: [HealthRecord], _ outcome: HealthOutcome) -> Int {
+        records.reduce(0) { $1.outcome == outcome ? $0 + $1.weight : $0 }
+    }
+
+    /// Folds records older than `rawHealthHistoryWindow` into one per source,
+    /// local day, outcome and failure, keeping the summed check / item /
+    /// query counts so the 10-day summaries don't change. Each source's
+    /// newest record stays as-is: it is the source's current status. Idempotent.
+    private static func compacted(_ records: [HealthRecord], now: Date) -> [HealthRecord] {
+        let boundary = now.addingTimeInterval(-rawHealthHistoryWindow)
+        let calendar = Calendar.current
+        var newestIndex: [String: Int] = [:]
+        for (index, record) in records.enumerated()
+        where newestIndex[record.sourceID].map({ records[$0].checkedAt <= record.checkedAt }) ?? true {
+            newestIndex[record.sourceID] = index
+        }
+        let keptIndices = Set(newestIndex.values)
+        var recent: [HealthRecord] = []
+        var folded: [String: HealthRecord] = [:]
+        for (index, record) in records.enumerated() {
+            guard record.checkedAt < boundary, !keptIndices.contains(index) else {
+                recent.append(record)
+                continue
+            }
+            let day = calendar.startOfDay(for: record.checkedAt).timeIntervalSince1970
+            let key = "\(record.sourceID)|\(day)|\(record.outcome.rawValue)|\(record.failure?.rawValue ?? "")"
+            guard let existing = folded[key] else {
+                folded[key] = record
+                continue
+            }
+            folded[key] = HealthRecord(
+                sourceID: record.sourceID,
+                checkedAt: max(existing.checkedAt, record.checkedAt),
+                outcome: record.outcome,
+                itemCount: existing.itemCount + record.itemCount,
+                queryCount: existing.queryCount + record.queryCount,
+                failure: record.failure,
+                checkCount: existing.weight + record.weight
+            )
+        }
+        return (folded.values + recent).sorted { $0.checkedAt < $1.checkedAt }
     }
 
     private static func relativeRefreshTime(for date: Date, relativeTo now: Date) -> String {

@@ -7484,6 +7484,47 @@ final class OshiReaderTests: XCTestCase {
     }
 
     @MainActor
+    func testSourceHealthHistoryFoldsOldChecksWithoutChangingSummaries() throws {
+        let suiteName = "OshiReaderTests.health.compaction.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let diagnostics = RefreshDiagnostics(defaults: defaults)
+        let now = Date()
+        // Noon two days ago, so every check below falls on the same local day.
+        let twoDaysAgoNoon = Calendar.current.date(
+            bySettingHour: 12, minute: 0, second: 0,
+            of: now.addingTimeInterval(-2 * 24 * 60 * 60)
+        )!
+
+        for minute in 0..<20 {
+            diagnostics.recordCompletedSourceStatuses([
+                SourceRefreshStatus(id: "youtube", outcome: .received, itemCount: 3, queryCount: 1),
+                SourceRefreshStatus(id: "natalie", outcome: .failed(.timeout), itemCount: 0, queryCount: 1),
+            ], completedAt: twoDaysAgoNoon.addingTimeInterval(Double(minute) * 60))
+        }
+        diagnostics.recordCompletedSourceStatuses([
+            SourceRefreshStatus(id: "youtube", outcome: .stale, itemCount: 1, queryCount: 1),
+        ], completedAt: now)
+
+        let youtube = try XCTUnwrap(diagnostics.sourceHealthSummaries.first { $0.id == "youtube" })
+        XCTAssertEqual(youtube.receivedCount, 20)
+        XCTAssertEqual(youtube.staleCount, 1)
+        XCTAssertEqual(youtube.totalItemCount, 61)
+        XCTAssertEqual(youtube.currentStatus?.outcome, .stale)
+        let natalie = try XCTUnwrap(diagnostics.sourceHealthSummaries.first { $0.id == "natalie" })
+        XCTAssertEqual(natalie.failedCount, 20)
+        XCTAssertEqual(natalie.lastFailure, .timeout)
+        // Its newest check stays a single record, so the current status
+        // reports that check's counts, not the folded totals.
+        XCTAssertEqual(natalie.currentStatus?.queryCount, 1)
+
+        // 41 checks → youtube: 1 folded + 1 recent; natalie: 1 folded + its newest.
+        let export = try XCTUnwrap(diagnostics.exportHealthHistoryJSON())
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: export) as? [String: Any])
+        XCTAssertEqual((json["records"] as? [Any])?.count, 4)
+    }
+
+    @MainActor
     func testSourceHealthHistoryRetryAttemptsRemainOneLogicalRecord() {
         let suiteName = "OshiReaderTests.health.retry.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
