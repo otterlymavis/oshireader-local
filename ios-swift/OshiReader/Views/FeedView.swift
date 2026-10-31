@@ -1183,11 +1183,11 @@ struct FeedCard: View {
         var title: String?
         var content: String?
         if let originalTitle {
-            let translated = await NotificationAlertTranslator.shared.translate(originalTitle, to: language)
+            let translated = await NotificationAlertTranslator.feed.translate(originalTitle, to: language)
             if translated != originalTitle { title = translated }
         }
         if let originalContent {
-            let translated = await NotificationAlertTranslator.shared.translate(originalContent, to: language)
+            let translated = await NotificationAlertTranslator.feed.translate(originalContent, to: language)
             if translated != originalContent { content = translated }
         }
         guard !Task.isCancelled else { return }

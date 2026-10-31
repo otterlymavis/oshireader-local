@@ -2,7 +2,7 @@ import Foundation
 
 /// Feed-card translation: the per-profile "Translate feed" setting and the
 /// cards the user flipped back to the original from the long-press menu.
-/// Translation itself goes through `NotificationAlertTranslator` (on-device,
+/// Translation itself goes through `NotificationAlertTranslator.feed` (on-device,
 /// iOS 26+, installed language pairs only).
 @MainActor
 final class FeedTranslationState: ObservableObject {

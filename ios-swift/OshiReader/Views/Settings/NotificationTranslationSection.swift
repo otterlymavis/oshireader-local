@@ -45,7 +45,7 @@ struct NotificationTranslationSection: View {
             try? await session.prepareTranslation()
             await MainActor.run {
                 downloadConfiguration = nil
-                NotificationAlertTranslator.shared.resetUnavailablePairs()
+                NotificationAlertTranslator.all.forEach { $0.resetUnavailablePairs() }
                 FeedTranslationState.shared.retranslateAll()
             }
             await refreshStatuses()

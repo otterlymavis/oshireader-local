@@ -14,7 +14,21 @@ import Translation
 /// or dropped over translation.
 @MainActor
 final class NotificationAlertTranslator {
-    static let shared = NotificationAlertTranslator()
+    /// Alerts (local and paid push).
+    static let shared = NotificationAlertTranslator(maximumCachedTranslations: 100)
+    /// Feed cards. A separate instance so a screenful of cards timing out on a
+    /// cold model load can't back a pair off for alerts, and scrolling can't
+    /// evict the rolling-summary titles alerts re-translate on every refresh.
+    static let feed = NotificationAlertTranslator(maximumCachedTranslations: 600)
+
+    /// Every instance, so a finished download clears all their backoffs.
+    static var all: [NotificationAlertTranslator] { [shared, feed] }
+
+    private let maximumCachedTranslations: Int
+
+    private init(maximumCachedTranslations: Int) {
+        self.maximumCachedTranslations = maximumCachedTranslations
+    }
 
     /// Hard cap per string so a stalled translation can't eat the background
     /// refresh budget (callers also cap their total, see `NotificationManager`).
@@ -28,8 +42,6 @@ final class NotificationAlertTranslator {
     private static let timeoutsBeforeBackoff = 3
     /// Alerts only show ~100 characters; translating more is wasted work.
     private static let maximumSourceLength = 400
-    // Sized for a scrolled feed (title + snippet per card), not just alerts.
-    private static let maximumCachedTranslations = 600
 
     // Rolling summaries re-post the same anchor title on every refresh and
     // review, so remember results instead of re-translating.
@@ -97,7 +109,7 @@ final class NotificationAlertTranslator {
     private func remember(_ translation: String, for key: String) {
         if cache[key] == nil { cacheOrder.append(key) }
         cache[key] = translation
-        if cacheOrder.count > Self.maximumCachedTranslations {
+        if cacheOrder.count > maximumCachedTranslations {
             cache[cacheOrder.removeFirst()] = nil
         }
     }
