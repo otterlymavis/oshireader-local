@@ -73,19 +73,18 @@ struct ForegroundAutoRefresh: ViewModifier {
         guard scenePhase == .active, !isRefreshing else { return }
         guard !ProcessInfo.processInfo.arguments.contains("--uitesting") else { return }
         guard shouldRefresh(returnedFromBackground: returnedFromBackground) else { return }
-        let wasOpeningRefresh = needsOpeningRefresh
         // Don't stamp the interval anchor here — `performRefresh` (refreshFeed)
         // re-checks `isRefreshing` and may no-op. Letting it be the only writer
         // means a skipped run doesn't burn the whole interval.
+        // No retry after it returns: this is a copy of the modifier from the
+        // body pass that started it, so its `lastRefreshStartedAt` is still
+        // nil and a retry here always looked like "opening refresh never ran"
+        // — refreshing back to back for as long as the app stayed open. An
+        // opening refresh skipped because a background pass held the
+        // coordinator is retried by the `isRefreshing` onChange above, which
+        // runs on a fresh body pass.
         Task { @MainActor in
             await performRefresh()
-            // `refreshFeed` advances `lastRefreshStartedAt` as its first step
-            // unless a background pass held the coordinator and it bailed. If
-            // the opening refresh never actually started, retry so the
-            // `isRefreshing` change (or the next tick) runs it once free.
-            if wasOpeningRefresh, needsOpeningRefresh {
-                evaluate()
-            }
         }
     }
 
